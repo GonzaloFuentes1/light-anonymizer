@@ -1,0 +1,1515 @@
+[
+ {
+  "id": "frl_001_03",
+  "kind": "frl_front",
+  "url": "https://ndownloader.figshare.com/files/8541961",
+  "zip_md5": "236c1c94defbb34a79074b195841cfd6",
+  "zip_size": 33860607,
+  "zip_entry": "neutral_front/001_03.jpg",
+  "tem_entry": "neutral_front/001_03.tem",
+  "tem_sha256": "8f2b07e45c34a98b50db47dd0928ca8bf809508e9efdfbdfc8472468f9b4079a",
+  "sha256": "bccc0f2594c27555d370988cc186c8706f65c15e2b95e2bf7ace01df3702e709",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "subject": [
+   "24",
+   "female",
+   "white"
+  ],
+  "faces": [
+   [
+    452,
+    529,
+    913,
+    995
+   ]
+  ],
+  "faces_hairline": [
+   [
+    452,
+    368,
+    913,
+    995
+   ]
+  ],
+  "core": [
+   [
+    546,
+    607,
+    798,
+    891
+   ]
+  ],
+  "gt": "landmarks (.tem 189 pts)"
+ },
+ {
+  "id": "frl_005_03",
+  "kind": "frl_front",
+  "url": "https://ndownloader.figshare.com/files/8541961",
+  "zip_md5": "236c1c94defbb34a79074b195841cfd6",
+  "zip_size": 33860607,
+  "zip_entry": "neutral_front/005_03.jpg",
+  "tem_entry": "neutral_front/005_03.tem",
+  "tem_sha256": "a703143b908fa736a23f9777a395e6b2e522db2efa9f9c86ec136a73c455a613",
+  "sha256": "b43d409894a9f61834ee5b73465e03fd253e067ff27a0ef61a4a871d12377102",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "subject": [
+   "28",
+   "male",
+   "east_asian"
+  ],
+  "faces": [
+   [
+    434,
+    504,
+    914,
+    970
+   ]
+  ],
+  "faces_hairline": [
+   [
+    434,
+    364,
+    914,
+    970
+   ]
+  ],
+  "core": [
+   [
+    551,
+    564,
+    794,
+    856
+   ]
+  ],
+  "gt": "landmarks (.tem 189 pts)"
+ },
+ {
+  "id": "frl_025_03",
+  "kind": "frl_front",
+  "url": "https://ndownloader.figshare.com/files/8541961",
+  "zip_md5": "236c1c94defbb34a79074b195841cfd6",
+  "zip_size": 33860607,
+  "zip_entry": "neutral_front/025_03.jpg",
+  "tem_entry": "neutral_front/025_03.tem",
+  "tem_sha256": "14e294a0a182dbf6008403e8640a1c7262287885010395a1ba23642c3bc08177",
+  "sha256": "a4b10825a7a3a3c71c70ee28a2e8ca456c8c10d90fe6ea59b65b4953fff4b93f",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "subject": [
+   "21",
+   "female",
+   "black"
+  ],
+  "faces": [
+   [
+    449,
+    619,
+    886,
+    1068
+   ]
+  ],
+  "faces_hairline": [
+   [
+    449,
+    445,
+    886,
+    1068
+   ]
+  ],
+  "core": [
+   [
+    540,
+    681,
+    791,
+    963
+   ]
+  ],
+  "gt": "landmarks (.tem 189 pts)"
+ },
+ {
+  "id": "frl_038_03",
+  "kind": "frl_front",
+  "url": "https://ndownloader.figshare.com/files/8541961",
+  "zip_md5": "236c1c94defbb34a79074b195841cfd6",
+  "zip_size": 33860607,
+  "zip_entry": "neutral_front/038_03.jpg",
+  "tem_entry": "neutral_front/038_03.tem",
+  "tem_sha256": "9f3dea4880c26af4eda5776933e2f95d37b6d10e1f2ef02191c69cfe06f855bf",
+  "sha256": "011bdfe57c33a2639b01368a119d2d636f054113966f2a600ef3c341e0264d25",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "subject": [
+   "40",
+   "female",
+   "west_asian"
+  ],
+  "faces": [
+   [
+    398,
+    498,
+    953,
+    969
+   ]
+  ],
+  "faces_hairline": [
+   [
+    398,
+    318,
+    953,
+    969
+   ]
+  ],
+  "core": [
+   [
+    560,
+    555,
+    812,
+    841
+   ]
+  ],
+  "gt": "landmarks (.tem 189 pts)"
+ },
+ {
+  "id": "frl_061_03",
+  "kind": "frl_front",
+  "url": "https://ndownloader.figshare.com/files/8541961",
+  "zip_md5": "236c1c94defbb34a79074b195841cfd6",
+  "zip_size": 33860607,
+  "zip_entry": "neutral_front/061_03.jpg",
+  "tem_entry": "neutral_front/061_03.tem",
+  "tem_sha256": "707ed11e2162e162bcf8f5b1181f1f20a40d9545864a2552be090508e74e4c54",
+  "sha256": "3bdff96c5f19f6caaa08de79ddfa96eac72c20099a28762eb51781e3f2c5f06e",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "subject": [
+   "40",
+   "male",
+   "black"
+  ],
+  "faces": [
+   [
+    441,
+    467,
+    903,
+    951
+   ]
+  ],
+  "faces_hairline": [
+   [
+    441,
+    315,
+    903,
+    951
+   ]
+  ],
+  "core": [
+   [
+    530,
+    535,
+    796,
+    825
+   ]
+  ],
+  "gt": "landmarks (.tem 189 pts)"
+ },
+ {
+  "id": "frl_127_03",
+  "kind": "frl_front",
+  "url": "https://ndownloader.figshare.com/files/8541961",
+  "zip_md5": "236c1c94defbb34a79074b195841cfd6",
+  "zip_size": 33860607,
+  "zip_entry": "neutral_front/127_03.jpg",
+  "tem_entry": "neutral_front/127_03.tem",
+  "tem_sha256": "feb884960e2580dda8b1034bb1cf55a6b82a63618d97c6918049b3db3728828e",
+  "sha256": "f252f75df60764d89cdf9c6d37c833d5f295c5dc36814e84d78302cb3a5aab07",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "subject": [
+   "28",
+   "female",
+   "east_asian"
+  ],
+  "faces": [
+   [
+    438,
+    548,
+    917,
+    990
+   ]
+  ],
+  "faces_hairline": [
+   [
+    438,
+    360,
+    917,
+    990
+   ]
+  ],
+  "core": [
+   [
+    547,
+    614,
+    784,
+    896
+   ]
+  ],
+  "gt": "landmarks (.tem 189 pts)"
+ },
+ {
+  "id": "frl_136_03",
+  "kind": "frl_front",
+  "url": "https://ndownloader.figshare.com/files/8541961",
+  "zip_md5": "236c1c94defbb34a79074b195841cfd6",
+  "zip_size": 33860607,
+  "zip_entry": "neutral_front/136_03.jpg",
+  "tem_entry": "neutral_front/136_03.tem",
+  "tem_sha256": "18efe3d482d32f853d6e24186643be046b85cf58f60b496856632a7256643b08",
+  "sha256": "b3bd76d55435649a5d27b5bdf2b331d6e5088a8f844c71ea867800d209f7c8fa",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "subject": [
+   "54",
+   "female",
+   "white"
+  ],
+  "faces": [
+   [
+    453,
+    567,
+    906,
+    996
+   ]
+  ],
+  "faces_hairline": [
+   [
+    453,
+    388,
+    906,
+    996
+   ]
+  ],
+  "core": [
+   [
+    549,
+    631,
+    798,
+    886
+   ]
+  ],
+  "gt": "landmarks (.tem 189 pts)"
+ },
+ {
+  "id": "frl_140_03",
+  "kind": "frl_front",
+  "url": "https://ndownloader.figshare.com/files/8541961",
+  "zip_md5": "236c1c94defbb34a79074b195841cfd6",
+  "zip_size": 33860607,
+  "zip_entry": "neutral_front/140_03.jpg",
+  "tem_entry": "neutral_front/140_03.tem",
+  "tem_sha256": "31ea4871ab98971a385bbfa2492f664138361d7fece06a56bca647489ae820bb",
+  "sha256": "e713b065180d1074e0455e92b4aebf7570d93b0a4623e0ef57d58ea44e006c1c",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "subject": [
+   "42",
+   "male",
+   "white"
+  ],
+  "faces": [
+   [
+    443,
+    449,
+    919,
+    905
+   ]
+  ],
+  "faces_hairline": [
+   [
+    443,
+    301,
+    919,
+    905
+   ]
+  ],
+  "core": [
+   [
+    557,
+    511,
+    799,
+    755
+   ]
+  ],
+  "gt": "landmarks (.tem 189 pts)"
+ },
+ {
+  "id": "frl_005_02",
+  "kind": "frl_left_3quarter",
+  "url": "https://ndownloader.figshare.com/files/8545675",
+  "zip_md5": "1b9168282a6497eb3380b68017bbf2be",
+  "zip_size": 24176189,
+  "zip_entry": "neutral_left_3quarter/005_02.jpg",
+  "sha256": "91124716c696af43633cccf5e15657a69c241b639ab2d2222db8789ea7105a17",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "faces": [
+   [
+    411,
+    560,
+    806,
+    961
+   ]
+  ],
+  "core": [
+   [
+    411,
+    571,
+    630,
+    845
+   ]
+  ],
+  "gt": "manual (±15px)"
+ },
+ {
+  "id": "frl_025_02",
+  "kind": "frl_left_3quarter",
+  "url": "https://ndownloader.figshare.com/files/8545675",
+  "zip_md5": "1b9168282a6497eb3380b68017bbf2be",
+  "zip_size": 24176189,
+  "zip_entry": "neutral_left_3quarter/025_02.jpg",
+  "sha256": "e2b41b62c327bf4b96bcbea7e1ac04a87d4a8cd21cb51bddec0bb252fe3ad02d",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "faces": [
+   [
+    395,
+    565,
+    847,
+    990
+   ]
+  ],
+  "core": [
+   [
+    395,
+    587,
+    650,
+    877
+   ]
+  ],
+  "gt": "manual (±15px)"
+ },
+ {
+  "id": "frl_136_02",
+  "kind": "frl_left_3quarter",
+  "url": "https://ndownloader.figshare.com/files/8545675",
+  "zip_md5": "1b9168282a6497eb3380b68017bbf2be",
+  "zip_size": 24176189,
+  "zip_entry": "neutral_left_3quarter/136_02.jpg",
+  "sha256": "a5d373c7ddfea4a22770047d935c035dbd1e36706d06c8ccb712fc57e503bd04",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "faces": [
+   [
+    390,
+    595,
+    847,
+    985
+   ]
+  ],
+  "core": [
+   [
+    390,
+    616,
+    650,
+    889
+   ]
+  ],
+  "gt": "manual (±15px)"
+ },
+ {
+  "id": "frl_024_01",
+  "kind": "frl_left_profile",
+  "url": "https://ndownloader.figshare.com/files/8545678",
+  "zip_md5": "4b41c3b02ee08c659898d6db3cf11c53",
+  "zip_size": 25457035,
+  "zip_entry": "neutral_left_profile/024_01.jpg",
+  "sha256": "bc872c30979c990f735262b2d062ff35f52b487537f2e640e2cd9633bbff3621",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "faces": [
+   [
+    376,
+    574,
+    705,
+    929
+   ]
+  ],
+  "core": [
+   [
+    376,
+    579,
+    515,
+    824
+   ]
+  ],
+  "gt": "manual (±15px)"
+ },
+ {
+  "id": "frl_140_01",
+  "kind": "frl_left_profile",
+  "url": "https://ndownloader.figshare.com/files/8545678",
+  "zip_md5": "4b41c3b02ee08c659898d6db3cf11c53",
+  "zip_size": 25457035,
+  "zip_entry": "neutral_left_profile/140_01.jpg",
+  "sha256": "abc03bebdf9bb31b1d13ec3425d602b89178b8debe8b8846182e280d5a5b3ffe",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "faces": [
+   [
+    279,
+    530,
+    661,
+    885
+   ]
+  ],
+  "core": [
+   [
+    279,
+    531,
+    480,
+    805
+   ]
+  ],
+  "gt": "manual (±15px)"
+ },
+ {
+  "id": "frl_061_04",
+  "kind": "frl_right_3quarter",
+  "url": "https://ndownloader.figshare.com/files/8545681",
+  "zip_md5": "f10061171f0d6043d6cac0105eeddbbc",
+  "zip_size": 24323211,
+  "zip_entry": "neutral_right_3quarter/061_04.jpg",
+  "sha256": "f076d9f21047fecb140deac0793f57108170c4593e12cbdcbbefc443d0ceaed9",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "faces": [
+   [
+    468,
+    523,
+    925,
+    971
+   ]
+  ],
+  "core": [
+   [
+    680,
+    542,
+    925,
+    837
+   ]
+  ],
+  "gt": "manual (±15px)"
+ },
+ {
+  "id": "frl_127_04",
+  "kind": "frl_right_3quarter",
+  "url": "https://ndownloader.figshare.com/files/8545681",
+  "zip_md5": "f10061171f0d6043d6cac0105eeddbbc",
+  "zip_size": 24323211,
+  "zip_entry": "neutral_right_3quarter/127_04.jpg",
+  "sha256": "16d53b3181eb620a1025a0924eac0f69bbb917cfad44bdcb334bf00dfa2ecc07",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "faces": [
+   [
+    476,
+    558,
+    935,
+    985
+   ]
+  ],
+  "core": [
+   [
+    680,
+    603,
+    935,
+    897
+   ]
+  ],
+  "gt": "manual (±15px)"
+ },
+ {
+  "id": "frl_038_05",
+  "kind": "frl_right_profile",
+  "url": "https://ndownloader.figshare.com/files/8545684",
+  "zip_md5": "37bf4690eb44ad21d352dceb4accadc8",
+  "zip_size": 25823276,
+  "zip_entry": "neutral_right_profile/038_05.jpg",
+  "sha256": "30194770aaa9654d86265bd0aa01cb6df2bec423d441f0ba3bfd574d716737f1",
+  "width": 1350,
+  "height": 1350,
+  "license": "CC BY 4.0",
+  "attribution": "DeBruine, L. M. & Jones, B. C. (2017). Face Research Lab London Set. figshare. doi:10.6084/m9.figshare.5047666.v5 (CC BY 4.0)",
+  "faces": [
+   [
+    790,
+    563,
+    1150,
+    985
+   ]
+  ],
+  "core": [
+   [
+    995,
+    574,
+    1150,
+    913
+   ]
+  ],
+  "gt": "manual (±15px)"
+ },
+ {
+  "id": "oi_0fa6d82962ece7ed",
+  "kind": "openimages_v7_val",
+  "url": "https://open-images-dataset.s3.amazonaws.com/validation/0fa6d82962ece7ed.jpg",
+  "sha256": "5de341cb93e3725f99e6ba8f3fec7214c05f1700a1dd4865bd3cb60e67ab6465",
+  "width": 1024,
+  "height": 685,
+  "license": "CC BY 2.0 (image, per Open Images metadata & Flickr page); boxes CC BY 4.0 Google LLC",
+  "attribution": "\"DSC07212.JPG\" by Max Talbot-Minkin (https://www.flickr.com/photos/maxtm/386651981), CC BY 2.0; face boxes: Open Images V7 (Google LLC, CC BY 4.0)",
+  "faces": [
+   [
+    29,
+    181,
+    68,
+    236
+   ],
+   [
+    139,
+    89,
+    178,
+    138
+   ],
+   [
+    157,
+    166,
+    191,
+    210
+   ],
+   [
+    185,
+    192,
+    204,
+    219
+   ],
+   [
+    240,
+    109,
+    275,
+    153
+   ],
+   [
+    260,
+    183,
+    293,
+    231
+   ],
+   [
+    328,
+    91,
+    358,
+    136
+   ],
+   [
+    348,
+    180,
+    377,
+    224
+   ],
+   [
+    381,
+    178,
+    414,
+    225
+   ],
+   [
+    560,
+    156,
+    597,
+    213
+   ],
+   [
+    591,
+    74,
+    623,
+    122
+   ],
+   [
+    628,
+    240,
+    652,
+    266
+   ],
+   [
+    653,
+    76,
+    681,
+    101
+   ],
+   [
+    653,
+    236,
+    690,
+    277
+   ],
+   [
+    717,
+    51,
+    750,
+    89
+   ],
+   [
+    720,
+    233,
+    753,
+    277
+   ],
+   [
+    753,
+    234,
+    790,
+    280
+   ],
+   [
+    791,
+    45,
+    821,
+    74
+   ],
+   [
+    818,
+    50,
+    855,
+    89
+   ],
+   [
+    877,
+    26,
+    906,
+    54
+   ],
+   [
+    880,
+    122,
+    921,
+    183
+   ],
+   [
+    883,
+    54,
+    912,
+    91
+   ],
+   [
+    933,
+    127,
+    967,
+    175
+   ],
+   [
+    970,
+    29,
+    992,
+    74
+   ],
+   [
+    989,
+    30,
+    1024,
+    70
+   ]
+  ],
+  "flags": [
+   "",
+   "",
+   "",
+   "O",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "O",
+   "",
+   "O",
+   "O",
+   "O",
+   "",
+   "O",
+   "O",
+   "",
+   "",
+   "O",
+   "",
+   "O",
+   "",
+   "O",
+   ""
+  ],
+  "gt": "Open Images human-verified boxes (/m/0dzct, source xclick)"
+ },
+ {
+  "id": "oi_b75dc8f9b341e1e5",
+  "kind": "openimages_v7_val",
+  "url": "https://open-images-dataset.s3.amazonaws.com/validation/b75dc8f9b341e1e5.jpg",
+  "sha256": "110e59e1b2fe50cad6c9a4f60335fa39af3eb2eb818a3825bc36260f71242b26",
+  "width": 683,
+  "height": 1024,
+  "license": "CC BY 2.0 (image, per Open Images metadata & Flickr page); boxes CC BY 4.0 Google LLC",
+  "attribution": "\"UCLA Bruins Women's Gymnastics - 1073\" by Parker Knight (https://www.flickr.com/photos/rocketboom/4435718760), CC BY 2.0; face boxes: Open Images V7 (Google LLC, CC BY 4.0)",
+  "faces": [
+   [
+    0,
+    154,
+    27,
+    201
+   ],
+   [
+    36,
+    94,
+    77,
+    142
+   ],
+   [
+    79,
+    270,
+    124,
+    310
+   ],
+   [
+    109,
+    329,
+    141,
+    375
+   ],
+   [
+    134,
+    143,
+    172,
+    199
+   ],
+   [
+    153,
+    88,
+    190,
+    134
+   ],
+   [
+    169,
+    248,
+    218,
+    299
+   ],
+   [
+    251,
+    125,
+    298,
+    183
+   ],
+   [
+    261,
+    279,
+    284,
+    314
+   ],
+   [
+    293,
+    169,
+    352,
+    224
+   ],
+   [
+    317,
+    0,
+    361,
+    33
+   ],
+   [
+    382,
+    92,
+    422,
+    136
+   ],
+   [
+    455,
+    89,
+    499,
+    142
+   ],
+   [
+    467,
+    261,
+    514,
+    323
+   ],
+   [
+    473,
+    151,
+    520,
+    213
+   ],
+   [
+    474,
+    0,
+    509,
+    36
+   ],
+   [
+    484,
+    45,
+    520,
+    88
+   ],
+   [
+    568,
+    0,
+    609,
+    23
+   ],
+   [
+    613,
+    239,
+    666,
+    298
+   ],
+   [
+    630,
+    44,
+    672,
+    92
+   ],
+   [
+    630,
+    165,
+    672,
+    219
+   ]
+  ],
+  "flags": [
+   "O",
+   "",
+   "O",
+   "O",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "O",
+   "",
+   "",
+   "",
+   "",
+   "O",
+   "",
+   "O",
+   "",
+   "",
+   ""
+  ],
+  "gt": "Open Images human-verified boxes (/m/0dzct, source xclick)"
+ },
+ {
+  "id": "oi_3c11db8fd0e9bc8d",
+  "kind": "openimages_v7_val",
+  "url": "https://open-images-dataset.s3.amazonaws.com/validation/3c11db8fd0e9bc8d.jpg",
+  "sha256": "529b5654de4867692e0efaf6832b38f4d44e131b52676f441bc80d997459f979",
+  "width": 1024,
+  "height": 683,
+  "license": "CC BY 2.0 (image, per Open Images metadata & Flickr page); boxes CC BY 4.0 Google LLC",
+  "attribution": "\"554T2355.jpg\" by Cliff (https://www.flickr.com/photos/nostri-imago/5633178255), CC BY 2.0; face boxes: Open Images V7 (Google LLC, CC BY 4.0)",
+  "faces": [
+   [
+    29,
+    231,
+    80,
+    302
+   ],
+   [
+    39,
+    613,
+    115,
+    683
+   ],
+   [
+    42,
+    70,
+    94,
+    141
+   ],
+   [
+    299,
+    378,
+    355,
+    444
+   ],
+   [
+    313,
+    209,
+    361,
+    272
+   ],
+   [
+    346,
+    94,
+    393,
+    153
+   ],
+   [
+    600,
+    219,
+    651,
+    289
+   ],
+   [
+    615,
+    95,
+    665,
+    159
+   ],
+   [
+    729,
+    535,
+    784,
+    620
+   ],
+   [
+    890,
+    128,
+    941,
+    193
+   ],
+   [
+    971,
+    437,
+    1024,
+    505
+   ]
+  ],
+  "flags": [
+   "",
+   "T",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   ""
+  ],
+  "gt": "Open Images human-verified boxes (/m/0dzct, source xclick)"
+ },
+ {
+  "id": "oi_9e2c53451ec7bbc0",
+  "kind": "openimages_v7_val",
+  "url": "https://open-images-dataset.s3.amazonaws.com/validation/9e2c53451ec7bbc0.jpg",
+  "sha256": "8dc449e15650c40f2931359fbd8936e0d153e3909b43662ac54ec646c3b79ac1",
+  "width": 1024,
+  "height": 683,
+  "license": "CC BY 2.0 (image, per Open Images metadata & Flickr page); boxes CC BY 4.0 Google LLC",
+  "attribution": "\"IMG_8716\" by Centre for E-Government Danube University Krems (https://www.flickr.com/photos/e-governance/11121818035), CC BY 2.0; face boxes: Open Images V7 (Google LLC, CC BY 4.0)",
+  "faces": [
+   [
+    131,
+    88,
+    237,
+    266
+   ],
+   [
+    291,
+    234,
+    340,
+    272
+   ],
+   [
+    379,
+    177,
+    465,
+    292
+   ],
+   [
+    529,
+    184,
+    592,
+    274
+   ],
+   [
+    601,
+    222,
+    642,
+    275
+   ],
+   [
+    720,
+    204,
+    776,
+    278
+   ],
+   [
+    796,
+    240,
+    840,
+    283
+   ]
+  ],
+  "flags": [
+   "O",
+   "O",
+   "O",
+   "",
+   "",
+   "",
+   ""
+  ],
+  "gt": "Open Images human-verified boxes (/m/0dzct, source xclick)"
+ },
+ {
+  "id": "oi_d50b0457d9624258",
+  "kind": "openimages_v7_val",
+  "url": "https://open-images-dataset.s3.amazonaws.com/validation/d50b0457d9624258.jpg",
+  "sha256": "4d6e8f60ca62f48ad798d19342d3ffb14488fbef6d474470e0243f04287218b9",
+  "width": 1024,
+  "height": 685,
+  "license": "CC BY 2.0 (image, per Open Images metadata & Flickr page); boxes CC BY 4.0 Google LLC",
+  "attribution": "\"hearing on 12-05-13\" by FERC.gov (https://www.flickr.com/photos/ferc-gov/14249824423), CC BY 2.0; face boxes: Open Images V7 (Google LLC, CC BY 4.0)",
+  "faces": [
+   [
+    0,
+    18,
+    65,
+    315
+   ],
+   [
+    0,
+    216,
+    76,
+    386
+   ],
+   [
+    286,
+    203,
+    337,
+    272
+   ],
+   [
+    392,
+    38,
+    572,
+    301
+   ],
+   [
+    622,
+    215,
+    712,
+    293
+   ],
+   [
+    776,
+    79,
+    947,
+    298
+   ]
+  ],
+  "flags": [
+   "T",
+   "OT",
+   "",
+   "O",
+   "O",
+   "O"
+  ],
+  "gt": "Open Images human-verified boxes (/m/0dzct, source xclick)"
+ },
+ {
+  "id": "pd_astronaut",
+  "kind": "public_domain",
+  "url": "https://gitlab.com/scikit-image/data/-/raw/5c090b56df3988d988ff97928e2ef2d2cbe38e1b/astronaut.png",
+  "sha256": "88431cd9653ccd539741b555fb0a46b61558b301d4110412b5bc28b5e3ea6cb5",
+  "width": 512,
+  "height": 512,
+  "license": "Public domain (NASA; per scikit-image docstring)",
+  "attribution": "Eileen Collins, NASA (via scikit-image data.astronaut(), https://flic.kr/p/r9qvLn)",
+  "faces": [
+   [
+    178,
+    63,
+    268,
+    176
+   ]
+  ],
+  "gt": "YuNet 2023mar seed @512px long side, human-verified visually (all persons covered, 0 FP)"
+ },
+ {
+  "id": "pd_grassley",
+  "kind": "public_domain",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/c/cc/Chuck_Grassley_official_photo_2017.jpg",
+  "sha256": "1ccd3c4eb16044f248eda8a15a30b2cb08ef24b0db2ade59269b72384e6b393b",
+  "width": 1556,
+  "height": 1945,
+  "license": "Public domain (US Congress work; Commons PD-USGov-Congress)",
+  "attribution": "United States Congress, via Wikimedia Commons",
+  "faces": [
+   [
+    415,
+    207,
+    1011,
+    1108
+   ]
+  ],
+  "gt": "YuNet 2023mar seed @640px long side, human-verified visually (all persons covered, 0 FP)"
+ },
+ {
+  "id": "pd_warren",
+  "kind": "public_domain",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/6/6a/Elizabeth_Warren%2C_official_portrait%2C_114th_Congress.jpg",
+  "sha256": "183813c5185e1b7548817fa1542552c75eba7a6fc8754a9b5a904469da43d66a",
+  "width": 1908,
+  "height": 2385,
+  "license": "Public domain (US Senate work); Commons flags personality rights",
+  "attribution": "United States Senate, via Wikimedia Commons",
+  "faces": [
+   [
+    606,
+    300,
+    1173,
+    1041
+   ]
+  ],
+  "gt": "YuNet 2023mar seed @640px long side, human-verified visually (all persons covered, 0 FP)"
+ },
+ {
+  "id": "pd_ascan1996",
+  "kind": "public_domain",
+  "url": "https://upload.wikimedia.org/wikipedia/commons/b/b3/Group_portrait_of_1996_astronaut_candidates.jpg",
+  "sha256": "a01251ec7e312cace3a2824965994aae90ffe6e565b27e9eb9112f9bec954940",
+  "width": 4126,
+  "height": 4094,
+  "license": "Public domain (NASA)",
+  "attribution": "NASA (S96-12956), via Wikimedia Commons",
+  "faces": [
+   [
+    997,
+    1580,
+    1078,
+    1676
+   ],
+   [
+    1103,
+    1616,
+    1181,
+    1726
+   ],
+   [
+    1297,
+    1595,
+    1369,
+    1688
+   ],
+   [
+    1387,
+    1637,
+    1465,
+    1738
+   ],
+   [
+    1540,
+    1607,
+    1618,
+    1704
+   ],
+   [
+    1717,
+    1614,
+    1792,
+    1712
+   ],
+   [
+    1886,
+    1561,
+    1965,
+    1658
+   ],
+   [
+    2048,
+    1572,
+    2126,
+    1669
+   ],
+   [
+    2237,
+    1579,
+    2316,
+    1677
+   ],
+   [
+    2407,
+    1579,
+    2486,
+    1685
+   ],
+   [
+    2621,
+    1587,
+    2695,
+    1687
+   ],
+   [
+    2982,
+    1624,
+    3063,
+    1723
+   ],
+   [
+    3167,
+    1616,
+    3244,
+    1715
+   ],
+   [
+    3379,
+    1577,
+    3466,
+    1689
+   ],
+   [
+    407,
+    1799,
+    502,
+    1919
+   ],
+   [
+    527,
+    1741,
+    608,
+    1841
+   ],
+   [
+    749,
+    1751,
+    824,
+    1847
+   ],
+   [
+    873,
+    1767,
+    957,
+    1864
+   ],
+   [
+    1300,
+    1751,
+    1385,
+    1858
+   ],
+   [
+    1548,
+    1772,
+    1634,
+    1877
+   ],
+   [
+    2058,
+    1732,
+    2140,
+    1838
+   ],
+   [
+    2325,
+    1797,
+    2408,
+    1903
+   ],
+   [
+    2593,
+    1748,
+    2676,
+    1853
+   ],
+   [
+    2812,
+    1652,
+    2889,
+    1752
+   ],
+   [
+    2976,
+    1754,
+    3062,
+    1861
+   ],
+   [
+    3201,
+    1780,
+    3287,
+    1891
+   ],
+   [
+    3382,
+    1694,
+    3473,
+    1813
+   ],
+   [
+    1058,
+    1821,
+    1136,
+    1915
+   ],
+   [
+    1779,
+    1845,
+    1861,
+    1951
+   ],
+   [
+    2799,
+    1819,
+    2888,
+    1933
+   ],
+   [
+    3630,
+    1821,
+    3721,
+    1941
+   ],
+   [
+    631,
+    2010,
+    717,
+    2122
+   ],
+   [
+    877,
+    2062,
+    964,
+    2174
+   ],
+   [
+    1153,
+    2077,
+    1228,
+    2173
+   ],
+   [
+    1378,
+    2065,
+    1457,
+    2164
+   ],
+   [
+    1635,
+    2045,
+    1722,
+    2152
+   ],
+   [
+    1885,
+    2033,
+    1975,
+    2148
+   ],
+   [
+    2159,
+    2062,
+    2237,
+    2159
+   ],
+   [
+    2419,
+    2067,
+    2501,
+    2173
+   ],
+   [
+    2939,
+    2074,
+    3031,
+    2190
+   ],
+   [
+    3554,
+    2093,
+    3642,
+    2201
+   ],
+   [
+    2682,
+    2101,
+    2765,
+    2204
+   ],
+   [
+    3251,
+    2112,
+    3329,
+    2213
+   ]
+  ],
+  "gt": "YuNet 2023mar seed @2048px long side, human-verified visually (all persons covered, 0 FP)"
+ },
+ {
+  "id": "synth_sfhq_pt4_00000019",
+  "kind": "synthetic_optional",
+  "url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-4/a%20small%20sample%20(700%20images)%2FSFHQ_pt4_00000019.jpg",
+  "sha256": "d7f92427edc7fa0431c21284a3bb916d6e38b4eb7dc982bc4b1b179fbc8d95e7",
+  "width": 1024,
+  "height": 1024,
+  "license": "CC0 (Kaggle dataset label); generator StyleGAN2 is NVIDIA NC-licensed",
+  "attribution": "SFHQ part 4, David Beniaguev (selfishgene), Kaggle, CC0",
+  "faces": [
+   [
+    266,
+    245,
+    781,
+    979
+   ]
+  ],
+  "gt": "YuNet seed @640, human-verified",
+  "opcional": true
+ }
+]

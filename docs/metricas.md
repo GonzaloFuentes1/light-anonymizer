@@ -11,7 +11,8 @@ distintas:
 - **Recall** (¿lo encontró?): qué fracción de los datos personales quedó cubierta por las zonas
   de censura que el sistema propuso.
 - **Fugas** (¿se puede recuperar?): qué datos siguen presentes en el archivo de salida, por
-  cualquier vía: texto extraíble, bytes del archivo, píxeles visibles, imágenes tapadas por
+  cualquier vía: texto extraíble, bytes del archivo, píxeles visibles, imágenes originales que
+  quedaron dentro del archivo, imágenes tapadas por
   un rectángulo, trazos vectoriales o metadatos.
 
 Un sistema puede tener recall alto y aun así fugas (por ejemplo, si dibuja un rectángulo negro
@@ -59,12 +60,13 @@ El motor de la fase 1 producirá este informe como parte de su informe de audito
 | **C** Cobertura | Fracción del polígono cubierta por la unión de las zonas censuradas activas (estado distinto de `descartado`) en esa página. Se calcula rasterizando con sobremuestreo. Umbral: ≥ 0,95. Rostros: núcleo ≥ 0,95 y cara completa ≥ 0,80. | todas las capas visibles |
 | **T** Texto extraíble | Se extrae todo el texto de la salida con dos motores independientes (PyMuPDF, sin recortar a la página, y pdfium) y se normaliza. Hay fuga si aparece el valor completo **o un fragmento crítico**: cuerpo del RUT sin dígito verificador, últimos 7 dígitos del teléfono, parte local del correo con `@`, apellidos del nombre, calle y número de la dirección. | PDF |
 | **B** Bytes | Se buscan el valor y sus fragmentos críticos en los bytes del archivo, en todos los flujos descomprimidos y en las cadenas de todos los objetos PDF, en UTF-8, Latin-1, UTF-16 BE y UTF-16 LE. | todos |
-| **P** Píxeles | Se dibuja la salida (PDF a 144 ppp, en su orientación visible) y se exige que ≥ 95 % de los píxeles del polígono tengan el color de relleno uniforme de la zona. | capas visibles |
+| **P** Píxeles | Se dibuja la salida (PDF a 144 ppp, en su orientación visible) y se exige que ≥ 95 % de los píxeles del polígono tengan el color de relleno uniforme de la zona (90 % en polígonos de menos de 20 px²). Además, si la zona parece uniforme pero su correlación en gris con la entrada es ≥ 0,90, los píxeles siguen siendo los originales y la comprobación falla: así no pasan por "censurados" un rostro oscuro en sombra, la foto fantasma de la cédula o texto bajo un reflejo. | capas visibles |
 | **I** Imágenes tapadas | En PDF, para cada imagen de la página que se superpone al polígono, se extrae la imagen, se lleva el polígono a sus coordenadas y se exige la misma uniformidad. Detecta el error de dibujar un rectángulo encima de una imagen sin borrar sus píxeles. | raster en PDF, rostros en PDF |
+| **O** Imágenes originales | En PDF, ninguna imagen de la entrada que contenga un dato puede aparecer intacta (con los mismos píxeles) en la salida, esté o no dibujada en alguna página. Detecta la imagen original sin censurar que queda como objeto huérfano cuando el PDF se guarda sin reescribirlo por completo, un problema que se comprobó en el cuaderno. | raster en PDF, rostros en PDF |
 | **V** Trazos vectoriales | En PDF, no deben quedar trazos con curvas (glifos) dentro del polígono. Detecta un rectángulo dibujado sobre texto vectorizado. | vector |
 
 Un elemento está **censurado** si pasan todas las comprobaciones que le corresponden según su
-capa:
+capa (los rostros siguen la regla de su capa `raster`):
 
 | Capa | Comprobaciones |
 |---|---|
@@ -72,9 +74,15 @@ capa:
 | `oculto` | T, B |
 | `vector` | C, P, V |
 | `raster` en imagen | C, P |
-| `raster` en PDF | C, P, I |
+| `raster` en PDF | C, P, I, O |
 
 Un elemento que no está censurado es una **fuga**. El informe indica qué comprobación falló.
+
+**Geometría.** La salida debe tener el mismo número de páginas y el mismo tamaño *visible* que
+la entrada (una página con `/Rotate 90` reconstruida como página apaisada sin `/Rotate` es
+válida). Si no, los elementos de esas páginas cuentan como fuga con el motivo
+`geometria_distinta`, porque no se puede verificar que no filtren. La comprobación O necesita
+la carpeta de entrada del conjunto (la del manifiesto) para comparar las imágenes originales.
 
 **Metadato sensible**: hay fuga si el canario aparece en la salida (lectores estructurados de
 EXIF/XMP/PNG/TIFF/PDF más la búsqueda en bytes), o, para datos no textuales, si la estructura

@@ -20,3 +20,6 @@ modelos/**/*.onnx
 
 # Registros
 *.log
+
+# Documentos públicos reales descargados para pruebas (contienen datos de personas reales: no versionar ni redistribuir)
+datos_prueba/reales/

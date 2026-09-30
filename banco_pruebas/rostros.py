@@ -9,9 +9,15 @@ flujo de generación, pero no para medir recall, y el manifiesto lo deja registr
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+import shutil
+import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -80,8 +86,80 @@ class ProveedorRostros:
                 self._rostros[pose].append(_rostro_dibujado(f"dib{i:02d}_{pose}", pose, self.rng))
 
     def _cargar_reales(self) -> bool:
-        """Descarga/verifica y carga las fuentes reales. Devuelve False si no hay ninguna disponible."""
-        return False
+        """Descarga/verifica y carga las fuentes reales. Devuelve False si no hay ninguna disponible.
+
+        Los rostros sueltos (``tomar``) vienen solo del Face Research Lab London Set, cuyas
+        personas firmaron consentimiento. Las fotos de personas reales identificables (Open
+        Images, retratos oficiales de dominio público) solo se usan como escenas tal cual,
+        nunca pegadas en documentos ficticios.
+        """
+        if not _CATALOGO.exists():
+            return False
+        for e in json.loads(_CATALOGO.read_text(encoding="utf-8")):
+            if e.get("opcional"):
+                continue
+            ruta = self._asegurar(e)
+            if ruta is None:
+                continue
+            FUENTES[e["id"]] = {
+                "descripcion": e.get("note") or e.get("subject") or e["kind"],
+                "licencia": e["license"],
+                "atribucion": e["attribution"],
+                "url": _url(e),
+                "sha256": e["sha256"],
+                "valido_para_recall": True,
+            }
+            img = Image.open(ruta).convert("RGB")
+            tipo = e["kind"]
+            if tipo.startswith("frl_"):
+                if tipo == "frl_front":
+                    caja, nucleo = _gt_desde_tem(ruta.with_suffix(".tem"))
+                else:
+                    caja, nucleo = rect(*e["faces"][0]), rect(*e["core"][0])
+                pose = "frente" if tipo == "frl_front" else ("perfil" if "profile" in tipo else "tres_cuartos")
+                r = Rostro(e["id"], img, caja, nucleo, pose, e["id"], {"sujeto": e.get("subject"), "gt": e.get("gt")})
+                self._rostros[pose].append(_recortar_retrato(r))
+            else:
+                self._escenas.append(
+                    Escena(
+                        id=e["id"],
+                        img=img,
+                        rostros=[(rect(*b), None) for b in e["faces"]],
+                        fuente=e["id"],
+                        etiquetas={"tipo_fuente": tipo, "marcas": e.get("flags"), "gt": e.get("gt")},
+                    )
+                )
+        return bool(self._rostros["frente"])
+
+    def _asegurar(self, e: dict[str, Any]) -> Path | None:
+        """Ruta local verificada de la imagen (y su .tem); la descarga si falta y está permitido."""
+        ext = Path(e.get("zip_entry") or urlparse(_url(e)).path).suffix or ".jpg"
+        destino = self.dir_cache / f"{e['id']}{ext}"
+        tem = destino.with_suffix(".tem") if e.get("tem_entry") else None
+        if _verificado(destino, e["sha256"]) and (tem is None or _verificado(tem, e["tem_sha256"])):
+            return destino
+        if not self.permitir_descarga:
+            return None
+        self.dir_cache.mkdir(parents=True, exist_ok=True)
+        try:
+            if e.get("zip_entry"):
+                zip_local = self.dir_cache / "zips" / f"{Path(urlparse(e['url']).path).name}.zip"
+                if not zip_local.exists() or hashlib.md5(zip_local.read_bytes()).hexdigest() != e.get("zip_md5"):
+                    _descargar(e["url"], zip_local)
+                with zipfile.ZipFile(zip_local) as z:
+                    destino.write_bytes(z.read(e["zip_entry"]))
+                    if tem is not None:
+                        tem.write_bytes(z.read(e["tem_entry"]))
+            else:
+                _descargar(_url(e), destino)
+        except (OSError, KeyError, zipfile.BadZipFile) as error:
+            print(f"  aviso: no se pudo obtener {e['id']}: {error}")
+            return None
+        if not _verificado(destino, e["sha256"]):
+            print(f"  aviso: {e['id']} no coincide con su SHA-256; se descarta")
+            destino.unlink(missing_ok=True)
+            return None
+        return destino
 
     # -- uso -------------------------------------------------------------------
 
@@ -119,6 +197,67 @@ class ProveedorRostros:
 
     def fuentes_usadas(self) -> list[dict[str, Any]]:
         return [{"id": f, **FUENTES[f]} for f in sorted(self._usadas)]
+
+
+_CATALOGO = Path(__file__).with_name("fuentes_rostros.json")
+_AGENTE = "anonimizador-banco-pruebas/0.1 (CENIA; descarga de datos de prueba)"
+
+# Grupos de puntos de las plantillas .tem de 189 puntos (Psychomorph/WebMorph).
+_CONTORNO = [*range(109, 115), *range(125, 134)]
+_CEJAS = range(71, 87)
+_MENTON = range(125, 134)
+_NUCLEO = [*range(18, 50), *range(50, 71), *range(87, 109)]  # ojos y párpados, nariz, boca
+
+
+def _url(e: dict[str, Any]) -> str:
+    return str(e["url"]).split()[0]
+
+
+def _verificado(ruta: Path, sha256: str) -> bool:
+    return ruta.exists() and hashlib.sha256(ruta.read_bytes()).hexdigest() == sha256
+
+
+def _descargar(url: str, destino: Path) -> None:
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    temporal = destino.with_name(destino.name + ".parcial")
+    solicitud = urllib.request.Request(url, headers={"User-Agent": _AGENTE})
+    with urllib.request.urlopen(solicitud, timeout=120) as respuesta, open(temporal, "wb") as f:
+        shutil.copyfileobj(respuesta, f)
+    temporal.replace(destino)
+
+
+def _gt_desde_tem(ruta: Path) -> tuple[Poligono, Poligono]:
+    """Caja de la cara (cejas a mentón, contorno a contorno) y núcleo (ojos, nariz, boca)."""
+    lineas = ruta.read_text(encoding="utf-8").split("\n")
+    n = int(lineas[0])
+    p = np.array([[float(v) for v in linea.split()[:2]] for linea in lineas[1 : n + 1]])
+    x0, x1 = p[_CONTORNO, 0].min(), p[_CONTORNO, 0].max()
+    y0, y1 = p[list(_CEJAS), 1].min(), p[list(_MENTON), 1].max()
+    nx0, ny0 = p[_NUCLEO].min(axis=0)
+    nx1, ny1 = p[_NUCLEO].max(axis=0)
+    margen = 0.04 * (x1 - x0)
+    return rect(x0, y0, x1, y1), rect(nx0 - margen, ny0 - margen, nx1 + margen, ny1 + margen)
+
+
+def _recortar_retrato(r: Rostro, ancho_final: int = 480) -> Rostro:
+    """Recorte de cabeza y hombros (tipo foto carné) con la verdad de terreno trasladada."""
+    xs, ys = [q[0] for q in r.caja], [q[1] for q in r.caja]
+    bx0, by0, bx1, by1 = min(xs), min(ys), max(xs), max(ys)
+    w, h = bx1 - bx0, by1 - by0
+    cx0 = int(max(0, bx0 - 0.45 * w))
+    cy0 = int(max(0, by0 - 0.7 * h))
+    cx1 = int(min(r.img.width, bx1 + 0.45 * w))
+    cy1 = int(min(r.img.height, by1 + 0.45 * h))
+    img = r.img.crop((cx0, cy0, cx1, cy1))
+    escala = min(1.0, ancho_final / img.width)
+    if escala < 1.0:
+        img = img.resize((ancho_final, max(1, round(img.height * escala))), Image.Resampling.LANCZOS)
+    sx, sy = img.width / (cx1 - cx0), img.height / (cy1 - cy0)
+
+    def mover(pol: Poligono) -> Poligono:
+        return [[round((x - cx0) * sx, 3), round((y - cy0) * sy, 3)] for x, y in pol]
+
+    return Rostro(r.id, img, mover(r.caja), mover(r.nucleo), r.pose, r.fuente, dict(r.etiquetas))
 
 
 def _rostro_dibujado(id: str, pose: str, rng: np.random.Generator) -> Rostro:
