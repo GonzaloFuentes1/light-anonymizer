@@ -1,0 +1,45 @@
+[project]
+name = "anonimizador"
+version = "0.1.0"
+description = "Anonimizador local de documentos e imágenes (CoP 33 / SmartGORE)"
+authors = [{ name = "Gonzalo Fuentes", email = "gonzalo.fuentes@cenia.cl" }]
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+datos = [
+    "matplotlib>=3.11.2",
+    "numpy>=2.4.6",
+    "opencv-python-headless>=5.0.0.93",
+    "piexif>=1.1.3",
+    "pillow>=12.3.0",
+    "pymupdf>=1.28.2",
+    "pypdfium2>=5.13.0",
+]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.13,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "anonimizador"
+module-root = ""
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

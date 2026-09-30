@@ -1,0 +1,22 @@
+# Entorno
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.spec.bak
+
+# Datos generados (se regeneran con scripts/generar_datos_prueba.py)
+datos_prueba/generado/
+datos_prueba/cache/
+salida/
+resultados/
+
+# Modelos (se descargan con scripts/descargar_modelos.py)
+modelos/*.onnx
+modelos/**/*.onnx
+
+# Registros
+*.log
