@@ -16,7 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from anonymizer.engine.common import Zone
+from anonymizer.engine.common import Zone, waiting_for
 from anonymizer.engine.ocr import rotate_points
 from anonymizer.engine.text import face_doubt
 
@@ -50,7 +50,7 @@ def detect(bgr: np.ndarray, threshold: float = 0.5, check: Callable[[], None] | 
                 continue
             f = side / max(rh, rw)
             img = cv2.resize(rot, (max(1, round(rw * f)), max(1, round(rh * f))))
-            with FACE_LOCK:
+            with waiting_for(FACE_LOCK):
                 det = _yunet()
                 det.setScoreThreshold(threshold)
                 det.setInputSize((img.shape[1], img.shape[0]))

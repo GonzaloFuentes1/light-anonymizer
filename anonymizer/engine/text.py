@@ -38,11 +38,21 @@ Span = tuple[str, int, int, str]  # type, start, end, detector
 DETECTOR_PRIORITY = {"regex": 0, "name_list": 1, "context": 2}
 
 
-def detect_spans(text: str, name_list: tuple[str, ...], ocr: bool = False, all_urls: bool = True) -> list[Span]:
+def detect_spans(
+    text: str,
+    name_list: tuple[str, ...],
+    ocr: bool = False,
+    all_urls: bool = True,
+    *,
+    personal_urls: bool = True,
+    given_names: bool = True,
+) -> list[Span]:
     """Spans (type, start, end, detector) with personal data in ``text``.
 
     Detector: ``regex`` (RUT, e-mail, phone, URL), ``name_list`` (entries of the list and their
     variants, extended to neighbouring given names) or ``context`` (given-name dictionary).
+    ``all_urls``: also the URLs that are not personal (``is_personal_url``); ``personal_urls``: the
+    personal ones; ``given_names``: the given-name dictionary. RUT, e-mail and phone always run.
     """
     found: list[Span] = []
     variants = [text]
@@ -58,15 +68,16 @@ def detect_spans(text: str, name_list: tuple[str, ...], ocr: bool = False, all_u
     found += [("email", m.start(), m.end(), "regex") for m in LOOSE_EMAIL.finditer(text)]
     for m in URL.finditer(text):
         a, b = patterns.complete_url(text, m.start(), m.end())
-        url = text[a:b]
-        if all_urls or patterns.PERSONAL_URL.search(url) or has_data(url, name_list):
+        personal = is_personal_url(text[a:b], name_list)
+        if (personal and personal_urls) or (not personal and all_urls):
             found.append(("url", a, b, "regex"))
     normalized = normalize_1to1(text)
     for type_, pattern in names.list_patterns(name_list):
         for m in pattern.finditer(normalized):
             a, b = names.expand_name(text, m.start(), m.end()) if type_ == "name" else (m.start(), m.end())
             found.append((type_, a, b, "name_list"))
-    found += [("name", a, b, "context") for a, b in names.names_by_dictionary(text)]
+    if given_names:
+        found += [("name", a, b, "context") for a, b in names.names_by_dictionary(text)]
     return found
 
 
@@ -95,6 +106,12 @@ def find_spans(
 ) -> list[tuple[str, int, int]]:
     """Spans (type, start, end) with personal data in ``text`` (the prototype's interface)."""
     return [(type_, a, b) for type_, a, b, _ in detect_spans(text, name_list, ocr=ocr, all_urls=all_urls)]
+
+
+def is_personal_url(url: str, name_list: tuple[str, ...]) -> bool:
+    """D12: social networks, meetings, shared files, identifiers in the query, or a piece of personal
+    data inside. The other URLs (institutional sites, public documents) are optional findings."""
+    return bool(patterns.PERSONAL_URL.search(url)) or has_data(url, name_list)
 
 
 def has_data(url: str, name_list: tuple[str, ...]) -> bool:

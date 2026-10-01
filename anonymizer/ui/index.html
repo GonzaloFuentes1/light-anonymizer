@@ -17,6 +17,7 @@
   <header class="titlebar">
     <strong>Anonimizador</strong><span>· funciona sin conexión</span>
     <span class="state warn" id="engine-chip" hidden>Motor de prueba: los hallazgos son simulados</span>
+    <button type="button" class="btn ghost small about" id="b-about" aria-haspopup="dialog">Acerca de</button>
     <div class="theme" role="group" aria-label="Tema de colores">
       <button type="button" data-theme-choice="light" aria-pressed="false">Claro</button>
       <button type="button" data-theme-choice="system" aria-pressed="true">Sistema</button>
@@ -60,7 +61,18 @@
             <button type="button" class="btn" id="b-names">Editar lista</button>
           </div>
         </div>
-        <div class="actionbar"><p class="fmeta" id="process-hint"></p><button type="button" class="btn primary" id="b-process" disabled>Procesar</button></div>
+        <div class="panel" id="detect-panel" hidden>
+          <div class="panel-h"><h3 id="detect-title">Qué buscar</h3><span class="fmeta" id="detect-hint"></span></div>
+          <ul class="detects" id="detects" aria-labelledby="detect-title"></ul>
+        </div>
+        <div class="actionbar">
+          <div class="estimate">
+            <p class="fmeta" id="process-hint"></p>
+            <p class="fmeta" id="process-estimate" hidden></p>
+            <p class="offwarn" id="process-off" hidden></p>
+          </div>
+          <button type="button" class="btn primary" id="b-process" disabled>Procesar</button>
+        </div>
       </div>
     </section>
 
@@ -127,6 +139,7 @@
             <strong id="fcount">0 zonas en este archivo</strong>
             <div class="chips" id="chips" role="group" aria-label="Filtrar por tipo de dato"></div>
           </div>
+          <div class="skipped" id="skipped" role="note" hidden></div>
           <div class="leaks" id="leaks" hidden></div>
           <div class="findlist" id="findlist"></div>
         </aside>
@@ -211,6 +224,37 @@
     <p id="dlg-ask-p"></p>
     <div class="row"><button type="button" class="btn" id="dlg-ask-no">Cancelar</button><button type="submit" class="btn primary" id="dlg-ask-yes">Aceptar</button></div>
   </form>
+</dialog>
+
+<!-- About: the legal notices of the AGPL (name, version, copyright, license, source) -->
+<dialog id="dlg-about" aria-labelledby="dlg-about-t">
+  <div class="dlg">
+    <div>
+      <h2 id="dlg-about-t" tabindex="-1">Light Anonymizer</h2>
+      <p class="fmeta" id="about-version"></p>
+    </div>
+    <p class="about-copy" id="about-copy"></p>
+    <p>Software libre: puedes usarlo, estudiarlo, modificarlo y compartirlo según la licencia GNU AGPL v3 o posterior. Se entrega sin ninguna garantía.</p>
+    <p>Funciona sin conexión: no envía tus documentos ni datos a ningún lado.</p>
+    <div class="about-src">
+      <label for="about-url">Código fuente</label>
+      <div class="row"><input type="text" class="path" id="about-url" readonly spellcheck="false"><button type="button" class="btn" id="b-copy-url">Copiar enlace</button></div>
+      <p class="fmeta" id="about-copied" role="status" aria-live="polite"></p>
+    </div>
+    <div class="tablewrap about-comps">
+      <table>
+        <caption class="sr-only">Componentes de terceros y sus licencias</caption>
+        <thead><tr><th scope="col">Componente</th><th scope="col">Licencia</th><th scope="col">Para qué se usa</th></tr></thead>
+        <tbody id="about-comps"></tbody>
+      </table>
+    </div>
+    <div>
+      <button type="button" class="btn" id="b-license" aria-expanded="false" aria-controls="about-license">Ver licencia completa</button>
+      <p class="fmeta" id="about-nolicense" hidden></p>
+    </div>
+    <pre class="license" id="about-license" tabindex="0" aria-label="Texto completo de la licencia" hidden></pre>
+    <div class="row"><button type="button" class="btn primary" id="dlg-about-close">Cerrar</button></div>
+  </div>
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>

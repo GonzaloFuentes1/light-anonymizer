@@ -60,3 +60,49 @@ def test_app_js_syntax():
         ["node", "--check", str(UI / "app.js")], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "name,strings",
+    [
+        (
+            "index.html",
+            [
+                "Qué buscar",
+                "Acerca de",
+                "Copiar enlace",
+                "Ver licencia completa",
+                "Software libre: puedes usarlo, estudiarlo, modificarlo y compartirlo según la licencia GNU AGPL v3 "
+                "o posterior. Se entrega sin ninguna garantía.",
+                "Funciona sin conexión: no envía tus documentos ni datos a ningún lado.",
+            ],
+        ),
+        (
+            "app.js",
+            [
+                "Tiempo estimado: ",
+                "depende del computador",
+                "Apagaste ",
+                "menos de 1 s",
+                "Listo en ",
+                "En este archivo no se buscaron: ",
+                "Revisa esas partes a mano.",
+                "Otros enlaces (sin censurar)",
+                "Censurar todos los otros enlaces",
+                "No censurar",
+                "sin censurar",
+            ],
+        ),
+        ("app.css", [".zone.suggested", ".result .zone.suggested", ".detect", ".license"]),
+    ],
+)
+def test_new_spanish_strings_are_present(name, strings):
+    text = read(name)
+    for s in strings:
+        assert s in text, f"{name} is missing {s!r}"
+
+
+def test_the_source_url_comes_from_the_api():
+    # The UI may not hardcode external addresses (the CSP blocks them anyway): GET /api/about serves it.
+    for name in ("index.html", "app.js"):
+        assert "github" not in read(name).lower()

@@ -6,7 +6,9 @@ the leak check over a temporary output and copies it to the destination only whe
 
 Detectors: patterns (``regex``), the user's list (``name_list``), context rules and the
 given-name dictionary (``context``), OCR at 0/90/270° (``ocr``), YuNet faces (``faces``) and QR
-codes (``qr``). See the modules of this package for each one.
+codes (``qr``). See the modules of this package for each one. Which groups of detectors run is
+decided per file (``AnalyzedFile.options``, see ``model.DetectionOptions``); a group that is off
+skips its work. The time of each stage is measured (``AnalyzedFile.timings``).
 """
 
 from __future__ import annotations
@@ -18,30 +20,37 @@ import tempfile
 import time
 import traceback
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
-from anonymizer.engine import faces, ocr
+from anonymizer.engine import context, estimate, faces, ocr
 from anonymizer.engine.common import (
     IMAGE_FORMATS,
     IMAGE_SUFFIXES,
     Cancelled,
     FileError,
+    StageClock,
     bbox_of,
     disable_power_throttling,
     now_iso,
     publish,
     rect_polygon,
     sniff,
+    stage,
+    waiting_for,
 )
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import (
     ERROR_MESSAGES,
     AnalyzedFile,
+    DetectionOptions,
     ExportResult,
     Finding,
     HistoryEntry,
     PageInfo,
 )
+from anonymizer.engine.patterns import norm, normalize_1to1
+from anonymizer.engine.text import needle
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +63,36 @@ _STAGE_TEXT = {
 _STAGE_OFFSET = {"ocr": 0.0, "faces": 0.6, "qr": 0.9}
 # Detectors whose text comes from the text layer of a PDF (checked again in the output).
 _TEXT_LAYER_DETECTORS = ("regex", "name_list", "context")
+# Types whose value, found again inside a URL, makes that URL personal (D12). A RUT, e-mail or
+# phone is recognized inside the URL itself (``text.has_data``).
+_PERSONAL_IN_URL = ("name", "address", "signature")
+
+
+def settle_optional(findings: list[Finding]) -> int:
+    """D12 over the whole file: an optional URL that contains a name or address found anywhere in
+    the file is not optional (it starts applied). ``pdf.data_in_urls`` does this inside the text
+    layer; this also covers what OCR read (a URL on a scanned page with a name signed on another
+    page, or on another line of the same photo). Returns how many URLs it changed."""
+    values = set()
+    for f in findings:
+        if f.optional or f.type not in _PERSONAL_IN_URL or not f.text:
+            continue
+        text = norm(f.text)
+        label = context.LABEL_VALUE.match(text)  # an OCR zone is the whole line: "Nombre: Ana Soto"
+        values.add(text[label.start(1) :] if label else text)
+    needles = [p for p in map(needle, values) if p is not None]
+    changed = 0
+    for f in findings:
+        if not (needles and f.optional and f.text):
+            continue
+        normalized = normalize_1to1(f.text).replace("_", " ")  # ".../ana_soto": "_" is a word character
+        if any(p.search(normalized) for p in needles):
+            f.optional = False
+            if f.status == "suggested":
+                f.status = "proposed"
+                f.history = [HistoryEntry(at=f.history[0].at if f.history else now_iso(), action="proposed")]
+            changed += 1
+    return changed
 
 
 def missing_requirements() -> list[str]:
@@ -72,9 +111,7 @@ def missing_requirements() -> list[str]:
 class RealEngine:
     name = "real"
 
-    def __init__(self, all_urls: bool = True, ocr_dpi: int | None = None):
-        # D12 (pending): every URL is redacted; with ``all_urls=False`` only personal URLs are.
-        self.all_urls = all_urls
+    def __init__(self, ocr_dpi: int | None = None):
         self.ocr_dpi = ocr_dpi
         # finding id -> "text" | "raster": where its text was read (internal, used by the leak check).
         self._sources: dict[str, str] = {}
@@ -86,7 +123,12 @@ class RealEngine:
     # analyze
     # ------------------------------------------------------------------
 
+    def profile(self, file: AnalyzedFile) -> dict:
+        """Cheap facts about the file for the time estimate (``estimate.profile``)."""
+        return estimate.profile(file.path, file.kind)
+
     def analyze(self, file: AnalyzedFile, name_list: list[str], *, progress=None, cancel=None) -> AnalyzedFile:
+        """Findings of ``file`` with the detection groups of ``file.options`` (defaults when empty)."""
         started = time.perf_counter()
 
         def report(fraction: float, step: str) -> None:
@@ -97,20 +139,27 @@ class RealEngine:
             if progress is not None:
                 progress(file.progress, step)
 
-        names = tuple(dict.fromkeys(n.strip() for n in name_list if n and n.strip()))
+        options = DetectionOptions.from_dict(file.options)
+        file.options = options.to_dict()
+        file.timings = {}
+        # With the list off its entries are not searched at all (context names may still be found).
+        names = tuple(dict.fromkeys(n.strip() for n in name_list if n and n.strip())) if options.names_list else ()
         file.status = "processing"
         file.error = file.error_message = None
+        clock = StageClock()
         try:
             report(0.02, "Revisando el archivo")
             kind = sniff(file.path)
             if kind in ("empty", "format"):
                 raise FileError(kind)
             file.kind = kind
-            if kind == "pdf":
-                pages, findings = self._analyze_pdf(file, names, report)
-            else:
-                pages, findings = self._analyze_image(file, names, report)
+            with clock.running():
+                if kind == "pdf":
+                    pages, findings = self._analyze_pdf(file, names, options, report)
+                else:
+                    pages, findings = self._analyze_image(file, names, options, report)
             report(0.98, "Preparando la revisión")
+            settle_optional(findings)
             file.pages = pages
             file.findings = findings
             file.status = "ready"
@@ -131,68 +180,84 @@ class RealEngine:
             file.error = "internal"
             file.error_message = ERROR_MESSAGES["internal"]
             file.step = "No se pudo procesar"
-        file.timings["analyze"] = round(time.perf_counter() - started, 3)
+        file.timings = {**clock.rounded(), "analyze": round(time.perf_counter() - started, 3)}
         return file
 
-    def _finding(self, file: AnalyzedFile, page: int, type_: str, polygon, text, detector, score, doubt, source):
+    def _finding(self, file: AnalyzedFile, options: DetectionOptions, page: int, zone, polygon, source: str):
+        # D12: a URL that is not personal is shown but starts unapplied, unless the user asked to
+        # redact the other URLs too.
+        status = "suggested" if zone.optional and not options.urls_other else "proposed"
         finding = Finding(
             id=uuid.uuid4().hex[:12],
             file_id=file.id,
             page=page,
-            type=type_,
+            type=zone.type,
             polygon=polygon,
-            text=text or None,
-            detector=detector,
-            score=None if score is None else round(float(score), 4),
-            doubtful=doubt is not None,
-            doubt_reason=doubt,
-            history=[HistoryEntry(at=now_iso(), action="proposed")],
+            text=zone.text or None,
+            detector=zone.detector,
+            score=None if zone.score is None else round(float(zone.score), 4),
+            doubtful=zone.doubt is not None,
+            doubt_reason=zone.doubt,
+            status=status,
+            optional=bool(zone.optional),
+            history=[HistoryEntry(at=now_iso(), action=status)],
         )
         self._sources[finding.id] = source
         return finding
 
-    def _analyze_pdf(self, file: AnalyzedFile, names: tuple[str, ...], report):
+    def _analyze_pdf(self, file: AnalyzedFile, names: tuple[str, ...], options: DetectionOptions, report):
         import pymupdf
 
         from anonymizer.engine import pdf
 
-        with PDF_LOCK:
+        with waiting_for(PDF_LOCK):
             doc = pdf.open_pdf(file.path)
         try:
-            with PDF_LOCK:
-                pdf.reveal_layers(doc)
-                count = doc.page_count
-            pages: list[PageInfo] = []
-            to_view: list[pymupdf.Matrix] = []
-            text_pages = []
-            for n in range(count):
-                report(0.05 + 0.15 * n / count, f"Leyendo el texto de la página {n + 1} de {count}")
-                with PDF_LOCK:
-                    try:
-                        page = doc[n]
-                        view = page.rect
-                        pages.append(
-                            PageInfo(index=n, width=round(view.width, 3), height=round(view.height, 3), unit="pt")
-                        )
-                        to_view.append(pymupdf.Matrix(page.rotation_matrix))
-                        text_pages.append(pdf.read_text_page(page, names, self.all_urls))
-                    except (RuntimeError, ValueError) as exc:
-                        raise FileError("corrupt", repr(exc)) from exc
-            report(0.2, "Buscando los mismos datos en todo el documento")
-            pdf.propagate(text_pages)
-            zones = [z for tp in text_pages for z in pdf.text_zones(tp, names)]
+            with stage("text"):
+                with waiting_for(PDF_LOCK):
+                    pdf.reveal_layers(doc)
+                    count = doc.page_count
+                pages: list[PageInfo] = []
+                to_view: list[pymupdf.Matrix] = []
+                text_pages = []
+                for n in range(count):
+                    report(0.05 + 0.15 * n / count, f"Leyendo el texto de la página {n + 1} de {count}")
+                    with waiting_for(PDF_LOCK):
+                        try:
+                            page = doc[n]
+                            view = page.rect
+                            tp = pdf.read_text_page(page, names, options)
+                            pages.append(
+                                PageInfo(
+                                    index=n,
+                                    width=round(view.width, 3),
+                                    height=round(view.height, 3),
+                                    unit="pt",
+                                    scanned=tp.scanned,
+                                )
+                            )
+                            to_view.append(pymupdf.Matrix(page.rotation_matrix))
+                            text_pages.append(tp)
+                        except (RuntimeError, ValueError) as exc:
+                            raise FileError("corrupt", repr(exc)) from exc
+                report(0.2, "Buscando los mismos datos en todo el documento")
+                pdf.propagate(text_pages)
+                pdf.data_in_urls(text_pages)
+                zones = [z for tp in text_pages for z in pdf.text_zones(tp, names)]
             cache: dict = {}
             share = 0.75 / count
             for n, tp in enumerate(text_pages):
+                if not options.raster:
+                    break
                 base = 0.2 + share * n
                 report(base, f"Revisando las imágenes de la página {n + 1} de {count}")
 
-                def step(stage: str, base=base, n=n) -> None:
-                    report(base + share * _STAGE_OFFSET[stage], f"{_STAGE_TEXT[stage]}: página {n + 1} de {count}")
+                def step(name: str, base=base, n=n) -> None:
+                    report(base + share * _STAGE_OFFSET[name], f"{_STAGE_TEXT[name]}: página {n + 1} de {count}")
 
                 try:
                     zones += pdf.raster_zones(
-                        doc, tp, names, self.all_urls, cache, step, **({"dpi": self.ocr_dpi} if self.ocr_dpi else {})
+                        doc, tp, names, options, cache, step, **({"dpi": self.ocr_dpi} if self.ocr_dpi else {})
                     )
                 except (RuntimeError, ValueError) as exc:
                     raise FileError("corrupt", repr(exc)) from exc
@@ -203,12 +268,10 @@ class RealEngine:
         for z in zones:
             view = (z.rect * to_view[z.page]).normalize()
             polygon = rect_polygon(view.x0, view.y0, view.x1, view.y1)
-            findings.append(
-                self._finding(file, z.page, z.type, polygon, z.text, z.detector, z.score, z.doubt, z.source)
-            )
+            findings.append(self._finding(file, options, z.page, z, polygon, z.source))
         return pages, findings
 
-    def _analyze_image(self, file: AnalyzedFile, names: tuple[str, ...], report):
+    def _analyze_image(self, file: AnalyzedFile, names: tuple[str, ...], options: DetectionOptions, report):
         import numpy as np
 
         from anonymizer.engine import image, raster
@@ -218,21 +281,32 @@ class RealEngine:
         pages: list[PageInfo] = []
         findings: list[Finding] = []
         share = 0.9 / count
-        for n, frame in enumerate(image.frames(file.path)):
-            base = 0.07 + share * n
-            where = f": imagen {n + 1} de {count}" if count > 1 else ""
-            report(base, "Leyendo la imagen" + where)
-            pages.append(PageInfo(index=n, width=float(frame.width), height=float(frame.height), unit="px"))
-            rgb = np.array(frame)
-            del frame
+        frames = image.frames(file.path)
+        try:
+            for n in range(count):
+                base = 0.07 + share * n
+                where = f": imagen {n + 1} de {count}" if count > 1 else ""
+                report(base, "Leyendo la imagen" + where)
+                # Decoding counts as "render" only when the pixels are searched (OCR, faces or QR).
+                with stage("render") if options.raster else nullcontext():
+                    frame = next(frames, None)
+                    rgb = np.array(frame) if frame is not None and options.raster else None
+                if frame is None:  # fewer frames than the header said
+                    break
+                pages.append(PageInfo(index=n, width=float(frame.width), height=float(frame.height), unit="px"))
+                del frame
+                if rgb is None:
+                    continue
 
-            def step(stage: str, base=base, where=where) -> None:
-                report(base + share * _STAGE_OFFSET[stage], _STAGE_TEXT[stage] + where)
+                def step(name: str, base=base, where=where) -> None:
+                    report(base + share * _STAGE_OFFSET[name], _STAGE_TEXT[name] + where)
 
-            zones = raster.detect_in_image(rgb, names, all_urls=self.all_urls, all_text=file.all_text, step=step)
-            for z in zones:
-                polygon = [[round(float(x), 3), round(float(y), 3)] for x, y in np.asarray(z.polygon)]
-                findings.append(self._finding(file, n, z.type, polygon, z.text, z.detector, z.score, z.doubt, "raster"))
+                zones = raster.detect_in_image(rgb, names, all_text=file.all_text, step=step, options=options)
+                for z in zones:
+                    polygon = [[round(float(x), 3), round(float(y), 3)] for x, y in np.asarray(z.polygon)]
+                    findings.append(self._finding(file, options, n, z, polygon, "raster"))
+        finally:
+            frames.close()
         return pages, findings
 
     # ------------------------------------------------------------------
@@ -284,7 +358,9 @@ class RealEngine:
         dest = Path(dest_dir)
         dest.mkdir(parents=True, exist_ok=True)
         active = [f for f in file.findings if f.active]
-        removed = [f for f in file.findings if not f.active]
+        # Left visible on purpose: removed by the reviewer, or a suggestion (D12) not applied.
+        kept = [f for f in file.findings if not f.active]
+        removed = sum(1 for f in file.findings if f.status == "removed")
         kind = file.kind or sniff(file.path)
         name = Path(file.name).name or "archivo"
         with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
@@ -293,7 +369,7 @@ class RealEngine:
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
                 self._export_pdf(file, active, staged)
-                leaks = verify.pdf_leaks(staged, active, removed, self._from_text_layer)
+                leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer)
             else:
                 from anonymizer.engine import image
 
@@ -325,7 +401,7 @@ class RealEngine:
             output_path=file.output_path,
             leaks=leaks,
             redactions_applied=len(active) if not leaks else 0,
-            removed_by_reviewer=len(removed),
+            removed_by_reviewer=removed,
             exported=not leaks,
             message=message,
         )

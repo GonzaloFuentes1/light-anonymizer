@@ -1,9 +1,10 @@
 """Development engine: follows the engine contract with simple, fast detection.
 
-It only reads the text layer of PDFs (RUT, e-mail and Chilean phone patterns, plus the name
-list) and does no OCR and no face detection: images are opened and shown, but they get no
+It only reads the text layer of PDFs (RUT, e-mail and Chilean phone patterns, URLs, plus the
+name list) and does no OCR and no face detection: images are opened and shown, but they get no
 findings. Export applies real redaction and removes metadata, so the whole flow of the app can
-be tried end to end with invented documents.
+be tried end to end with invented documents. It honours the detection groups that apply to it
+(the name list, personal and other URLs, D12) and records them like the real engine.
 
 Set ``ANONYMIZER_FAKE_DELAY`` (seconds per page) to slow analysis down and see progress bars.
 """
@@ -22,27 +23,34 @@ from pathlib import Path
 import pymupdf
 from PIL import Image, ImageDraw, ImageOps, ImageSequence, UnidentifiedImageError
 
+from anonymizer.engine import estimate
 from anonymizer.engine.common import (  # noqa: F401  (re-exported for older imports)
     IMAGE_FORMATS,
     IMAGE_SAVE_OPTIONS,
+    SCANNED_MAX_CHARS,
     Cancelled,
     FileError,
+    StageClock,
     bbox_of,
     now_iso,
     publish,
     sniff,
+    stage,
+    waiting_for,
 )
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import (
     ERROR_MESSAGES,
     TYPE_LABELS,
     AnalyzedFile,
+    DetectionOptions,
     ExportResult,
     Finding,
     HistoryEntry,
     Leak,
     PageInfo,
 )
+from anonymizer.engine.patterns import PERSONAL_URL, URL
 
 RUT = re.compile(r"(?<![\d.])\d{1,2}\.?\d{3}\.?\d{3}\s*-\s*[\dkK](?![\w])")
 EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b")
@@ -83,8 +91,20 @@ def fold(text: str) -> str:
     return "".join(out)
 
 
-def find_spans(text: str, name_list: list[str]) -> list[tuple[str, int, int, str]]:
-    """(type, start, end, detector) of every piece of data found in ``text``."""
+def is_personal_url(url: str, name_list: list[str]) -> bool:
+    """Simple D12 rule: a known personal site, or a RUT, e-mail, phone or listed name inside."""
+    if PERSONAL_URL.search(url) or RUT.search(url) or "@" in url or is_chilean_phone(url):
+        return True
+    folded = fold(url.replace("-", " ").replace("_", " "))
+    return any(fold(entry).strip() and fold(entry).strip() in folded for entry in name_list)
+
+
+def find_spans(text: str, name_list: list[str], personal_urls: bool = True) -> list[tuple[str, int, int, str]]:
+    """(type, start, end, detector) of every piece of data found in ``text``.
+
+    Every URL is a span (the ones that are not personal become optional findings), except the
+    personal ones when ``personal_urls`` is off.
+    """
     spans: list[tuple[str, int, int, str]] = []
     for m in RUT.finditer(text):
         spans.append(("rut", m.start(), m.end(), "regex"))
@@ -96,6 +116,9 @@ def find_spans(text: str, name_list: list[str]) -> list[tuple[str, int, int, str
         if any(a < tb and ta < b for ta, tb in taken) or not is_chilean_phone(m.group(0)):
             continue
         spans.append(("phone", a, b, "regex"))
+    for m in URL.finditer(text):
+        if personal_urls or not is_personal_url(m.group(0), name_list):
+            spans.append(("url", m.start(), m.end(), "regex"))
     folded = fold(text)
     for entry in name_list:
         words = fold(entry).split()
@@ -122,6 +145,9 @@ class FakeEngine:
     def __init__(self, delay: float | None = None):
         self.delay = float(os.environ.get("ANONYMIZER_FAKE_DELAY", "0")) if delay is None else delay
 
+    def profile(self, file: AnalyzedFile) -> dict:
+        return estimate.profile(file.path, file.kind)
+
     # ------------------------------------------------------------------
     # analyze
     # ------------------------------------------------------------------
@@ -137,18 +163,24 @@ class FakeEngine:
             if progress is not None:
                 progress(file.progress, step)
 
+        options = DetectionOptions.from_dict(file.options)
+        file.options = options.to_dict()
+        file.timings = {}
+        names = list(name_list) if options.names_list else []
         file.status = "processing"
         file.error = file.error_message = None
+        clock = StageClock()
         try:
             report(0.02, "Revisando el archivo")
             kind = sniff(file.path)
             if kind in ("empty", "format"):
                 raise FileError(kind)
             file.kind = kind
-            if kind == "pdf":
-                pages, findings = self._analyze_pdf(file, name_list, report)
-            else:
-                pages, findings = self._analyze_image(file, report)
+            with clock.running():
+                if kind == "pdf":
+                    pages, findings = self._analyze_pdf(file, names, options, report)
+                else:
+                    pages, findings = self._analyze_image(file, report)
             report(0.98, "Preparando la revisión")
             file.pages = pages
             file.findings = findings
@@ -163,10 +195,10 @@ class FakeEngine:
             file.error = exc.code
             file.error_message = ERROR_MESSAGES[exc.code]
             file.step = "No se pudo abrir"
-        file.timings["analyze"] = round(time.perf_counter() - started, 3)
+        file.timings = {**clock.rounded(), "analyze": round(time.perf_counter() - started, 3)}
         return file
 
-    def _analyze_pdf(self, file: AnalyzedFile, name_list: list[str], report):
+    def _analyze_pdf(self, file: AnalyzedFile, name_list: list[str], options: DetectionOptions, report):
         with PDF_LOCK:
             try:
                 doc = pymupdf.open(file.path, filetype="pdf")
@@ -186,38 +218,53 @@ class FakeEngine:
                 report(0.05 + 0.9 * n / count, f"Leyendo el documento: página {n + 1} de {count}")
                 if self.delay:
                     time.sleep(self.delay)
-                with PDF_LOCK:
+                with stage("text"), waiting_for(PDF_LOCK):
                     try:
                         page = doc[n]
                         view = page.rect
-                        pages.append(
-                            PageInfo(index=n, width=round(view.width, 2), height=round(view.height, 2), unit="pt")
-                        )
                         text, boxes = self._chars(page)
                         to_view = page.rotation_matrix
+                        scanned = len(text.strip()) < SCANNED_MAX_CHARS
+                        pages.append(
+                            PageInfo(
+                                index=n, width=round(view.width, 2), height=round(view.height, 2), unit="pt",
+                                scanned=scanned,
+                            )
+                        )  # fmt: skip
                     except Exception as exc:
                         raise FileError("corrupt", repr(exc)) from exc
                 report(0.05 + 0.9 * (n + 0.5) / count, f"Buscando datos personales: página {n + 1} de {count}")
-                for type_, a, b, detector in find_spans(text, name_list):
-                    found = text[a:b]
-                    doubtful = type_ == "rut" and not rut_is_valid(found)
-                    for rect in self._span_rects(boxes, a, b):
-                        view_rect = (rect * to_view).normalize() + (-1, -1, 1, 1)
-                        findings.append(
-                            Finding(
-                                id=uuid.uuid4().hex[:12],
-                                file_id=file.id,
-                                page=n,
-                                type=type_,
-                                polygon=polygon_of(view_rect),
-                                text=found,
-                                detector=detector,
-                                score=0.6 if doubtful else 1.0,
-                                doubtful=doubtful,
-                                doubt_reason=DOUBTFUL_RUT if doubtful else None,
-                                history=[HistoryEntry(at=now_iso(), action="proposed")],
-                            )
+                with stage("text"):
+                    spans = find_spans(text, name_list, personal_urls=options.urls_personal)
+                    for type_, a, b, detector in spans:
+                        found = text[a:b]
+                        doubtful = type_ == "rut" and not rut_is_valid(found)
+                        # D12: only a URL that is not personal and covers no other datum is optional.
+                        optional = (
+                            type_ == "url"
+                            and not is_personal_url(found, name_list)
+                            and not any(t != "url" and sa < b and a < sb for t, sa, sb, _ in spans)
                         )
+                        status = "suggested" if optional and not options.urls_other else "proposed"
+                        for rect in self._span_rects(boxes, a, b):
+                            view_rect = (rect * to_view).normalize() + (-1, -1, 1, 1)
+                            findings.append(
+                                Finding(
+                                    id=uuid.uuid4().hex[:12],
+                                    file_id=file.id,
+                                    page=n,
+                                    type=type_,
+                                    polygon=polygon_of(view_rect),
+                                    text=found,
+                                    detector=detector,
+                                    score=0.6 if doubtful else 1.0,
+                                    doubtful=doubtful,
+                                    doubt_reason=DOUBTFUL_RUT if doubtful else None,
+                                    status=status,
+                                    optional=optional,
+                                    history=[HistoryEntry(at=now_iso(), action=status)],
+                                )
+                            )
         finally:
             with PDF_LOCK:
                 doc.close()
@@ -306,7 +353,9 @@ class FakeEngine:
         dest = Path(dest_dir)
         dest.mkdir(parents=True, exist_ok=True)
         active = [f for f in file.findings if f.active]
-        removed = [f for f in file.findings if not f.active]
+        # Left visible on purpose: removed by the reviewer, or a suggestion (D12) not applied.
+        kept = [f for f in file.findings if not f.active]
+        removed = sum(1 for f in file.findings if f.status == "removed")
         kind = file.kind or sniff(file.path)
         name = Path(file.name).name or "archivo"
         with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
@@ -315,7 +364,7 @@ class FakeEngine:
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
                 self._export_pdf(file, active, staged)
-                leaks = self._leaks_pdf(staged, active, removed)
+                leaks = self._leaks_pdf(staged, active, kept)
             else:
                 staged, fmt = self._export_image(file, active, Path(tmp))
                 if Path(name).suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}:
@@ -340,7 +389,7 @@ class FakeEngine:
             output_path=file.output_path,
             leaks=leaks,
             redactions_applied=len(active) if not leaks else 0,
-            removed_by_reviewer=len(removed),
+            removed_by_reviewer=removed,
             exported=not leaks,
             message=message,
         )
@@ -402,7 +451,7 @@ class FakeEngine:
         return staged, fmt
 
     @staticmethod
-    def _leaks_pdf(path: Path, active: list[Finding], removed: list[Finding]) -> list[Leak]:
+    def _leaks_pdf(path: Path, active: list[Finding], kept_visible: list[Finding]) -> list[Leak]:
         leaks: list[Leak] = []
         with PDF_LOCK:
             with pymupdf.open(path) as doc:
@@ -410,7 +459,7 @@ class FakeEngine:
                 metadata = {k: v for k, v in (doc.metadata or {}).items() if v and k not in ("format", "encryption")}
                 if metadata or doc.get_xml_metadata():
                     leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene metadatos."))
-        kept = {(f.page, squash(f.text or "")) for f in removed}
+        kept = {(f.page, squash(f.text or "")) for f in kept_visible}
         seen: set[tuple[int, str]] = set()
         for f in active:
             needle = squash(f.text or "")

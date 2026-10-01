@@ -17,8 +17,9 @@ import numpy as np
 import pymupdf
 
 from anonymizer.engine import context, faces, raster
-from anonymizer.engine.common import FileError, Zone
+from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, stage, waiting_for
 from anonymizer.engine.locks import PDF_LOCK
+from anonymizer.engine.model import DetectionOptions
 from anonymizer.engine.patterns import normalize_1to1
 from anonymizer.engine.text import (
     DETECTOR_PRIORITY,
@@ -27,14 +28,12 @@ from anonymizer.engine.text import (
     dedup_spans,
     detect_spans,
     in_list,
+    is_personal_url,
     needle,
     rut_doubt,
     strong_needle,
 )
 
-OCR_DPI = 200
-# Pages with less text than this are treated as scanned: OCR and faces over the whole page.
-SCANNED_MAX_CHARS = 50
 _CATALOG_KEYS = ("Names", "OpenAction", "AA", "AcroForm", "OCProperties", "Outlines", "Metadata", "PageLabels",
                  "StructTreeRoot", "MarkInfo", "PieceInfo")  # fmt: skip
 _PAGE_KEYS = ("AA", "PieceInfo", "Thumb", "Metadata")
@@ -52,6 +51,7 @@ class PageZone:
     score: float | None
     doubt: str | None
     source: str  # "text" (text layer) or "raster" (pixels: OCR, faces, QR)
+    optional: bool = False  # D12: it only covers a URL that is not personal
 
 
 @dataclass
@@ -65,6 +65,9 @@ class TextPage:
     spans: list[Span] = field(default_factory=list)
     rects: list[tuple[str, float, float, float, float]] = field(default_factory=list)  # context zones without text
     list_ranges: list[tuple[int, int]] = field(default_factory=list)  # spans that came from the name list
+    # Where data other than URLs was found (also inside a URL, before ``dedup_spans``): a URL that
+    # touches one of these ranges is never optional (D12).
+    data_ranges: list[tuple[int, int]] = field(default_factory=list)
 
     @property
     def scanned(self) -> bool:
@@ -201,14 +204,22 @@ def clip_against_neighbors(r: pymupdf.Rect, a: int, b: int, lines: list[tuple[in
     return r if r.height >= original_height * 0.35 else pymupdf.Rect(r.x0, r.y0, r.x1, r.y0 + original_height * 0.35)
 
 
-def read_text_page(page: pymupdf.Page, name_list: tuple[str, ...], all_urls: bool = True) -> TextPage:
-    """Text layer of a page with its spans of personal data (call with ``PDF_LOCK`` held)."""
+def read_text_page(page: pymupdf.Page, name_list: tuple[str, ...], options: DetectionOptions | None = None) -> TextPage:
+    """Text layer of a page with its spans of personal data (call with ``PDF_LOCK`` held).
+
+    ``options``: the detection groups that run (default: all of them). Every URL is a span: the
+    ones that are not personal become optional zones (``text_zones``).
+    """
+    options = options or DetectionOptions()
     text, boxes, horizontal = chars(page)
     tp = TextPage(page.number, text, boxes, text_lines(text, boxes, horizontal))
-    spans = detect_spans(text, name_list, all_urls=all_urls)
-    ctx, tp.rects = context.context_rules([ln for _, _, ln in tp.lines], page.rect.width, page.rect.height)
+    spans = detect_spans(text, name_list, personal_urls=options.urls_personal, given_names=options.names_context)
+    ctx, tp.rects = context.context_rules(
+        [ln for _, _, ln in tp.lines], page.rect.width, page.rect.height, names=options.names_context
+    )
     spans += [(type_, tp.lines[i][0] + a, tp.lines[i][0] + b, "context") for type_, i, a, b in ctx]
     tp.list_ranges = [(a, b) for _, a, b, det in spans if det == "name_list"]
+    tp.data_ranges = [(a, b) for type_, a, b, _ in spans if type_ != "url"]
     tp.spans = dedup_spans(spans)
     return tp
 
@@ -249,8 +260,31 @@ def propagate(pages: list[TextPage]) -> int:
     return added
 
 
+def data_in_urls(pages: list[TextPage]) -> None:
+    """Marks the URLs that contain a datum found anywhere in the document (D12: never optional).
+
+    A name found by a rule in a signature can appear again inside a URL (".../ana-luisa-soto");
+    propagation does not add it there, because it overlaps the URL's span. Call after ``propagate``.
+    """
+    values = {tp.text[a:b].strip() for tp in pages for type_, a, b, _ in tp.spans if type_ != "url"}
+    needles = [p for p in (needle(v) for v in values if v) if p is not None]
+    for tp in pages:
+        urls = [(a, b) for type_, a, b, _ in tp.spans if type_ == "url"]
+        if not urls:
+            continue
+        normalized = normalize_1to1(tp.text).replace("_", " ")  # ".../ana_soto": "_" is a word character
+        for pattern in needles:
+            for m in pattern.finditer(normalized):
+                if any(a < m.end() and m.start() < b for a, b in urls):
+                    tp.data_ranges.append((m.start(), m.end()))
+
+
 def text_zones(tp: TextPage, name_list: tuple[str, ...]) -> list[PageZone]:
-    """Redaction zones of the spans of a page (text layer)."""
+    """Redaction zones of the spans of a page (text layer).
+
+    A URL that is not personal and touches no other datum is an optional zone (D12); so are its
+    copies found elsewhere by ``propagate``, since they are the same text.
+    """
     zones: list[PageZone] = []
     for type_, a, b, detector in tp.spans:
         value = tp.text[a:b]
@@ -260,9 +294,14 @@ def text_zones(tp: TextPage, name_list: tuple[str, ...]) -> list[PageZone]:
         elif type_ == "name" and detector == "context":
             listed = any(la < b and a < lb for la, lb in tp.list_ranges) or in_list(value, name_list)
             doubt = None if listed else DOUBT_CONTEXT_NAME
+        optional = (
+            type_ == "url"
+            and not is_personal_url(value, name_list)
+            and not any(da < b and a < db for da, db in tp.data_ranges)
+        )
         for r in span_rects(tp.boxes, a, b):
             r = clip_against_neighbors(r, a, b, tp.lines)
-            zones.append(PageZone(tp.index, r, type_, value, detector, 0.6 if doubt else 1.0, doubt, "text"))
+            zones.append(PageZone(tp.index, r, type_, value, detector, 0.6 if doubt else 1.0, doubt, "text", optional))
     for type_, x0, y0, x1, y1 in tp.rects:
         doubt = DOUBT_CONTEXT_NAME if type_ == "name" else None
         zones.append(PageZone(tp.index, pymupdf.Rect(x0, y0, x1, y1), type_, "", "context", None, doubt, "raster"))
@@ -311,7 +350,7 @@ def raster_zones(
     doc: pymupdf.Document,
     tp: TextPage,
     name_list: tuple[str, ...],
-    all_urls: bool = True,
+    options: DetectionOptions | None = None,
     cache: dict | None = None,
     step: Callable[[str], None] | None = None,
     dpi: int = OCR_DPI,
@@ -321,39 +360,47 @@ def raster_zones(
     Scanned pages (no text layer): OCR and faces over the whole page. Pages with text: OCR and
     faces only inside each embedded image, however small (a phone in a 2 % image is still a
     leak), and QR codes over the whole page. ``cache`` (shared by the pages of a document) reads
-    the same image region, rendered identically on several pages, only once.
+    the same image region, rendered identically on several pages, only once. ``options``: the
+    detection groups that run; with OCR, faces and QR off the page is not even rendered.
     """
-    with PDF_LOCK:
+    options = options or DetectionOptions()
+    with waiting_for(PDF_LOCK):
         page = doc[tp.index]
         info = page.get_image_info()
-        if not (tp.scanned or info):
+        if not (tp.scanned or info) or not options.raster:
             return []
-        zoom = dpi / 72
-        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-        rgb = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].copy()
-        inverse = pymupdf.Matrix(1 / zoom, 1 / zoom) * page.derotation_matrix
-        to_pix = page.rotation_matrix * pymupdf.Matrix(zoom, zoom)
-        page_rect = pymupdf.Rect(page.rect)
-        width, height = pix.width, pix.height
-        del pix
+        with stage("render"):
+            zoom = dpi / 72
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+            rgb = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].copy()
+            inverse = pymupdf.Matrix(1 / zoom, 1 / zoom) * page.derotation_matrix
+            to_pix = page.rotation_matrix * pymupdf.Matrix(zoom, zoom)
+            page_rect = pymupdf.Rect(page.rect)
+            width, height = pix.width, pix.height
+            del pix
     cache = {} if cache is None else cache
     if tp.scanned:
-        zones = raster.detect_in_image(rgb, name_list, all_urls=all_urls, face_threshold=0.6, step=step)
+        zones = raster.detect_in_image(rgb, name_list, face_threshold=0.6, step=step, options=options)
     else:
-        zones = raster.detect_in_image(rgb, name_list, ocr_enabled=False, all_urls=all_urls, face_regions=[], step=step)
+        zones = []
+        if options.qr:
+            zones = raster.detect_in_image(
+                rgb, name_list, ocr_enabled=False, face_regions=[], qr_enabled=True, step=step, options=options
+            )
         found_faces: list[Zone] = []
-        for x0, y0, x1, y1 in image_regions(info, page_rect, to_pix, width, height):
+        regions = image_regions(info, page_rect, to_pix, width, height) if options.ocr or options.faces else []
+        for x0, y0, x1, y1 in regions:
             crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
             key = (crop.shape, hashlib.blake2b(crop.tobytes(), digest_size=16).digest())
             if key not in cache:
                 cache[key] = raster.detect_in_image(
                     crop,
                     name_list,
-                    all_urls=all_urls,
                     face_threshold=0.55,
                     qr_enabled=False,
                     ocr_min_side=736,
                     step=step,
+                    options=options,
                 )
             for z in cache[key]:
                 moved = z._replace(polygon=z.polygon + [x0, y0])
@@ -363,7 +410,7 @@ def raster_zones(
     for z in raster.dedup(zones):
         (x0, y0), (x1, y1) = np.asarray(z.polygon).min(axis=0), np.asarray(z.polygon).max(axis=0)
         r = (pymupdf.Rect(float(x0), float(y0), float(x1), float(y1)) * inverse) + (-1, -1, 1, 1)
-        output.append(PageZone(tp.index, r, z.type, z.text, z.detector, z.score, z.doubt, "raster"))
+        output.append(PageZone(tp.index, r, z.type, z.text, z.detector, z.score, z.doubt, "raster", z.optional))
     return output
 
 

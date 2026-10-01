@@ -42,6 +42,8 @@ _LABELS_ONLY_WITH_COLON = r"de|para|cc|cco|remitente|destinatario|asistente|soli
 LABEL_ONLY = re.compile(rf"^\s*(?:{_COLUMN_LABELS})\s*:?\s*$")
 LABEL_VALUE = re.compile(rf"^\s*(?:{_COLUMN_LABELS}|{_LABELS_ONLY_WITH_COLON})\s*:\s*(\S.*)$")
 _IS_SIGNATURE = re.compile(r"^\s*firma")
+# Types found only through the "names by context" group (the others belong to the patterns).
+NAME_TYPES = ("name", "signature")
 
 
 def type_by_label(label: str) -> str:
@@ -60,12 +62,14 @@ def type_by_label(label: str) -> str:
 
 
 def context_rules(
-    lines: list[Line], page_width: float, page_height: float
+    lines: list[Line], page_width: float, page_height: float, names: bool = True
 ) -> tuple[list[tuple[str, int, int, int]], list[tuple[str, float, float, float, float]]]:
     """Returns (spans, rectangles).
 
     spans: (type, line index, start, end) inside the text of that line.
     rectangles: (type, x0, y0, x1, y1) for zones without legible text (signature column).
+    ``names=False`` leaves out names and signatures (``NAME_TYPES``): RUT, e-mail, phone and
+    address columns and labels are still found.
     """
     spans: list[tuple[str, int, int, int]] = []
     rects: list[tuple[str, float, float, float, float]] = []
@@ -112,6 +116,9 @@ def context_rules(
                 j = min(candidates, key=lambda k: lines[k].x0)
                 if not LABEL_ONLY.match(normalized[j]):
                     spans.append((type_, j, 0, len(lines[j].text)))
+    if not names:
+        spans = [s for s in spans if s[0] not in NAME_TYPES]
+        rects = [r for r in rects if r[0] not in NAME_TYPES]
     return spans, rects
 
 

@@ -398,3 +398,234 @@ def test_change_during_export_is_not_marked_exported(tmp_path):
         r = c.post("/api/export", json={"dest_dir": str(tmp_path), "audit_pdf": False, "audit_json": False})
         assert r.json()["results"][0]["exported"]
         assert wait_status(c, file_id, statuses=("ready", "exported"))["status"] == "ready"
+
+
+# ---------------------------------------------------------------------------
+# Detection groups, time estimate, D12 (other URLs) and "Acerca de"
+# ---------------------------------------------------------------------------
+
+OTHER_URL = "https://www.goreficticio.cl/noticias/2026/informe-anual"
+PERSONAL_URL = "https://www.facebook.com/ana.prueba.inventada"
+
+
+def make_url_pdf() -> bytes:
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), f"RUT: {VALID_RUT}", fontsize=11)
+    page.insert_text((72, 130), f"Noticia: {OTHER_URL}", fontsize=11)
+    page.insert_text((72, 160), f"Perfil: {PERSONAL_URL}", fontsize=11)
+    page.insert_text((72, 190), "Otra noticia: https://www.goreficticio.cl/noticias/2026/cuenta-publica", fontsize=11)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def processed(client, data: bytes, name: str = "enlaces.pdf") -> str:
+    file_id = upload(client, name, data)
+    client.post("/api/process", json={"file_ids": [file_id]})
+    assert wait_status(client, file_id)["status"] == "ready"
+    return file_id
+
+
+def test_options_get_and_put(client):
+    groups = client.get("/api/options").json()["groups"]
+    by_key = {g["key"]: g for g in groups}
+    assert list(by_key) == [
+        "patterns",
+        "urls_personal",
+        "urls_other",
+        "names_list",
+        "names_context",
+        "ocr",
+        "faces",
+        "qr",
+    ]
+    assert by_key["patterns"]["locked"] and by_key["patterns"]["enabled"]
+    assert by_key["patterns"]["locked_reason"] == "Siempre activo: es la base de la verificación de fugas."
+    assert by_key["urls_other"]["enabled"] is False and by_key["urls_other"]["detection"] is False
+    assert by_key["ocr"]["label"] == "Texto en imágenes y escaneos (OCR)"
+    assert "quedarán visibles" in by_key["ocr"]["warning"]
+    assert all(g["enabled"] == g["default"] for g in groups)
+
+    r = client.put("/api/options", json={"groups": {"faces": False, "qr": False}})
+    assert r.status_code == 200
+    state = {g["key"]: g["enabled"] for g in r.json()["groups"]}
+    assert state["faces"] is False and state["qr"] is False and state["ocr"] is True
+    assert {g["key"]: g["enabled"] for g in client.get("/api/options").json()["groups"]} == state
+
+    r = client.put("/api/options", json={"groups": {"patterns": False}})
+    assert r.status_code == 400 and r.json()["error"] == "locked"
+    assert "verificación de fugas" in r.json()["message"]
+    r = client.put("/api/options", json={"groups": {"inventada": True}})
+    assert r.status_code == 422 and r.json()["error"] == "unknown_group"
+    assert client.put("/api/options", json={"groups": {"faces": "no"}}).status_code == 422
+    assert client.put("/api/options", json={"groups": {"patterns": True, "faces": True}}).status_code == 200
+
+
+def test_options_live_only_in_the_session():
+    for _ in range(2):
+        app = create_app(FakeEngine(), TOKEN)
+        with LiveClient(app) as c:
+            c.headers["X-Session-Token"] = TOKEN
+            groups = c.get("/api/options").json()["groups"]
+            assert all(g["enabled"] == g["default"] for g in groups)
+            c.put("/api/options", json={"groups": {"ocr": False}})
+
+
+def test_process_records_the_options_and_timings(client):
+    client.put("/api/options", json={"groups": {"faces": False, "names_list": False}})
+    file_id = processed(client, make_pdf(), "ficticio.pdf")
+    summary = next(f for f in client.get("/api/state").json()["files"] if f["id"] == file_id)
+    assert summary["options"]["faces"] is False and summary["options"]["names_list"] is False
+    assert summary["options"]["patterns"] is True
+    assert summary["timings"]["analyze"] > 0 and "text" in summary["timings"]
+    client.put("/api/options", json={"groups": {"faces": True}})  # later changes do not rewrite the record
+    file = client.get(f"/api/files/{file_id}").json()
+    assert file["options"]["faces"] is False
+
+
+def test_estimate(client):
+    img = io.BytesIO()
+    Image.new("RGB", (1200, 900), "white").save(img, "PNG")
+    pdf_id = upload(client, "ficticio.pdf", make_pdf())
+    img_id = upload(client, "foto.png", img.getvalue(), "image/png")
+    body = client.get("/api/estimate").json()
+    assert set(body) == {"files", "groups", "render", "total", "calibrated"}
+    assert {f["id"] for f in body["files"]} == {pdf_id, img_id}
+    assert set(body["groups"]) == {"patterns", "urls_personal", "urls_other", "names_list", "names_context", "ocr",
+                                   "faces", "qr"}  # fmt: skip
+    assert body["groups"]["ocr"] > 1 and body["total"] > body["groups"]["ocr"] and body["calibrated"] is False
+    one = client.get(f"/api/estimate?ids={pdf_id},desconocido").json()
+    assert [f["id"] for f in one["files"]] == [pdf_id]
+    client.put("/api/options", json={"groups": {"ocr": False}})
+    lower = client.get("/api/estimate").json()
+    assert lower["total"] < body["total"] - body["groups"]["ocr"] + 0.2
+    assert lower["groups"]["ocr"] == body["groups"]["ocr"]  # the time saved is still reported
+    client.put("/api/options", json={"groups": {"ocr": False, "faces": False, "qr": False}})
+    assert client.get("/api/estimate").json()["total"] < 1
+    client.post("/api/process", json={})
+    wait_status(client, pdf_id)
+    wait_status(client, img_id)
+    assert client.get("/api/estimate").json()["files"] == []  # nothing left to process
+
+
+def test_estimate_learns_from_measured_times(tmp_path):
+    path = tmp_path / "estimates.json"
+    app = create_app(FakeEngine(), TOKEN, estimates_path=path)
+    with LiveClient(app) as c:
+        c.headers["X-Session-Token"] = TOKEN
+        file_id = processed(c, make_pdf(), "ficticio.pdf")
+        deadline = time.monotonic() + 10  # the session learns right after the file is marked ready
+        while not app.state.session.costs.calibrated and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert app.state.session.costs.calibrated
+        assert c.get(f"/api/estimate?ids={file_id}").json()["calibrated"] is True
+    saved = path.read_text(encoding="utf-8")
+    assert "ficticio" not in saved and VALID_RUT not in saved
+
+
+def test_other_urls_are_suggested_and_can_be_applied(client, tmp_path):
+    file_id = processed(client, make_url_pdf())
+    file = client.get(f"/api/files/{file_id}").json()
+    urls = {f["text"]: f for f in file["findings"] if f["type"] == "url"}
+    other, personal = urls[OTHER_URL], urls[PERSONAL_URL]
+    assert other["optional"] and other["status"] == "suggested"
+    assert not personal["optional"] and personal["status"] == "proposed"
+    summary = next(f for f in client.get("/api/state").json()["files"] if f["id"] == file_id)
+    assert summary["counts"]["suggested"] == 2 and summary["counts"]["removed"] == 0
+
+    # Apply one, skip it again (no reason needed), and the wrong actions are refused.
+    base = f"/api/files/{file_id}/findings/{other['id']}"
+    r = client.patch(base, json={"action": "apply"})
+    assert r.status_code == 200 and r.json()["status"] == "proposed" and r.json()["history"][-1]["action"] == "applied"
+    assert client.patch(base, json={"action": "apply"}).status_code == 409
+    assert client.patch(base, json={"action": "remove"}).json()["error"] == "optional"
+    r = client.patch(base, json={"action": "skip"})
+    assert r.json()["status"] == "suggested" and r.json()["history"][-1]["action"] == "skipped"
+    assert client.patch(base, json={"action": "restore"}).status_code == 409
+    r = client.patch(f"/api/files/{file_id}/findings/{personal['id']}", json={"action": "skip"})
+    assert r.status_code == 409 and r.json()["error"] == "not_optional"
+    r = client.patch(f"/api/files/{file_id}/findings/{personal['id']}", json={"action": "apply"})
+    assert r.status_code == 409 and r.json()["error"] == "not_optional"
+
+    # Export with the other URLs left visible: never a leak, not counted as removed by the reviewer.
+    client.post(f"/api/files/{file_id}/confirm")
+    r = client.post("/api/export", json={"dest_dir": str(tmp_path / "a"), "audit_pdf": True, "audit_json": True})
+    result = r.json()["results"][0]
+    assert result["exported"] and result["leaks"] == [] and result["removed_by_reviewer"] == 0
+    with pymupdf.open(result["output_path"]) as doc:
+        text = doc[0].get_text()
+    assert OTHER_URL in text and PERSONAL_URL not in text and VALID_RUT not in text
+    report = json.loads(Path(r.json()["audit"]["json_path"]).read_text(encoding="utf-8"))
+    record = report["files"][0]
+    assert record["other_urls"]["applied"] == 0 and record["other_urls"]["left_visible"] == 2
+    assert {i.get("visible_text") for i in record["other_urls"]["items"]} >= {OTHER_URL}
+    assert any(c["action"] == "skipped" for c in record["reviewer_changes"])
+    assert record["detections_off"] == [] and record["timings"]["analyze"] > 0
+
+    # "Censurar todos los otros enlaces" reopens the exported file.
+    r = client.post(f"/api/files/{file_id}/findings/apply-optional")
+    assert r.status_code == 200 and len(r.json()["applied"]) == 2
+    assert all(f["status"] == "proposed" and f["history"][-1]["action"] == "applied" for f in r.json()["applied"])
+    assert r.json()["file"]["status"] == "ready" and r.json()["file"]["counts"]["suggested"] == 0
+    assert client.post(f"/api/files/{file_id}/findings/apply-optional").json()["applied"] == []
+    client.post(f"/api/files/{file_id}/confirm")
+    r = client.post("/api/export", json={"dest_dir": str(tmp_path / "b"), "audit_pdf": False, "audit_json": True})
+    with pymupdf.open(r.json()["results"][0]["output_path"]) as doc:
+        assert "goreficticio" not in doc[0].get_text()
+    record = json.loads(Path(r.json()["audit"]["json_path"]).read_text(encoding="utf-8"))["files"][0]
+    assert record["other_urls"]["applied"] == 2
+    assert not any("visible_text" in i for i in record["other_urls"]["items"])  # censored text never in the report
+
+
+def test_other_urls_start_applied_with_the_option(client):
+    client.put("/api/options", json={"groups": {"urls_other": True}})
+    file_id = processed(client, make_url_pdf())
+    other = next(f for f in client.get(f"/api/files/{file_id}").json()["findings"] if f["text"] == OTHER_URL)
+    assert other["optional"] and other["status"] == "proposed"
+
+
+def test_editing_optional_urls_reopens_a_confirmed_file(client):
+    file_id = processed(client, make_url_pdf())
+    other = next(f for f in client.get(f"/api/files/{file_id}").json()["findings"] if f["text"] == OTHER_URL)
+    assert client.post(f"/api/files/{file_id}/confirm").json()["status"] == "confirmed"
+    client.patch(f"/api/files/{file_id}/findings/{other['id']}", json={"action": "apply"})
+    assert wait_status(client, file_id, statuses=("ready",))["step"] == "Listo para revisar"
+    assert client.post(f"/api/files/{file_id}/confirm").json()["status"] == "confirmed"
+    client.patch(f"/api/files/{file_id}/findings/{other['id']}", json={"action": "skip"})
+    assert wait_status(client, file_id, statuses=("ready",))["status"] == "ready"
+
+
+def test_audit_lists_the_groups_that_were_off(client, tmp_path):
+    client.put("/api/options", json={"groups": {"faces": False, "qr": False}})
+    file_id = processed(client, make_pdf(), "ficticio.pdf")
+    client.post(f"/api/files/{file_id}/confirm")
+    r = client.post("/api/export", json={"dest_dir": str(tmp_path), "audit_pdf": True, "audit_json": True})
+    record = json.loads(Path(r.json()["audit"]["json_path"]).read_text(encoding="utf-8"))["files"][0]
+    assert record["detections_off"] == ["faces", "qr"]
+    assert {d["key"]: d["enabled"] for d in record["detections"]}["faces"] is False
+    assert record["images_unread"] is False
+    with pymupdf.open(r.json()["audit"]["pdf_path"]) as doc:
+        text = " ".join(" ".join(page.get_text() for page in doc).split())
+    assert "Qué se buscó" in text and "No se buscaron: rostros y códigos QR." in text
+    assert "Tiempo de análisis" in text
+
+
+def test_about(client, monkeypatch):
+    from anonymizer import about
+
+    body = client.get("/api/about").json()
+    assert body["name"] == "Light Anonymizer" and body["version"]
+    assert body["copyright"] == "© 2026 Gonzalo Fuentes"
+    assert body["license"] == "GNU AGPL v3 o posterior"
+    assert body["source_url"] == "https://github.com/GonzaloFuentes1/light-anonymizer"
+    assert "GNU AFFERO GENERAL PUBLIC LICENSE" in body["license_text"] and "Version 3" in body["license_text"]
+    components = {c["name"]: c["license"] for c in body["components"]}
+    assert components["PyMuPDF (MuPDF)"] == "AGPL-3.0" and components["ONNX Runtime"] == "MIT"
+    assert components["Atkinson Hyperlegible"] == "OFL-1.1" and components["YuNet (opencv_zoo)"] == "MIT"
+    assert client.get("/api/about", headers={"X-Session-Token": "otro"}).status_code == 401
+    # Without the LICENSE file (an installation that lost it), everything else is still there.
+    monkeypatch.setattr(about, "license_candidates", lambda: [Path("no_existe") / "LICENSE"])
+    monkeypatch.setattr(about, "DISTRIBUTION", "paquete-que-no-existe")
+    body = client.get("/api/about").json()
+    assert body["license_text"] is None and body["source_url"] and body["version"]

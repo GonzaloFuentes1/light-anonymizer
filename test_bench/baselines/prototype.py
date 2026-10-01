@@ -6,8 +6,13 @@ the reviewer accepted all of them, and the findings are converted back to the be
 convention for the redaction report: PDF in unrotated page space (the engine works in view
 space, after ``/Rotate``), images in pixels after EXIF orientation (the same as the engine).
 
+It runs with every detection group on and the URLs that are not personal applied
+(``DetectionOptions.everything()``), so its numbers stay comparable with the runs made before
+the groups could be chosen and before D12 left those URLs unapplied by default.
+
 A file whose output does not pass the engine's own leak check is not exported (error
-``leak``; the messages go to ``details["leaks"]``).
+``leak``; the messages go to ``details["leaks"]``). The engine's time per stage goes to
+``details["engine_timings"]``.
 
 The helpers ``_process_pdf`` / ``_process_image`` keep the prototype's interface for
 ``test_bench.process_folder`` and the tests.
@@ -24,19 +29,21 @@ import pymupdf
 from anonymizer.engine.common import bbox_of, rect_polygon
 from anonymizer.engine.faces import merge as _merge_faces  # noqa: F401  (prototype interface)
 from anonymizer.engine.locks import PDF_LOCK
-from anonymizer.engine.model import AnalyzedFile
+from anonymizer.engine.model import AnalyzedFile, DetectionOptions
 from anonymizer.engine.raster import detect_in_image  # noqa: F401  (prototype interface)
 from anonymizer.engine.real import RealEngine
 from anonymizer.engine.text import find_spans  # noqa: F401  (prototype interface)
 from test_bench.schema import FileEntry, FileResult, Manifest, Redaction
 
-_ENGINES: dict[bool, RealEngine] = {}
+# Every group on and the other URLs applied: comparable with earlier runs of the bench.
+ALL_ON = DetectionOptions.everything()
+_ENGINES: list[RealEngine] = []
 
 
-def _engine(all_urls: bool) -> RealEngine:
-    if all_urls not in _ENGINES:
-        _ENGINES[all_urls] = RealEngine(all_urls=all_urls)
-    return _ENGINES[all_urls]
+def _engine() -> RealEngine:
+    if not _ENGINES:
+        _ENGINES.append(RealEngine())
+    return _ENGINES[0]
 
 
 class LeakError(RuntimeError):
@@ -76,10 +83,11 @@ def _redactions(file: AnalyzedFile) -> list[Redaction]:
     return output
 
 
-def run(source: Path, dest: Path, name_list: tuple[str, ...], all_urls: bool = True) -> AnalyzedFile:
-    """Analyzes ``source`` and exports it with every finding active to ``dest`` (replacing a previous run)."""
-    engine = _engine(all_urls)
-    file = AnalyzedFile(id=uuid.uuid4().hex[:12], name=dest.name, path=str(source))
+def run(source: Path, dest: Path, name_list: tuple[str, ...], options: DetectionOptions = ALL_ON) -> AnalyzedFile:
+    """Analyzes ``source`` and exports it with every proposed finding active to ``dest`` (replacing a
+    previous run). Suggested findings (D12, when ``options.urls_other`` is off) are not applied."""
+    engine = _engine()
+    file = AnalyzedFile(id=uuid.uuid4().hex[:12], name=dest.name, path=str(source), options=options.to_dict())
     engine.analyze(file, list(name_list))
     if file.status != "ready":
         return file
@@ -93,19 +101,23 @@ def run(source: Path, dest: Path, name_list: tuple[str, ...], all_urls: bool = T
     return file
 
 
-def _process(source: Path, dest: Path, name_list, all_urls: bool) -> tuple[list[Redaction], int]:
-    file = run(source, dest, tuple(name_list), all_urls)
+def _process(source: Path, dest: Path, name_list, options: DetectionOptions) -> tuple[list[Redaction], int]:
+    file = run(source, dest, tuple(name_list), options)
     if file.status != "ready":
         raise RuntimeError(f"{file.error}: {file.error_message}")
     return _redactions(file), len(file.pages)
 
 
-def _process_pdf(source: Path, dest: Path, name_list, all_urls: bool = True) -> tuple[list[Redaction], int]:
-    return _process(source, dest, name_list, all_urls)
+def _process_pdf(
+    source: Path, dest: Path, name_list, options: DetectionOptions = ALL_ON
+) -> tuple[list[Redaction], int]:
+    return _process(source, dest, name_list, options)
 
 
-def _process_image(source: Path, dest: Path, name_list, all_urls: bool = True) -> tuple[list[Redaction], int]:
-    return _process(source, dest, name_list, all_urls)
+def _process_image(
+    source: Path, dest: Path, name_list, options: DetectionOptions = ALL_ON
+) -> tuple[list[Redaction], int]:
+    return _process(source, dest, name_list, options)
 
 
 def process(file_entry: FileEntry, manifest: Manifest, folder: Path, details: dict[str, Any]) -> FileResult:

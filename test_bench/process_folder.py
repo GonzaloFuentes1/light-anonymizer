@@ -21,6 +21,7 @@ from pathlib import Path
 import pymupdf
 from PIL import Image, ImageDraw
 
+from anonymizer.engine.model import DetectionOptions
 from test_bench.baselines import prototype
 from test_bench.canvas import font
 from test_bench.visualize import visible_pages
@@ -64,16 +65,17 @@ def process_one(path: Path, output: Path) -> dict:
     start = time.perf_counter()
     row: dict = {"file": path.name, "name_list": name_list}
     try:
+        # The app's defaults: URLs that are not personal are left visible (D12).
         if path.suffix.lower() == ".pdf":
-            redactions, n = prototype._process_pdf(path, dest, name_list, all_urls=False)
+            redactions, n = prototype._process_pdf(path, dest, name_list, DetectionOptions())
         else:
-            redactions, n = prototype._process_image(path, dest, name_list, all_urls=False)
+            redactions, n = prototype._process_image(path, dest, name_list, DetectionOptions())
     except Exception as err:  # noqa: BLE001 - reported, and the others carry on
         row["error"] = f"{type(err).__name__}: {err}"
         return row
     row["seconds"] = round(time.perf_counter() - start, 1)
     row["pages"] = n
-    row["zones"] = dict(Counter(r.type for r in redactions))
+    row["zones"] = dict(Counter(r.type for r in redactions if r.status == "redact"))
     # Quick check of the output: patterns over the text layer and metadata.
     if dest.suffix.lower() == ".pdf":
         with pymupdf.open(dest) as doc:

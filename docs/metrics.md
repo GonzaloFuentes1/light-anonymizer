@@ -158,3 +158,8 @@ is validated with three baselines (`test_bench/baselines/`):
 | `notebook` | the CoP 33 notebook's logic as-is | reference: shows what it covers today and what it does not |
 
 These three runs are automated tests (`tests/test_bench/`).
+
+The `prototype` baseline runs the real engine with every detection group on and the URLs that
+are not personal applied (`DetectionOptions.everything()`): the app lets the user turn groups
+off and, by decision D12, leaves those URLs unapplied by default, but the bench always measures
+the full detection so its numbers stay comparable from one run to the next.

@@ -350,6 +350,68 @@ Phase 2 in detail, with a mockup first for your approval. In short:
   changed and the result of the leak check. The JSON follows the contract used by the test
   bench evaluator, so the app can be evaluated as-is.
 
+### 8.1 Choosing what to search for, and how long it takes
+
+Implemented (2026-10-01). Before processing, the user chooses which groups of detections run
+(screen 1, panel "Qué buscar"). One source of truth: `anonymizer/engine/model.py`
+(`DETECTION_GROUPS`, with the Spanish label, description and warning, and `DetectionOptions`).
+
+| Group (`key`) | What it covers | Default |
+|---|---|---|
+| `patterns` | RUT, email and phone | always on (locked) |
+| `urls_personal` | personal URLs (D12) | on |
+| `urls_other` | not a detection: whether the other URLs start applied (D12) | off |
+| `names_list` | names and addresses of the user's list | on |
+| `names_context` | names by context: given-name dictionary, signatures, tables, "Nombre:" (D13) | on |
+| `ocr` | text in scans, photos and images inside PDFs | on |
+| `faces` | faces | on |
+| `qr` | QR codes | on |
+
+- `patterns` cannot be turned off: the leak check runs those patterns again over every output
+  and D2 requires zero base-level leaks of them (the API answers 400).
+- A group that is off **skips its work**, it does not just hide results: with OCR off there is
+  no OCR pass, so scanned pages and images get no text-based finding at all (patterns, names
+  and URLs in pixels are not read); faces and QR off do not call their detectors; with OCR,
+  faces and QR off no page is rendered. `names_list` off: the entries are not searched (context
+  names are still found, all of them doubtful). `names_context` off: no given-name dictionary
+  and no name or signature context rules; the context rules for RUT, email, phone and address
+  stay with the patterns. With every group on and the other URLs applied, the findings are
+  exactly the ones of the engine before this change (checked on 16 files of the test set).
+- The choice lives only in the session: every start of the app goes back to the defaults
+  (recall over precision; nobody finds a group off by surprise). Each file records the groups
+  it was processed with; the review screen shows "En este archivo no se buscaron: …" when some
+  were off (and says plainly that nothing inside the images was searched when OCR was off), and
+  the audit report lists the groups that were on and off.
+- The engine measures the real time of each stage (`AnalyzedFile.timings`): `text` (text layer,
+  patterns, names, context), `render` (rendering a page or decoding an image for OCR, faces or
+  QR), `ocr`, `faces`, `qr` and the total `analyze`. Time spent waiting for a lock held by
+  another analysis (OCR, faces, PyMuPDF) is left out of the stage; two analyses still share the
+  processor, so a stage can be slower while another file runs, and that is not subtracted.
+- **Estimate.** `engine.profile(file)` reads cheap facts without rendering anything (pages,
+  scanned pages, the images of text pages and their size, frames and megapixels of an image), and
+  `engine/estimate.py` multiplies them by a few seconds-per-unit rates. The defaults were
+  measured on the development machine (table below). After every analysis the rates move
+  towards the measured times (exponential moving average, weight 0.3, each rate in proportion to
+  its share of its stage) and are saved in `%LOCALAPPDATA%/Anonimizador/estimates_<engine>.json`:
+  only those numbers, never file names or content. The UI shows the time per group and the total
+  for the groups that are on ("Tiempo estimado: ≈ 1 min 20 s · depende del computador"), and each
+  finished file shows its measured time per stage.
+
+Default rates (seconds per unit), fitted to the stage times of the 95 readable files of the test
+set on the development machine (one analysis at a time, every group on). With them the estimate
+of the whole set is 427 s against 486 s measured; per file, the median ratio estimate/measured is
+0.98 (10 % of the files below 0.52, 10 % above 2.25: OCR time depends on how much text there is).
+
+| Stage | Unit | Seconds |
+|---|---|---|
+| text | PDF page | 0.075 |
+| render | rendered PDF page (scanned or with images) / megapixel of an image | 0.14 / 0.02 |
+| ocr | scanned page | 10 |
+| ocr | distinct image on a text page / its megapixels at 200 dpi | 1.45 / 1.9 |
+| ocr | frame of an image file (photos about 2 s, screenshots about 10 s) | 3.5 |
+| faces | scanned page / image on a text page / megapixel of an image | 1.2 / 0.15 / 0.35 |
+| qr | rendered PDF page / megapixel of an image | 0.1 / 0.02 |
+
 ---
 
 ## 9. Performance and memory
@@ -386,9 +448,11 @@ Spanish.
 
 **Phase 3: packaging.** PyInstaller in folder mode (keeps any accepted LGPL or MPL libraries
 replaceable). The `.spec` excludes OpenCV's FFmpeg DLL, reportlab's GPL fonts and everything
-development-only, and a test fails if they show up. Also: `LICENSES.md` generated from the
-actual license files, a test that there is no network traffic, the final size, `README.md`
-with screenshots and `DEVELOPMENT.md`. macOS per D4.
+development-only, and a test fails if they show up. The bundle must include `LICENSE` at its
+root (next to the `anonymizer` package also works): the "Acerca de" dialog shows it
+(`anonymizer/about.py`, `GET /api/about`) and only points to the source when it is missing.
+Also: `LICENSES.md` generated from the actual license files, a test that there is no network
+traffic, the final size, `README.md` with screenshots and `DEVELOPMENT.md`. macOS per D4.
 
 ---
 
@@ -447,6 +511,10 @@ What is missing for it to be the phase 1 engine: redacting only the data item an
 OCR line (today it covers 13 % of the neutral text), its own leak check, the PDF engine per D1,
 times (median 12 s per image and up to 100 s per scanned page on this loaded machine), small
 faces in crowds, and everything in section 10.
+
+The bench runs the engine with every detection group on and the URLs that are not personal
+applied (`DetectionOptions.everything()`, section 8.1), so its numbers stay comparable with the
+runs made before the groups could be chosen and before D12 left those URLs unapplied by default.
 
 **Metric**: see `docs/metrics.md`.
 
@@ -549,6 +617,22 @@ adopt this as the rule, or do you prefer to redact every URL?
 > (the cases above) are redacted by default. *Other* URLs (institutional links, news) appear in
 > the review as their own group, not redacted by default, and the reviewer can redact them one
 > by one or all at once.
+>
+> **Implemented (2026-10-01).** A finding is *optional* only when every datum it covers is a URL
+> that is not personal (`text.is_personal_url`: `patterns.PERSONAL_URL`, or a RUT, email, phone
+> or listed name inside). A zone that also covers a RUT, email, phone or name is never optional,
+> nor is a URL that contains a name or address found elsewhere in the file, whether in the text
+> layer or read by OCR (`pdf.data_in_urls`, `real.settle_optional`); copies of an optional URL
+> found elsewhere stay optional. Optional findings start in the new status `suggested` (shown,
+> not applied): their own group in the review list ("Otros enlaces (sin censurar)"), a dashed
+> outline on the page, and "Ver como quedará" does not black them out. The reviewer censors them
+> one by one ("Censurar" / "No censurar", logged as `applied` / `skipped`, no reason needed) or
+> all at once (`POST /api/files/{id}/findings/apply-optional`); any change reopens a confirmed
+> file. On export a suggestion that was not applied stays visible like a censure removed by the
+> reviewer (never a leak, and not counted as removed), and the audit report lists the optional
+> URLs applied and those left visible. The switch "Censurar también los otros enlaces" (off by
+> default, section 8.1) makes them start applied, still optional. The test bench always runs
+> with it on.
 
 **D13. Names not on the list.** Your specification says names in free text are only detected
 if they are on the list. In the real reports that left signatories, given names next to

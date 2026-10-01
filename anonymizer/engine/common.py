@@ -1,4 +1,4 @@
-"""Helpers shared by the engines: file type by content, safe output names, errors, geometry."""
+"""Helpers shared by the engines: file type by content, safe output names, errors, geometry, timing."""
 
 from __future__ import annotations
 
@@ -6,7 +6,11 @@ import logging
 import os
 import shutil
 import sys
+import threading
+import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -19,6 +23,10 @@ IMAGE_SAVE_OPTIONS = {
     "TIFF": {"compression": "tiff_deflate"},
 }
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+# PDF pages are rendered at this resolution for OCR, faces and QR codes (``pdf.raster_zones``).
+OCR_DPI = 200
+# PDF pages with less text than this are treated as scanned: OCR and faces over the whole page.
+SCANNED_MAX_CHARS = 50
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +129,68 @@ class Zone(NamedTuple):
     detector: str
     score: float
     doubt: str | None = None
+    optional: bool = False  # D12: it only covers URLs that are not personal
+
+
+# ---------------------------------------------------------------------------
+# Time of each analysis stage
+# ---------------------------------------------------------------------------
+
+_current = threading.local()
+
+
+class StageClock:
+    """Working time of each stage of one analysis, in seconds.
+
+    Stages: "text" (text layer, patterns, names and context rules), "render" (a page rendered or
+    an image decoded for OCR, faces or QR), "ocr", "faces" and "qr". While a clock is running in a
+    thread (``running``), ``stage`` adds the time of a block to its stage. Time spent waiting for
+    a lock shared with another analysis (``waiting_for``: OCR, faces, PyMuPDF) is left out of the
+    stage that waited. Two analyses still share the processor, so a stage can take longer while
+    another file is analyzed at the same time; that is not subtracted.
+    """
+
+    def __init__(self) -> None:
+        self.seconds: dict[str, float] = {}
+        self.waited = 0.0
+
+    @contextmanager
+    def running(self) -> Iterator[StageClock]:
+        previous = getattr(_current, "clock", None)
+        _current.clock = self
+        try:
+            yield self
+        finally:
+            _current.clock = previous
+
+    def rounded(self) -> dict[str, float]:
+        return {name: round(value, 3) for name, value in self.seconds.items()}
+
+
+@contextmanager
+def stage(name: str) -> Iterator[None]:
+    """Counts the block in stage ``name`` of the clock running in this thread (if any). Not nested."""
+    clock = getattr(_current, "clock", None)
+    if clock is None:
+        yield
+        return
+    started, waited = time.perf_counter(), clock.waited
+    try:
+        yield
+    finally:
+        spent = time.perf_counter() - started - (clock.waited - waited)
+        clock.seconds[name] = clock.seconds.get(name, 0.0) + max(0.0, spent)
+
+
+@contextmanager
+def waiting_for(lock) -> Iterator[None]:
+    """Holds ``lock``; the time spent waiting for it is not counted in the current stage."""
+    started = time.perf_counter()
+    with lock:
+        clock = getattr(_current, "clock", None)
+        if clock is not None:
+            clock.waited += time.perf_counter() - started
+        yield
 
 
 def disable_power_throttling() -> bool:

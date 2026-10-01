@@ -14,20 +14,29 @@ Routes (JSON unless noted)::
     DELETE /api/files/{id}
     POST   /api/files/{id}/options         {all_text: bool}
     GET    /api/names                      PUT /api/names {entries: [str]}
+    GET    /api/options                    PUT /api/options {groups: {key: bool}}   detection groups
+    GET    /api/estimate?ids=a,b           seconds per group (default: the files not processed yet)
     POST   /api/process                    {file_ids?: [str]}
     POST   /api/cancel                     {file_id?: str}
     GET    /api/files/{id}                 full AnalyzedFile
     GET    /api/files/{id}/pages/{n}.png?zoom=1.5   image/png
     POST   /api/files/{id}/findings        {page, polygon, note?}
-    PATCH  /api/files/{id}/findings/{fid}  {action: remove|restore, reason?, note?}
+    PATCH  /api/files/{id}/findings/{fid}  {action: remove|restore|apply|skip, reason?, note?}
+    POST   /api/files/{id}/findings/apply-optional   apply every suggested finding (D12)
     POST   /api/files/{id}/confirm
     GET    /api/default-export-dir
     POST   /api/export                     {dest_dir, file_ids?, audit_pdf, audit_json}
+    GET    /api/about                      name, version, license, source and components
 
 Extensions beyond the base contract: ``POST /api/files/from-paths``; the extra summary fields
 ``size`` (bytes) and ``leaks`` (count); ``skipped`` in the from-paths answer; and, when the app
 is started with a launch key, ``GET /?k=<key>`` sets a session cookie that ``GET /`` requires
 before it hands out the token (so other local programs cannot read it).
+
+Detection groups (``model.DETECTION_GROUPS``) live only in the session: every start of the app
+goes back to the defaults, so a group turned off once is never off by surprise later. Each file
+records the groups it was processed with (``options``) and the time of each stage (``timings``);
+those times adjust the estimate (``engine.estimate.CostModel``), whose rates alone are saved.
 """
 
 from __future__ import annotations
@@ -55,11 +64,21 @@ from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from anonymizer.engine import audit
-from anonymizer.engine.model import ERROR_MESSAGES, AnalyzedFile, ExportResult, Finding, HistoryEntry
+from anonymizer import about
+from anonymizer.engine import audit, estimate
+from anonymizer.engine.model import (
+    DETECTION_GROUPS,
+    ERROR_MESSAGES,
+    GROUPS_BY_KEY,
+    AnalyzedFile,
+    DetectionOptions,
+    ExportResult,
+    Finding,
+    HistoryEntry,
+)
 
 log = logging.getLogger("anonymizer")
 
@@ -250,9 +269,13 @@ def cleanup_stale_sessions() -> int:
 
 
 class Session:
-    """All the state of one run of the app: files, name list, background analyses."""
+    """All the state of one run of the app: files, name list, detection groups, background analyses.
 
-    def __init__(self, engine, max_workers: int = 2):
+    ``estimates_path``: where the rates of the time estimate are kept between sessions (None:
+    only in memory).
+    """
+
+    def __init__(self, engine, max_workers: int = 2, estimates_path: Path | None = None):
         self.engine = engine
         self.dir = Path(tempfile.mkdtemp(prefix=SESSION_PREFIX))
         (self.dir / "pid").write_text(str(os.getpid()))
@@ -260,6 +283,9 @@ class Session:
         self.sizes: dict[str, int] = {}
         self.sources: dict[str, str] = {}
         self.names: list[str] = []
+        self.options = DetectionOptions()  # session only: every start of the app uses the defaults
+        self.profiles: dict[str, dict] = {}  # file id -> cheap facts for the estimate
+        self.costs = estimate.CostModel.load(estimates_path)
         self.lock = threading.RLock()
         self.cancels: dict[str, threading.Event] = {}
         self.pending: set[str] = set()
@@ -301,6 +327,7 @@ class Session:
             del self.files[file_id]
             self.sizes.pop(file_id, None)
             self.sources.pop(file_id, None)
+            self.profiles.pop(file_id, None)
         try:
             Path(file.path).unlink(missing_ok=True)
         except OSError:  # still open by a running analysis: removed with the session folder
@@ -323,12 +350,60 @@ class Session:
             "counts": {
                 "total": len(active),
                 "doubtful": sum(1 for f in active if f.doubtful),
-                "removed": len(findings) - len(active),
+                "removed": sum(1 for f in findings if f.status == "removed"),
                 "added": sum(1 for f in active if f.status == "added"),
+                "suggested": sum(1 for f in findings if f.status == "suggested"),
             },
             "pages": pages,
             "size": self.sizes.get(file.id, 0),
             "leaks": len(file.leaks),
+            "options": dict(file.options) or None,
+            "timings": dict(file.timings),
+        }
+
+    # -- time estimate ---------------------------------------------------
+
+    def profile(self, file: AnalyzedFile) -> dict:
+        """Cheap facts about a file (cached: the working copy never changes)."""
+        with self.lock:
+            cached = self.profiles.get(file.id)
+        if cached is not None:
+            return cached
+        try:
+            profile = getattr(self.engine, "profile", None)
+            facts = profile(file) if profile else estimate.profile(file.path, file.kind)
+        except Exception:  # noqa: BLE001 - an estimate must never break the app
+            log.warning("profile of %s failed", file.id, exc_info=True)
+            facts = estimate.empty_profile(file.kind)
+        with self.lock:
+            if file.id in self.files:
+                self.profiles[file.id] = facts
+        return facts
+
+    def estimate(self, files: list[AnalyzedFile]) -> dict:
+        """Estimated seconds per detection group, per file and in total with the current options."""
+        options = self.options
+        stages = dict.fromkeys(estimate.STAGES, 0.0)
+        rows = []
+        for file in files:
+            own = self.costs.stages(self.profile(file))
+            for name, value in own.items():
+                stages[name] += value
+            rows.append(
+                {
+                    "id": file.id,
+                    "groups": _rounded(estimate.by_group(own)),
+                    "render": round(own["render"], 2),
+                    "total": round(estimate.total(own, options), 1),
+                }
+            )
+        return {
+            "files": rows,
+            "groups": _rounded(estimate.by_group(stages)),
+            # Rendering pages and decoding images: shared by OCR, faces and QR, counted when one is on.
+            "render": round(stages["render"], 2),
+            "total": round(estimate.total(stages, options), 1),
+            "calibrated": self.costs.calibrated,
         }
 
     # -- analysis --------------------------------------------------------
@@ -346,6 +421,7 @@ class Session:
                 file.status, file.progress, file.step = "queued", 0.0, "En espera"
                 file.error = file.error_message = None
                 file.findings, file.pages, file.leaks, file.output_path = [], [], [], None
+                file.options, file.timings = self.options.to_dict(), {}
                 event = threading.Event()
                 self.cancels[file.id] = event
                 self.pending.add(file.id)
@@ -371,6 +447,8 @@ class Session:
                     if self.files.get(file.id) is file:
                         self.files[file.id] = result
             log.info("analysis of %s finished: %s %s", file.id, result.status, result.error or "")
+            if result.status == "ready":
+                self.learn(result)
         except Exception:
             log.exception("analysis of %s failed", file.id)
             file.status, file.error, file.error_message = "error", "internal", ERROR_MESSAGES["internal"]
@@ -378,6 +456,13 @@ class Session:
         finally:
             with self.lock:
                 self.pending.discard(file.id)
+
+    def learn(self, file: AnalyzedFile) -> None:
+        """Adjusts the time estimate with the stages measured in this analysis (only numbers are kept)."""
+        try:
+            self.costs.update(self.profile(file), file.timings)
+        except Exception:  # noqa: BLE001 - the estimate is a convenience: never fail an analysis for it
+            log.warning("could not update the time estimate", exc_info=True)
 
     def cancel(self, file_id: str | None) -> None:
         with self.lock:
@@ -408,6 +493,10 @@ class Session:
 
 class OptionsBody(BaseModel):
     all_text: bool
+
+
+class DetectionBody(BaseModel):
+    groups: dict[str, StrictBool] = Field(default_factory=dict, max_length=50)
 
 
 class NamesBody(BaseModel):
@@ -445,6 +534,31 @@ class PathsBody(BaseModel):
     paths: list[str] = Field(max_length=MAX_FILES_FROM_PATHS)
 
 
+def _rounded(values: dict[str, float]) -> dict[str, float]:
+    return {key: round(value, 2) for key, value in values.items()}
+
+
+def detection_groups(options: DetectionOptions) -> dict:
+    """The detection groups as the UI shows them (Spanish texts), with their current state."""
+    return {
+        "groups": [
+            {
+                "key": g.key,
+                "label": g.label,
+                "description": g.description,
+                "warning": g.warning,
+                "short": g.short,
+                "default": g.default,
+                "locked": g.locked,
+                "locked_reason": g.locked_reason,
+                "detection": g.detection,
+                "enabled": getattr(options, g.key),
+            }
+            for g in DETECTION_GROUPS
+        ]
+    }
+
+
 def clean_entries(entries: list[str]) -> list[str]:
     out, seen = [], set()
     for entry in entries:
@@ -474,11 +588,13 @@ def create_app(
     launch_key: str | None = None,
     ui_dir: Path | None = None,
     allowed_hosts: frozenset[str] = ALLOWED_HOSTS,
+    estimates_path: Path | None = None,
 ) -> FastAPI:
     """Build the API. ``engine`` defaults to :func:`anonymizer.engine.get_engine`.
 
     With ``launch_key``, ``GET /`` only reveals the token to a client that first opened
     ``/?k=<launch_key>`` (the desktop window or the URL printed by ``--browser``).
+    ``estimates_path``: file for the rates of the time estimate (None: kept only in memory).
     """
     if engine is None:
         from anonymizer.engine import get_engine
@@ -486,7 +602,7 @@ def create_app(
         engine = get_engine()
     token = token or secrets.token_urlsafe(32)
     ui = Path(ui_dir) if ui_dir else UI_DIR
-    session = Session(engine)
+    session = Session(engine, estimates_path=estimates_path)
     cookie_secret = secrets.token_urlsafe(32)
 
     @asynccontextmanager
@@ -500,18 +616,26 @@ def create_app(
 
     # -- middleware and errors -------------------------------------------
 
+    async def refuse(request: Request, status: int, code: str, message: str) -> JSONResponse:
+        # A small body is read before answering: closing with it unread makes Windows reset the
+        # connection, and the client then sees a network error instead of the refusal.
+        size = request.headers.get("content-length", "")
+        if request.method not in ("GET", "HEAD") and size.isdigit() and int(size) <= 65536:
+            await request.body()
+        return error_response(status, code, message)
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         if _host_of(request.headers.get("host", "")) not in allowed_hosts:
-            return error_response(400, "host", "Solicitud no permitida.")
+            return await refuse(request, 400, "host", "Solicitud no permitida.")
         origin = request.headers.get("origin")
         if origin and origin != "null" and _host_of(re.sub(r"^[a-z]+://", "", origin)) not in allowed_hosts:
-            return error_response(403, "origin", "Solicitud no permitida.")
+            return await refuse(request, 403, "origin", "Solicitud no permitida.")
         if request.url.path.startswith("/api"):
             sent = request.headers.get("x-session-token", "")
             if not hmac.compare_digest(sent.encode(), token.encode()):
-                return error_response(
-                    401, "unauthorized", "La sesión no es válida. Cierra y vuelve a abrir la aplicación."
+                return await refuse(
+                    request, 401, "unauthorized", "La sesión no es válida. Cierra y vuelve a abrir la aplicación."
                 )
         response = await call_next(request)
         for key, value in SECURITY_HEADERS.items():
@@ -651,6 +775,37 @@ def create_app(
         session.names = clean_entries(body.entries)
         return {"entries": list(session.names)}
 
+    @app.get("/api/options")
+    def get_detection_options():
+        with session.lock:
+            return detection_groups(session.options)
+
+    @app.put("/api/options")
+    def put_detection_options(body: DetectionBody):
+        for key, value in body.groups.items():
+            group = GROUPS_BY_KEY.get(key)
+            if group is None:
+                raise ApiError(422, "unknown_group", "Esa detección no existe.")
+            if group.locked and not value:
+                raise ApiError(400, "locked", f"«{group.label}» no se puede apagar. {group.locked_reason}")
+        with session.lock:
+            session.options = session.options.replace(**body.groups)
+            log.info("detection groups: %s", session.options.to_dict())
+            return detection_groups(session.options)
+
+    @app.get("/api/estimate")
+    def get_estimate(ids: str | None = None):
+        with session.lock:
+            if ids is None:
+                targets = [f for f in session.files.values() if f.status in ("queued", "cancelled")]
+            else:  # unknown ids are skipped: the UI may still list a file that was just removed
+                targets = [session.files[i] for i in dict.fromkeys(ids.split(",")) if i in session.files]
+        return session.estimate(targets)
+
+    @app.get("/api/about")
+    def get_about():
+        return about.info()
+
     @app.post("/api/process")
     def process(body: ProcessBody | None = None):
         return {"started": session.process(body.file_ids if body else None)}
@@ -739,20 +894,51 @@ def create_app(
             reason = (body.reason or "").strip() or None
             note = (body.note or "").strip() or None
             if body.action == "remove":
+                if finding.optional:  # D12: an optional URL is applied or skipped, never "removed"
+                    raise ApiError(409, "optional", "Para dejar visible este enlace, usa «No censurar».")
                 if not finding.active:
                     raise ApiError(409, "already_removed", "Esta censura ya estaba quitada.")
                 finding.status = "removed"
                 finding.history.append(HistoryEntry(at=now_iso(), action="removed", reason=reason, note=note))
             elif body.action == "restore":
-                if finding.active:
+                if finding.status != "removed":
                     raise ApiError(409, "not_removed", "Esta censura no estaba quitada.")
                 added = finding.detector == "reviewer" or (finding.history and finding.history[0].action == "added")
                 finding.status = "added" if added else "proposed"
                 finding.history.append(HistoryEntry(at=now_iso(), action="restored", reason=reason, note=note))
+            elif body.action == "apply":
+                if not finding.optional:
+                    raise ApiError(409, "not_optional", "Esta censura no es un enlace opcional.")
+                if finding.status != "suggested":
+                    raise ApiError(409, "not_suggested", "Este enlace ya está censurado.")
+                finding.status = "proposed"
+                finding.history.append(HistoryEntry(at=now_iso(), action="applied", reason=reason, note=note))
+            elif body.action == "skip":
+                if not finding.optional:
+                    raise ApiError(409, "not_optional", "Esta censura no es un enlace opcional: se quita con «Quitar».")
+                if finding.status != "proposed":
+                    raise ApiError(409, "not_applied", "Este enlace ya estaba sin censurar.")
+                finding.status = "suggested"
+                finding.history.append(HistoryEntry(at=now_iso(), action="skipped", reason=reason, note=note))
             else:
                 raise ApiError(422, "invalid", "Esa acción no existe.")
             reopen(file)
             return asdict(finding)
+
+    @app.post("/api/files/{file_id}/findings/apply-optional")
+    def apply_optional(file_id: str):
+        """Applies every suggested finding of the file (D12: "Censurar todos los otros enlaces")."""
+        file = session.get(file_id)
+        with session.lock:
+            editable(file)
+            at = now_iso()
+            applied = [f for f in file.findings if f.status == "suggested"]
+            for f in applied:
+                f.status = "proposed"
+                f.history.append(HistoryEntry(at=at, action="applied"))
+            if applied:
+                reopen(file)
+            return {"applied": [asdict(f) for f in applied], "file": session.summary(file)}
 
     @app.post("/api/files/{file_id}/confirm")
     def confirm(file_id: str):
@@ -807,7 +993,7 @@ def create_app(
                     output_path=None,
                     leaks=[],
                     redactions_applied=0,
-                    removed_by_reviewer=sum(1 for f in file.findings if not f.active),
+                    removed_by_reviewer=sum(1 for f in file.findings if f.status == "removed"),
                     exported=False,
                     message="No se pudo exportar este archivo. El detalle quedó en el registro técnico.",
                 )

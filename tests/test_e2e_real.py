@@ -23,6 +23,7 @@ from PIL import Image
 
 from anonymizer.api.server import create_app
 from anonymizer.engine import real
+from anonymizer.engine.model import DetectionOptions
 from tests.live_client import LiveClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +115,7 @@ def test_analysis(session):
         assert file["status"] == "ready", (rel, file["step"], file["error_message"])
         assert file["kind"] == ("pdf" if rel.endswith(".pdf") else "image")
         assert file["timings"]["analyze"] > 0
+        assert file["options"] == DetectionOptions().to_dict()  # the app's defaults
         # Pages in view space, as the test set describes them (after EXIF for the photo).
         expected = [(p["width"], p["height"]) for p in manifest[rel]["pages"]]
         assert [(p["width"], p["height"]) for p in file["pages"]] == pytest.approx(expected, abs=0.5)
@@ -121,8 +123,15 @@ def test_analysis(session):
             page = file["pages"][f["page"]]
             assert len(f["polygon"]) >= 3
             assert all(0 <= x <= page["width"] and 0 <= y <= page["height"] for x, y in f["polygon"]), (rel, f)
-            assert f["status"] == "proposed" and f["history"][0]["action"] == "proposed"
+            # D12: URLs that are not personal start suggested (shown, not applied).
+            assert f["status"] == ("suggested" if f["optional"] else "proposed")
+            assert f["history"][0]["action"] == f["status"]
             assert bool(f["doubt_reason"]) == f["doubtful"]
+    # Every stage that ran was measured; the scan and the photos went through OCR, faces and QR.
+    for rel in (SCANNED, ROTATED, ID_CARD):
+        timings = session["files"][rel]["timings"]
+        assert {"render", "ocr", "faces", "qr"} <= set(timings) and timings["ocr"] > 0
+    assert set(session["files"][TEXT_PDF]["timings"]) >= {"text", "analyze"}
 
     types = {rel: {f["type"] for f in session["files"][rel]["findings"]} for rel in FILES}
     assert {"rut", "email", "phone"} <= types[SCANNED]

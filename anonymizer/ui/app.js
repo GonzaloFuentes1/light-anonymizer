@@ -42,6 +42,8 @@
     qr: "código QR",
     reviewer: "agregada por ti",
   };
+  // Stages of an analysis (summary "timings"), shown when a file is done.
+  const STAGE_LABELS = { text: "texto", ocr: "texto en imágenes", faces: "rostros", qr: "QR" };
   const SUPPORTED_EXT = ["pdf", "jpg", "jpeg", "png", "webp", "tif", "tiff"];
   const REVIEWABLE = new Set(["ready", "confirmed", "exported"]);
   const MSG = {
@@ -104,6 +106,28 @@
   }
 
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  /** Spanish list: "a", "a y b", "a, b y c". */
+  const joinEs = (items) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} y ${items[items.length - 1]}`);
+
+  /** Whole seconds as "45 s", "1 min 20 s", "2 h 5 min". */
+  function fmtDuration(total) {
+    if (total < 60) return `${total} s`;
+    const hours = Math.floor(total / 3600), min = Math.floor((total % 3600) / 60), sec = total % 60;
+    if (hours) return min ? `${hours} h ${min} min` : `${hours} h`;
+    return sec ? `${min} min ${sec} s` : `${min} min`;
+  }
+  /** An estimate, rounded the way people say it: "menos de 1 s", "≈ 40 s", "≈ 1 min 20 s". */
+  function fmtEstimate(seconds) {
+    if (!(seconds >= 1)) return "menos de 1 s";
+    const step = seconds < 10 ? 1 : seconds < 60 ? 5 : seconds < 3600 ? 10 : 60;
+    return `≈ ${fmtDuration(Math.max(1, Math.round(seconds / step) * step))}`;
+  }
+  /** A measured time: "0,4 s" under a second, then "12 s", "1 min 20 s". */
+  function fmtMeasured(seconds) {
+    if (seconds < 0.05) return "menos de 0,1 s";
+    if (seconds < 1) return `${seconds.toLocaleString("es-CL", { maximumFractionDigits: 1 })} s`;
+    return fmtDuration(Math.round(seconds));
+  }
   const fmtNum = (n) => Number(n).toLocaleString("es-CL");
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const ext = (name) => (String(name).split(".").pop() || "").toLowerCase();
@@ -213,6 +237,9 @@
     files: [], // summaries from GET /api/state
     namesCount: 0,
     engine: "",
+    groups: [], // detection groups from GET /api/options (texts in Spanish, current state)
+    estimate: null, // GET /api/estimate for the files that would be processed now
+    estimateKey: null, // the ids that estimate is for
     loaded: false,
     requested: new Map(), // id -> time it was sent to /api/process by this window
     dirty: new Set(), // processed files whose options changed (need processing again)
@@ -234,6 +261,8 @@
     exp: { dest: "", results: new Map(), busy: false, last: null },
   };
   const fileById = (id) => S.files.find((f) => f.id === id) || null;
+  // Applied on export: not kept visible by the reviewer and not a suggestion left unapplied (D12).
+  const isApplied = (f) => f.status !== "removed" && f.status !== "suggested";
   const REQUEST_GRACE_MS = 4000; // the worker may take a moment to mark a file as queued
   const isActive = (f) => f.status === "processing" || (f.status === "queued" && S.requested.has(f.id));
   const justRequested = () => [...S.requested.values()].some((t) => Date.now() - t < REQUEST_GRACE_MS);
@@ -448,6 +477,10 @@
         ? `${plural(S.namesCount, "entrada", "entradas")}. Se censuran donde aparezcan, aunque estén sin tildes o en otro orden.`
         : "La lista está vacía. Agrega los nombres y direcciones que siempre deben censurarse, aunque estén sin tildes o en otro orden.";
 
+    renderDetects();
+    renderEstimate();
+    refreshEstimate();
+
     const btn = $("#b-process");
     const active = files.some(isActive);
     $("#process-hint").textContent = pending.length
@@ -479,6 +512,131 @@
       showError(err);
       renderHome();
     }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Screen 1: what to search for (detection groups) and the time estimate
+  // ---------------------------------------------------------------------------------------------
+  /** Detection groups that were off for a file analyzed with ``options`` (switches that only
+   *  decide whether something starts applied, like "the other URLs", are not detections). */
+  const groupsOff = (options) =>
+    options ? S.groups.filter((g) => g.detection && !g.locked && options[g.key] === false) : [];
+
+  async function loadGroups() {
+    try {
+      const res = await api("/api/options");
+      S.groups = (res && res.groups) || [];
+    } catch (err) {
+      showError(err);
+    }
+    renderDetects();
+    renderEstimate();
+    if (S.screen === 3 && S.rv.file) renderSkipped(); // the banner needs the names of the groups
+  }
+
+  function estimateFor(g) {
+    const est = S.estimate;
+    if (!est || !(est.files || []).length || !g.detection) return "";
+    const seconds = (est.groups || {})[g.key] || 0;
+    if (!g.enabled) return seconds >= 1 ? `ahorras ${fmtEstimate(seconds)}` : "";
+    return fmtEstimate(seconds);
+  }
+
+  function renderDetects() {
+    const panel = $("#detect-panel");
+    panel.hidden = !S.groups.length;
+    if (!S.groups.length) return;
+    const hasFiles = !!(S.estimate && (S.estimate.files || []).length);
+    $("#detect-hint").textContent = hasFiles ? "Tiempo estimado para los archivos sin procesar" : "";
+    const list = $("#detects");
+    keepFocus(list, () => {
+      list.replaceChildren(...S.groups.map((g) => {
+        const id = `det-${g.key}`;
+        const est = estimateFor(g);
+        const described = [`${id}-d`];
+        if (g.locked) described.push(`${id}-r`);
+        if (est) described.push(`${id}-t`);
+        const warn = !g.enabled && g.warning;
+        if (warn) described.push(`${id}-w`);
+        const cb = h("input", {
+          type: "checkbox", id, dataset: { fk: `det:${g.key}` },
+          disabled: g.locked || undefined,
+          "aria-describedby": described.join(" "),
+          onchange: (e) => setGroup(g, e.target.checked),
+        });
+        cb.checked = !!g.enabled;
+        const text = h("div", null,
+          h("label", { for: id, text: g.label }),
+          h("div", { class: "fmeta", id: `${id}-d`, text: g.description }),
+          g.locked ? h("div", { class: "fmeta", id: `${id}-r`, text: g.locked_reason }) : null);
+        const row = h("li", { class: `detect${g.locked ? " locked" : ""}${g.detection ? "" : " sub"}` },
+          cb, text, h("span", { class: "est", id: `${id}-t`, text: est }));
+        if (warn) row.append(h("p", { class: "warnline", id: `${id}-w` }, h("span", { "aria-hidden": "true", text: "⚠ " }), g.warning));
+        return row;
+      }));
+    });
+  }
+
+  function renderEstimate() {
+    const est = S.estimate;
+    const line = $("#process-estimate");
+    const show = !!(est && (est.files || []).length && S.files.some(isPending));
+    line.textContent = show ? `Tiempo estimado: ${fmtEstimate(est.total)} · depende del computador` : "";
+    line.title = show && !est.calibrated ? "Se ajusta con el tiempo real de cada archivo que proceses." : "";
+    line.hidden = !show;
+    // Groups the user turned off (on by default); "censurar también los otros enlaces" is not a detection.
+    const off = S.groups.filter((g) => g.detection && !g.locked && g.default && !g.enabled);
+    const warn = $("#process-off");
+    warn.textContent = off.length
+      ? `Apagaste ${plural(off.length, "detección", "detecciones")}: ${joinEs(off.map((g) => g.short))}.`
+      : "";
+    warn.hidden = !off.length;
+  }
+
+  /** Asks for the estimate when the files that would be processed change (or ``force``). */
+  let estimateSeq = 0;
+  async function refreshEstimate(force = false) {
+    const key = S.files.filter(isPending).map((f) => f.id).sort().join(",");
+    if (!force && key === S.estimateKey) return;
+    S.estimateKey = key;
+    const seq = ++estimateSeq;
+    if (!key) {
+      S.estimate = null;
+    } else {
+      try {
+        const res = await api(`/api/estimate?ids=${enc(key)}`);
+        if (seq !== estimateSeq) return;
+        S.estimate = res;
+      } catch {
+        if (seq !== estimateSeq) return;
+        S.estimate = null; // the estimate is only a guide: no error for it
+        S.estimateKey = null;
+      }
+    }
+    renderDetects();
+    renderEstimate();
+  }
+
+  async function setGroup(g, value) {
+    try {
+      const res = await api("/api/options", { method: "PUT", json: { groups: { [g.key]: value } } });
+      S.groups = (res && res.groups) || S.groups;
+      let msg;
+      if (g.key === "urls_other") {
+        msg = value
+          ? "Los otros enlaces se censurarán desde el inicio. Podrás dejar visibles los que quieras."
+          : "Los otros enlaces quedarán sin censurar. En la revisión podrás censurar los que quieras.";
+      } else {
+        msg = value ? `Se buscará: ${g.short}.` : `No se buscará: ${g.short}.`;
+      }
+      if (S.files.some((f) => REVIEWABLE.has(f.status))) msg += " Se aplica a los archivos que proceses desde ahora.";
+      toast(msg);
+    } catch (err) {
+      showError(err);
+    }
+    renderDetects();
+    renderEstimate();
+    refreshEstimate(true);
   }
 
   async function removeFile(f) {
@@ -760,12 +918,23 @@
       case "exported": {
         const parts = [`${plural(c.total || 0, "zona propuesta", "zonas propuestas")}`];
         if (c.doubtful) parts.push(`${plural(c.doubtful, "dudosa", "dudosas")} para revisar primero`);
+        if (c.suggested) parts.push(`${plural(c.suggested, "otro enlace", "otros enlaces")} sin censurar`);
         return parts.join(" · ");
       }
       case "error": return "No se pudo procesar";
       case "cancelled": return "Se canceló el procesamiento";
       default: return "";
     }
+  }
+
+  /** "Listo en 12 s · texto en imágenes 9 s · rostros 2 s · QR 0,1 s" from the summary timings. */
+  function timingText(t) {
+    if (!t || t.analyze == null) return "";
+    const parts = [`Listo en ${fmtMeasured(t.analyze)}`];
+    for (const [stage, label] of Object.entries(STAGE_LABELS)) {
+      if (t[stage] >= 0.05) parts.push(`${label} ${fmtMeasured(t[stage])}`);
+    }
+    return parts.join(" · ");
   }
 
   function jobRow(f) {
@@ -794,7 +963,10 @@
       "div",
       { class: "job", dataset: { id: f.id } },
       h("span", { class: "ficon", "aria-hidden": "true", text: fileBadge(f) }),
-      h("div", null, h("div", { class: "fname" }, nameNode(f.name)), h("div", { class: "fmeta", text: jobMeta(f) })),
+      h("div", null,
+        h("div", { class: "fname" }, nameNode(f.name)),
+        h("div", { class: "fmeta", text: jobMeta(f) }),
+        REVIEWABLE.has(f.status) && timingText(f.timings) ? h("div", { class: "fmeta", text: timingText(f.timings) }) : null),
       actions,
       h("div", {
         class: barClass, role: "progressbar", "aria-label": `Avance de ${f.name}`,
@@ -877,9 +1049,15 @@
     const ka = sortKey(a), kb = sortKey(b);
     return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
   };
+  /** The order of the list and of J/K: doubtful first, then the rest, then the other URLs (D12). */
   function orderedVisible() {
     const vis = rvFindings().filter((f) => !S.rv.hidden.has(f.type));
-    return [...vis.filter((f) => f.doubtful).sort(byPosition), ...vis.filter((f) => !f.doubtful).sort(byPosition)];
+    const main = vis.filter((f) => !f.optional);
+    return [
+      ...main.filter((f) => f.doubtful).sort(byPosition),
+      ...main.filter((f) => !f.doubtful).sort(byPosition),
+      ...vis.filter((f) => f.optional).sort(byPosition),
+    ];
   }
 
   function openReview(id) {
@@ -960,8 +1138,30 @@
     }
     renderThumbs();
     layoutPage();
+    renderSkipped();
     renderFindings();
     renderVerify();
+  }
+
+  /** Banner when the file was analyzed with detection groups off: what was not searched. */
+  function renderSkipped() {
+    const file = S.rv.file;
+    const box = $("#skipped");
+    const off = file ? groupsOff(file.options) : [];
+    box.hidden = !off.length;
+    if (!off.length) { box.replaceChildren(); return; }
+    const parts = [h("p", null,
+      h("b", { text: `En este archivo no se buscaron: ${joinEs(off.map((g) => g.short))}.` }),
+      " Revisa esas partes a mano.")];
+    if (file.options && file.options.ocr === false) {
+      const scanned = (file.pages || []).filter((p) => p.scanned).length;
+      if (file.kind === "image") {
+        parts.push(h("p", { text: "Es una imagen y su texto no se leyó: no se buscó ningún dato escrito dentro de ella (RUT, correos, teléfonos, nombres ni enlaces)." }));
+      } else if (scanned) {
+        parts.push(h("p", { text: `Tiene ${plural(scanned, "página escaneada", "páginas escaneadas")} y su texto no se leyó: no se buscó ningún dato dentro de ${scanned === 1 ? "ella" : "ellas"}.` }));
+      }
+    }
+    box.replaceChildren(...parts);
   }
 
   function renderReviewFiles() {
@@ -1034,7 +1234,7 @@
     const width = Math.max(80, box.clientWidth - 28 || 170);
     const dpr = window.devicePixelRatio || 1;
     const counts = new Map();
-    for (const f of rvFindings()) if (f.status !== "removed") counts.set(f.page, (counts.get(f.page) || 0) + 1);
+    for (const f of rvFindings()) if (isApplied(f)) counts.set(f.page, (counts.get(f.page) || 0) + 1);
     thumbObserver = "IntersectionObserver" in window
       ? new IntersectionObserver((entries) => {
         for (const e of entries) if (e.isIntersecting) { requestThumb(e.target); thumbObserver.unobserve(e.target); }
@@ -1186,7 +1386,8 @@
     const sel = S.rv.sel;
     const order = [...items].sort((a, b) => (b.f.id === sel) - (a.f.id === sel) || a.r.y - b.r.y || a.r.x - b.r.x);
     for (const it of order) {
-      const text = it.f.status === "removed" ? `${typeLabel(it.f.type)} · quitada` : typeLabel(it.f.type);
+      const suffix = { removed: " · quitada", suggested: " · sin censurar" }[it.f.status] || "";
+      const text = typeLabel(it.f.type) + suffix;
       const w = labelWidth(text);
       const above = { x: it.r.x - 2, y: it.r.y - LABEL_H - 2, w, h: LABEL_H };
       const below = { x: it.r.x - 2, y: it.r.y + it.r.h + 2, w, h: LABEL_H };
@@ -1219,11 +1420,12 @@
         if (where === "none") cls.push("nolabel");
         if (f.doubtful) cls.push("doubt");
         if (f.status === "removed") cls.push("removed");
+        if (f.status === "suggested") cls.push("suggested");
         if (f.id === rv.sel) cls.push("sel");
         return h("div", {
           class: cls.join(" "),
           dataset: { id: f.id, label: typeLabel(f.type) },
-          title: `${typeLabel(f.type)}: ${findingValue(f)}`,
+          title: `${typeLabel(f.type)}: ${findingValue(f)}${f.status === "suggested" ? " (sin censurar)" : ""}`,
           style: { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` },
           onclick: (e) => { e.stopPropagation(); if (!rv.draw) select(f.id); },
         });
@@ -1283,6 +1485,7 @@
   function findingItem(f) {
     const rv = S.rv;
     const removed = f.status === "removed";
+    const suggested = f.status === "suggested";
     const why = [typeLabel(f.type), `pág. ${f.page + 1}`, DETECTOR_LABELS[f.detector] || f.detector || ""].filter(Boolean).join(" · ");
     const whyEl = h("span", { class: "why" }, why);
     if (f.doubtful) whyEl.append(" · ", h("b", { text: f.doubt_reason || "Hallazgo dudoso" }));
@@ -1291,19 +1494,31 @@
       const r = removedReason(f);
       whyEl.append(` · quitada${r ? `: ${r.toLowerCase()}` : ""}`);
     }
-    const action = removed
-      ? h("button", {
+    if (f.optional) whyEl.append(suggested ? " · sin censurar" : " · se censura");
+    let action;
+    if (f.optional) {
+      // D12: an optional URL is censored or left visible with one click, without a reason.
+      action = h("button", {
+        type: "button", class: "btn ghost small", dataset: { fk: `fa:${f.id}` },
+        "aria-label": suggested ? `Censurar el enlace ${findingValue(f)}` : `No censurar el enlace ${findingValue(f)}`,
+        text: suggested ? "Censurar" : "No censurar",
+        onclick: () => toggleOptional(f.id),
+      });
+    } else if (removed) {
+      action = h("button", {
         type: "button", class: "btn ghost small", dataset: { fk: `fa:${f.id}` },
         "aria-label": `Restaurar la censura de ${findingValue(f)}`, text: "Restaurar",
         onclick: () => restoreFinding(f.id),
-      })
-      : h("button", {
+      });
+    } else {
+      action = h("button", {
         type: "button", class: "btn ghost small", dataset: { fk: `fa:${f.id}` },
         "aria-label": `Quitar la censura de ${findingValue(f)}`, text: "Quitar…",
         onclick: () => askRemove(f.id),
       });
+    }
     return h("li", {
-      class: `item ${typeClass(f.type)}${f.id === rv.sel ? " sel" : ""}${removed ? " removed" : ""}`,
+      class: `item ${typeClass(f.type)}${f.id === rv.sel ? " sel" : ""}${removed ? " removed" : ""}${suggested ? " suggested" : ""}`,
       dataset: { id: f.id },
     },
     h("button", {
@@ -1320,7 +1535,7 @@
   function renderFindings() {
     const rv = S.rv;
     const all = rvFindings();
-    const active = all.filter((f) => f.status !== "removed").length;
+    const active = all.filter(isApplied).length;
     $("#fcount").textContent = `${plural(active, "zona", "zonas")} en este archivo`;
 
     // Type chips double as the color legend: color dot + text label + count.
@@ -1362,8 +1577,11 @@
     }
 
     const vis = orderedVisible();
-    const doubt = vis.filter((f) => f.doubtful);
-    const rest = vis.filter((f) => !f.doubtful);
+    const doubt = vis.filter((f) => f.doubtful && !f.optional);
+    const rest = vis.filter((f) => !f.doubtful && !f.optional);
+    const other = vis.filter((f) => f.optional);
+    const anyOther = all.some((f) => f.optional);
+    const unapplied = all.filter((f) => f.status === "suggested").length;
     const list = $("#findlist");
     keepFocus(list, () => {
       const parts = [];
@@ -1380,6 +1598,24 @@
           ? h("ul", { class: "items", "aria-labelledby": "g-found" }, rest.map(findingItem))
           : h("p", { class: "nofind", text: "No hay hallazgos con el filtro actual." }));
       }
+      if (anyOther) {
+        // With "Censurar también los otros enlaces" on, this file's other URLs started censored.
+        const startedApplied = !!(rv.file && rv.file.options && rv.file.options.urls_other);
+        parts.push(h("h3", { class: "group", id: "g-other" },
+          h("span", { text: startedApplied ? "Otros enlaces" : "Otros enlaces (sin censurar)" }), h("span", { text: String(other.length) })));
+        parts.push(h("p", { class: "group-note", text: startedApplied
+          ? "Sitios institucionales o documentos públicos. Se censuran porque así lo elegiste antes de procesar: deja visibles los que quieras."
+          : "Sitios institucionales o documentos públicos. No se censuran a menos que tú lo decidas." }));
+        parts.push(h("div", { class: "group-acts" }, h("button", {
+          type: "button", class: "btn small", dataset: { fk: "apply-other" },
+          disabled: !unapplied || undefined,
+          text: "Censurar todos los otros enlaces",
+          onclick: applyAllOptional,
+        })));
+        parts.push(other.length
+          ? h("ul", { class: "items", "aria-labelledby": "g-other" }, other.map(findingItem))
+          : h("p", { class: "nofind", text: "No hay otros enlaces con el filtro actual." }));
+      }
       list.replaceChildren(...parts);
     });
   }
@@ -1390,8 +1626,9 @@
     const file = rv.file;
     if (!file) return;
     const all = rvFindings();
-    const active = all.filter((f) => f.status !== "removed").length;
+    const active = all.filter(isApplied).length;
     const removed = all.filter((f) => f.status === "removed").length;
+    const suggested = all.filter((f) => f.status === "suggested").length;
     const added = all.filter((f) => f.type === "manual" || f.detector === "reviewer").length;
     const seen = seenSet(file.id);
     const unseen = all.filter((f) => f.doubtful && !seen.has(f.id)).length;
@@ -1399,6 +1636,7 @@
     const parts = [`${plural(active, "zona", "zonas")} a censurar`];
     if (removed) parts.push(`${plural(removed, "quitada", "quitadas")} por ti`);
     if (added) parts.push(`${plural(added, "agregada", "agregadas")} por ti`);
+    if (suggested) parts.push(`${plural(suggested, "otro enlace", "otros enlaces")} sin censurar`);
     if (unseen) parts.push(`${plural(unseen, "hallazgo dudoso", "hallazgos dudosos")} sin abrir`);
     if (leaks) parts.push(`${plural(leaks, "fuga sin resolver", "fugas sin resolver")}`);
     else parts.push("la verificación de fugas se hace al exportar");
@@ -1456,6 +1694,12 @@
   function askRemove(id) {
     const f = findingById(id || S.rv.sel);
     if (!f) { toast("Primero selecciona un hallazgo."); return; }
+    if (f.optional) {
+      // D12: an optional URL is left visible with "No censurar" (no reason needed).
+      if (f.status === "suggested") toast("Este enlace no está censurado. Usa «Censurar» si quieres censurarlo.");
+      else toggleOptional(f.id);
+      return;
+    }
     if (f.status === "removed") { toast("Esta censura ya está quitada. Usa «Restaurar» si quieres volver a censurarla."); return; }
     pendingRemove = f.id;
     if (S.rv.sel !== f.id) select(f.id);
@@ -1500,6 +1744,49 @@
       showError(err);
     }
   }
+  // --- other URLs (D12): censor or leave visible ---
+  async function toggleOptional(id) {
+    const f = findingById(id);
+    if (!f || !f.optional) return;
+    const action = f.status === "suggested" ? "apply" : "skip";
+    try {
+      const updated = await api(`/api/files/${enc(S.rv.id)}/findings/${enc(id)}`, { method: "PATCH", json: { action } });
+      replaceFinding(updated);
+      toast(action === "apply"
+        ? "Este enlace se censurará."
+        : "Este enlace quedará visible. Queda registrado en el informe de auditoría.");
+      focusFinding(id);
+      refreshState();
+    } catch (err) {
+      showError(err);
+    }
+  }
+  async function applyAllOptional() {
+    try {
+      const res = await api(`/api/files/${enc(S.rv.id)}/findings/apply-optional`, { method: "POST" });
+      const applied = (res && res.applied) || [];
+      if (S.rv.file) {
+        const list = S.rv.file.findings;
+        for (const u of applied) {
+          const i = list.findIndex((f) => f.id === u.id);
+          if (i >= 0) list[i] = u;
+        }
+      }
+      renderZones();
+      renderFindings();
+      renderThumbs();
+      renderVerify();
+      toast(applied.length
+        ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${plural(applied.length, "enlace más", "enlaces más")}.`
+        : "No quedaban otros enlaces sin censurar.");
+      const first = applied[0] && $(`#findlist [data-fk="fa:${CSS.escape(applied[0].id)}"]`);
+      if (first) first.focus({ preventScroll: true });
+      refreshState();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   function replaceFinding(updated) {
     if (!updated || !S.rv.file) return;
     const list = S.rv.file.findings;
@@ -1633,7 +1920,7 @@
       let handled = true;
       if (k === "j") move(1);
       else if (k === "k") move(-1);
-      else if (k === "Delete" || k === "Backspace") {
+      else if (k === "Delete" || k === "Backspace") { // an optional URL toggles (see askRemove)
         const item = document.activeElement && document.activeElement.closest ? document.activeElement.closest("#findlist .item") : null;
         askRemove((item && item.dataset.id) || S.rv.sel);
       }
@@ -1819,6 +2106,62 @@
   }
 
   // ---------------------------------------------------------------------------------------------
+  // "Acerca de": name, version, license and source (the legal notices of the AGPL)
+  // ---------------------------------------------------------------------------------------------
+  let aboutLoaded = false;
+  async function openAbout() {
+    if (!aboutLoaded) {
+      let info;
+      try {
+        info = await api("/api/about");
+      } catch (err) {
+        showError(err);
+        return;
+      }
+      $("#dlg-about-t").textContent = info.name;
+      $("#about-version").textContent = `Versión ${info.version}`;
+      $("#about-copy").textContent = `${info.copyright}. Licencia: ${info.license}.`;
+      $("#about-url").value = info.source_url || "";
+      $("#about-comps").replaceChildren(...(info.components || []).map((c) => h("tr", null,
+        h("td", { text: c.name }), h("td", { class: "mono", text: c.license }), h("td", { text: c.use }))));
+      const text = info.license_text || "";
+      $("#about-license").textContent = text;
+      $("#b-license").hidden = !text;
+      const missing = $("#about-nolicense");
+      missing.hidden = !!text;
+      missing.textContent = text ? "" : "El texto completo de la licencia no viene en esta instalación: está en el código fuente.";
+      aboutLoaded = true;
+    }
+    $("#about-copied").textContent = "";
+    openDialog($("#dlg-about"));
+    // The title takes the focus: the dialog opens at its top and screen readers start there.
+    $("#dlg-about-t").focus();
+  }
+  function toggleLicense() {
+    const box = $("#about-license");
+    const show = box.hidden;
+    box.hidden = !show;
+    const btn = $("#b-license");
+    btn.setAttribute("aria-expanded", String(show));
+    btn.textContent = show ? "Ocultar licencia" : "Ver licencia completa";
+    if (show) box.focus();
+  }
+  async function copySourceUrl() {
+    const input = $("#about-url");
+    const done = $("#about-copied");
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("no clipboard");
+      await navigator.clipboard.writeText(input.value);
+      done.textContent = "Enlace copiado.";
+    } catch {
+      // Without clipboard access the link is left selected, ready for Ctrl+C.
+      input.focus();
+      input.select();
+      done.textContent = "El enlace quedó seleccionado: cópialo con Ctrl+C.";
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Wiring
   // ---------------------------------------------------------------------------------------------
   function init() {
@@ -1830,6 +2173,10 @@
     if (!TOKEN) setFatal(MSG.noToken);
 
     $$("[data-go]").forEach((b) => b.addEventListener("click", () => go(Number(b.dataset.go))));
+    $("#b-about").addEventListener("click", openAbout);
+    $("#dlg-about-close").addEventListener("click", () => $("#dlg-about").close());
+    $("#b-copy-url").addEventListener("click", copySourceUrl);
+    $("#b-license").addEventListener("click", toggleLicense);
 
     // Screen 1
     $("#b-choose").addEventListener("click", chooseFiles);
@@ -1887,6 +2234,7 @@
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (S.screen === 3 && S.rv.file) renderZones(); });
 
     go(1, { focus: false });
+    loadGroups();
     refreshState().then(() => {
       if (!S.files.length) return;
       if (S.files.some(isActive)) go(2, { focus: false });

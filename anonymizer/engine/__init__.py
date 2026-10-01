@@ -9,17 +9,24 @@ models are not installed.
 Contract
 --------
 ``analyze(file, name_list, *, progress=None, cancel=None) -> AnalyzedFile``
-    Detect personal data in ``file.path`` without modifying it. Fills ``kind``, ``pages``,
-    ``findings`` (view space), ``status`` ("ready" or "error"), ``error``/``error_message``.
+    Detect personal data in ``file.path`` without modifying it, with the detection groups of
+    ``file.options`` (``model.DetectionOptions``; defaults when empty). Fills ``kind``, ``pages``,
+    ``findings`` (view space), ``status`` ("ready" or "error"), ``error``/``error_message``,
+    ``options`` (the groups it used) and ``timings`` (seconds per stage and in total).
     ``progress(fraction, step_text_es)`` is called as work advances; ``cancel`` is a
-    ``threading.Event`` that stops the work early (status "cancelled").
+    ``threading.Event`` that stops the work early (status "cancelled"). URLs that are not
+    personal are ``optional`` findings that start "suggested" (D12).
+
+``profile(file) -> dict``
+    Cheap facts about the file for the time estimate (``estimate.profile``): fast, nothing is
+    rendered.
 
 ``render_page(file, page, zoom) -> bytes``
     PNG of one page in view space (orientation as the user sees it), scaled by ``zoom``
     (1.0 = 1 pixel per point for PDFs, 1 pixel per pixel for images).
 
 ``export(file, dest_dir) -> ExportResult``
-    Apply every active finding (status != "removed") as real redaction, remove metadata,
+    Apply every active finding (not "removed" nor "suggested") as real redaction, remove metadata,
     write a new file into ``dest_dir`` (never overwriting the original), then run the leak
     check on the output. A file with leaks is not exported.
 """
@@ -37,6 +44,8 @@ log = logging.getLogger(__name__)
 
 class Engine(Protocol):
     def analyze(self, file: AnalyzedFile, name_list: list[str], *, progress=None, cancel=None) -> AnalyzedFile: ...
+
+    def profile(self, file: AnalyzedFile) -> dict: ...
 
     def render_page(self, file: AnalyzedFile, page: int, zoom: float = 1.0) -> bytes: ...
 

@@ -1,8 +1,9 @@
 """Audit report of an export: JSON for systems and a readable PDF (Spanish) for people.
 
 The report never contains the censored data itself: only its type, position, detector and the
-reviewer's decisions. The text of a censure removed by the reviewer is included, because that
-text stays visible in the published document anyway.
+reviewer's decisions. The text of a censure removed by the reviewer, and of a URL left visible
+(D12), is included, because that text stays visible in the published document anyway. Each file
+also records which detection groups were searched and how long the analysis took.
 """
 
 from __future__ import annotations
@@ -18,7 +19,14 @@ import pymupdf
 
 from anonymizer import __version__
 from anonymizer.engine.locks import PDF_LOCK
-from anonymizer.engine.model import TYPE_LABELS, AnalyzedFile, ExportResult, Finding
+from anonymizer.engine.model import (
+    DETECTION_GROUPS,
+    TYPE_LABELS,
+    AnalyzedFile,
+    DetectionOptions,
+    ExportResult,
+    Finding,
+)
 
 TITLE = "Informe de auditoría de anonimización"
 CLOSING = (
@@ -36,6 +44,18 @@ DETECTOR_LABELS = {
     "qr": "códigos QR",
     "reviewer": "agregada por quien revisó",
 }
+# Stages of the analysis (``AnalyzedFile.timings``), in the order they are shown.
+STAGE_LABELS = {
+    "text": "texto",
+    "render": "preparar imágenes",
+    "ocr": "texto en imágenes",
+    "faces": "rostros",
+    "qr": "códigos QR",
+}
+UNREAD_IMAGES = (
+    "No se leyó el texto de las imágenes ni de las páginas escaneadas de este archivo (OCR apagado): "
+    "los datos que estén dentro de ellas no se buscaron."
+)
 
 
 def _unique(folder: Path, name: str) -> Path:
@@ -62,6 +82,38 @@ def _is_added(finding: Finding) -> bool:
     return finding.detector == "reviewer" or finding.type == "manual"
 
 
+def _options(file: AnalyzedFile) -> DetectionOptions:
+    return DetectionOptions.from_dict(file.options)
+
+
+def _unread_images(file: AnalyzedFile) -> bool:
+    """OCR was off and the file has pixels with possible text (an image or a scanned page)."""
+    return not _options(file).ocr and (file.kind == "image" or any(p.scanned for p in file.pages))
+
+
+def seconds_text(value: float) -> str:
+    """Spanish duration: "0,4 s", "12 s", "1 min 20 s"."""
+    if value < 0.1:
+        return "menos de 0,1 s"
+    if value < 10:
+        return f"{value:.1f}".replace(".", ",") + " s"
+    total = round(value)
+    if total < 60:
+        return f"{total} s"
+    minutes, rest = divmod(total, 60)
+    return f"{minutes} min {rest} s" if rest else f"{minutes} min"
+
+
+def _timing_text(file: AnalyzedFile) -> str | None:
+    if "analyze" not in file.timings:
+        return None
+    parts = [
+        f"{label} {seconds_text(file.timings[stage])}" for stage, label in STAGE_LABELS.items() if stage in file.timings
+    ]
+    detail = f" ({' · '.join(parts)})" if parts else ""
+    return f"Tiempo de análisis: {seconds_text(file.timings['analyze'])}{detail}."
+
+
 def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
     unit = file.pages[0].unit if file.pages else ("pt" if file.kind == "pdf" else "px")
     findings = []
@@ -80,6 +132,7 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
             "doubtful": f.doubtful,
             "doubt_reason": f.doubt_reason,
             "status": f.status,
+            "optional": f.optional,
             "applied": f.active,
             "history": [asdict(h) for h in f.history],
         }
@@ -87,7 +140,7 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
             record["visible_text"] = f.text
         findings.append(record)
         for h in f.history:
-            if h.action in ("removed", "restored", "added"):
+            if h.action in ("removed", "restored", "added", "applied", "skipped"):
                 changes.append(
                     {
                         "finding_id": f.id,
@@ -101,6 +154,8 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
                 )
     active = [f for f in file.findings if f.active]
     leaks = result.leaks if result else file.leaks
+    options = _options(file)
+    optional = [f for f in file.findings if f.optional]
     return {
         "id": file.id,
         "name": file.name,
@@ -110,8 +165,26 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
         "exported": bool(result and result.exported),
         "output_file": Path(result.output_path).name if result and result.output_path else None,
         "message": result.message if result else None,
+        "detections": [{"key": g.key, "label": g.label, "enabled": getattr(options, g.key)} for g in DETECTION_GROUPS],
+        "detections_off": [g.key for g in DETECTION_GROUPS if g.detection and not getattr(options, g.key)],
+        "images_unread": _unread_images(file),
+        "timings": dict(file.timings),
+        "other_urls": {
+            "applied": sum(1 for f in optional if f.active),
+            "left_visible": sum(1 for f in optional if f.status == "suggested"),
+            "items": [
+                {
+                    "finding_id": f.id,
+                    "page_number": f.page + 1,
+                    "applied": f.active,
+                    # Only what stays visible: the text of an applied URL is censored data.
+                    **({"visible_text": f.text} if not f.active and f.text else {}),
+                }
+                for f in optional
+            ],
+        },
         "redactions_applied": len(active),
-        "removed_by_reviewer": sum(1 for f in file.findings if not f.active),
+        "removed_by_reviewer": sum(1 for f in file.findings if f.status == "removed"),
         "added_by_reviewer": sum(1 for f in active if _is_added(f)),
         "doubtful": sum(1 for f in file.findings if f.doubtful),
         "applied_by_type": dict(Counter(f.type for f in active)),
@@ -167,6 +240,11 @@ def _count(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
+def _join(items: list[str]) -> str:
+    """Spanish list: "a", "a y b", "a, b y c"."""
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " y " + items[-1]
+
+
 def _table(headers: list[str], rows: list[list]) -> str:
     head = "".join(f"<th>{_e(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{_e(c)}</td>" for c in row) + "</tr>" for row in rows)
@@ -176,8 +254,9 @@ def _table(headers: list[str], rows: list[list]) -> str:
 def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
     parts = [f"<h2>{_e(file.name)}</h2>"]
     active = [f for f in file.findings if f.active]
-    removed = [f for f in file.findings if not f.active]
+    removed = [f for f in file.findings if f.status == "removed"]
     added = [f for f in active if _is_added(f)]
+    optional = [f for f in file.findings if f.optional]
     if result is None:
         parts.append("<p class='muted'>No se intentó exportar este archivo.</p>")
     elif result.exported:
@@ -190,6 +269,23 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
         f"<p class='muted'>{_count(pages, 'página', 'páginas')} · "
         f"{_count(len(active), 'censura aplicada', 'censuras aplicadas')}</p>"
     )
+
+    parts.append("<h3>Qué se buscó</h3>")
+    options = _options(file)
+    rows = [
+        [g.label, ("Sí" if getattr(options, g.key) else "No") if not g.detection else
+         ("Se buscó" if getattr(options, g.key) else "No se buscó")]
+        for g in DETECTION_GROUPS
+    ]  # fmt: skip
+    parts.append(_table(["Detección", "Estado"], rows))
+    off = [g.short for g in DETECTION_GROUPS if g.detection and not getattr(options, g.key)]
+    if off:
+        parts.append(f"<p class='bad'>No se buscaron: {_e(_join(off))}.</p>")
+    if _unread_images(file):
+        parts.append(f"<p class='bad'>{_e(UNREAD_IMAGES)}</p>")
+    timing = _timing_text(file)
+    if timing:
+        parts.append(f"<p class='muted'>{_e(timing)}</p>")
 
     parts.append("<h3>Censuras aplicadas por tipo</h3>")
     counts = Counter(f.type for f in active)
@@ -222,6 +318,17 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
         parts.append(_table(["Tipo", "Página", "Queda visible", "Motivo", "Comentario"], rows))
     else:
         parts.append("<p>Ninguna.</p>")
+
+    if optional:
+        parts.append("<h3>Otros enlaces (no personales)</h3>")
+        applied = [f for f in optional if f.active]
+        visible = [f for f in optional if f.status == "suggested"]
+        parts.append(
+            f"<p>{_count(len(applied), 'enlace censurado', 'enlaces censurados')} · "
+            f"{_count(len(visible), 'enlace queda visible', 'enlaces quedan visibles')}.</p>"
+        )
+        if visible:
+            parts.append(_table(["Página", "Queda visible"], [[f.page + 1, f.text or "—"] for f in visible]))
 
     parts.append("<h3>Zonas agregadas por quien revisó</h3>")
     if added:

@@ -17,6 +17,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from anonymizer.engine.common import waiting_for
+
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 OCR_LOCK = threading.Lock()
@@ -105,7 +107,7 @@ def read_lines(bgr: np.ndarray, min_side: int = 0, check: Callable[[], None] | N
         if check is not None:
             check()
         rot = np.ascontiguousarray(np.rot90(img, k))
-        with OCR_LOCK:
+        with waiting_for(OCR_LOCK):
             r = reader(rot)
         if r.boxes is None or r.txts is None:
             continue

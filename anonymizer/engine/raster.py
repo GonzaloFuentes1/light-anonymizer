@@ -13,9 +13,18 @@ import cv2
 import numpy as np
 
 from anonymizer.engine import context, faces, names, ocr, qr
-from anonymizer.engine.common import Zone
+from anonymizer.engine.common import Zone, stage
+from anonymizer.engine.model import DetectionOptions
 from anonymizer.engine.patterns import TYPE_PRIORITY, normalize_1to1
-from anonymizer.engine.text import DOUBT_CONTEXT_NAME, dedup_spans, detect_spans, in_list, ocr_doubt, rut_doubt
+from anonymizer.engine.text import (
+    DOUBT_CONTEXT_NAME,
+    dedup_spans,
+    detect_spans,
+    in_list,
+    is_personal_url,
+    ocr_doubt,
+    rut_doubt,
+)
 
 # Stage names passed to the ``step`` callback.
 STAGE_OCR, STAGE_FACES, STAGE_QR = "ocr", "faces", "qr"
@@ -41,6 +50,8 @@ def detect_in_image(
     ocr_min_side: int = 0,
     all_text: bool = False,
     step: Callable[[str], None] | None = None,
+    *,
+    options: DetectionOptions | None = None,
 ) -> list[Zone]:
     """Zones with personal data in an RGB image.
 
@@ -48,7 +59,15 @@ def detect_in_image(
     page with text), which avoids false positives on text and graphics; ``[]`` skips faces.
     ``all_text``: every OCR line is a zone (type ``text`` when it has no personal data).
     ``step(stage)`` is called before each stage and between OCR passes (it raises to cancel).
+    ``options``: the detection groups that run (default: all of them); a group that is off is
+    skipped, so with OCR off the image gets no text-based zone at all.
+
+    A line whose only data are URLs that are not personal is an optional zone (D12), except in
+    ``all_text`` mode, where every line is redacted.
     """
+    options = options or DetectionOptions()
+    ocr_enabled = ocr_enabled and options.ocr
+    qr_enabled = qr_enabled and options.qr
     h, w = rgb.shape[:2]
     zones: list[Zone] = []
     bgr = np.ascontiguousarray(rgb[:, :, ::-1])
@@ -57,24 +76,75 @@ def detect_in_image(
         if step is not None:
             step(STAGE_OCR)
 
-    lines = ocr.read_lines(bgr, ocr_min_side, check_ocr) if ocr_enabled else []
+    lines: list[ocr.OcrLine] = []
+    if ocr_enabled:
+        with stage(STAGE_OCR):
+            lines = ocr.read_lines(bgr, ocr_min_side, check_ocr)
+            zones += _text_zones(lines, name_list, all_urls, all_text, options, w, h)
+    if options.faces and (face_regions is None or face_regions):
+        if step is not None:
+            step(STAGE_FACES)
+        with stage(STAGE_FACES):
+            found: list[Zone] = []
+            if face_regions is None:
+                found += faces.detect(bgr, face_threshold)
+            else:
+                for x0, y0, x1, y1 in face_regions:
+                    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+                    if x1 - x0 < 24 or y1 - y0 < 24:
+                        continue
+                    for z in faces.detect(np.ascontiguousarray(bgr[y0:y1, x0:x1]), face_threshold):
+                        found.append(z._replace(polygon=z.polygon + [x0, y0]))
+            zones += faces.merge(found)
+    if qr_enabled:
+        if step is not None:
+            step(STAGE_QR)
+        with stage(STAGE_QR):
+            zones += qr.detect(bgr)
+    return dedup(zones)
+
+
+def _text_zones(
+    lines: list[ocr.OcrLine],
+    name_list: tuple[str, ...],
+    all_urls: bool,
+    all_text: bool,
+    options: DetectionOptions,
+    w: int,
+    h: int,
+) -> list[Zone]:
+    """Zones of the OCR lines: patterns, names, URLs and the context rules."""
+    zones: list[Zone] = []
     for line in lines:
+        found = detect_spans(
+            line.text,
+            name_list,
+            ocr=True,
+            all_urls=all_urls,
+            personal_urls=options.urls_personal,
+            given_names=options.names_context,
+        )
         # Spans inside another one do not decide the type (the digits of a phone also look like a RUT).
-        spans = dedup_spans(detect_spans(line.text, name_list, ocr=True, all_urls=all_urls))
+        spans = dedup_spans(found)
         types = {s[0] for s in spans}
         if types:
             type_ = min(types, key=TYPE_PRIORITY.index)
             detectors = {s[3] for s in spans if s[0] == type_}
             detector = "context" if detectors == {"context"} else "ocr"
             doubt = _line_doubt(type_, line.text, line.score, detector, name_list)
-            zones.append(Zone(type_, line.polygon, line.text, "ocr", line.score, doubt))
+            optional = (
+                not all_text
+                and all(s[0] == "url" for s in found)
+                and not any(is_personal_url(line.text[a:b], name_list) for _, a, b, _ in found)
+            )
+            zones.append(Zone(type_, line.polygon, line.text, "ocr", line.score, doubt, optional))
         elif all_text and line.text.strip():
             zones.append(Zone("text", line.polygon, line.text, "ocr", line.score, ocr_doubt(line.score)))
     # Context: table columns (Nombre, Correo, Teléfono, Firma...) and label-value pairs.
     upright = [line for line in lines if line.turn == 0]
     if upright:
         objects = [context.Line(ln.text, *ln.polygon.min(axis=0), *ln.polygon.max(axis=0)) for ln in upright]
-        spans, rects = context.context_rules(objects, w, h)
+        spans, rects = context.context_rules(objects, w, h, names=options.names_context)
         for type_, i, _a, _b in spans:
             ln = upright[i]
             doubt = _line_doubt(type_, ln.text, ln.score, "context", name_list)
@@ -89,25 +159,7 @@ def detect_in_image(
             tokens = normalize_1to1(ln.text).split()
             if tokens and len(tokens) <= 3 and all(tk in words for tk in tokens):
                 zones.append(Zone("name", ln.polygon, ln.text, "name_list", ln.score, ocr_doubt(ln.score)))
-    if face_regions is None or face_regions:
-        if step is not None:
-            step(STAGE_FACES)
-        found: list[Zone] = []
-        if face_regions is None:
-            found += faces.detect(bgr, face_threshold)
-        else:
-            for x0, y0, x1, y1 in face_regions:
-                x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
-                if x1 - x0 < 24 or y1 - y0 < 24:
-                    continue
-                for z in faces.detect(np.ascontiguousarray(bgr[y0:y1, x0:x1]), face_threshold):
-                    found.append(z._replace(polygon=z.polygon + [x0, y0]))
-        zones += faces.merge(found)
-    if qr_enabled:
-        if step is not None:
-            step(STAGE_QR)
-        zones += qr.detect(bgr)
-    return dedup(zones)
+    return zones
 
 
 _TEXT_DETECTORS = ("ocr", "context", "name_list")
@@ -156,7 +208,8 @@ def dedup(zones: list[Zone]) -> list[Zone]:
       crooked scan) gets the convex hull of both polygons, so it stays one finding for the
       reviewer instead of three.
 
-    A joined zone is doubtful only if every zone it joins had a doubt.
+    A joined zone is doubtful only if every zone it joins had a doubt, and optional (D12) only if
+    every zone it joins was optional: a URL line that a context rule also took as a name is not.
     """
     output: list[Zone] = []
     boxes: list[tuple[float, float, float, float, float]] = []
@@ -199,5 +252,7 @@ def dedup(zones: list[Zone]) -> list[Zone]:
             boxes[i] = _box(polygon)
         if z.doubt is None:
             kept = kept._replace(doubt=None)
+        if not z.optional:
+            kept = kept._replace(optional=False)
         output[i] = kept
     return output

@@ -6,8 +6,9 @@ metadata, XMP and attachments must be empty. Images: no EXIF, XMP, comments or t
 Both: the zone of every active finding must be solid black in the output (``uncovered``), which
 also checks what OCR, faces, QR and the reviewer marked, whose text is not in the text layer.
 
-What the reviewer chose to keep (removed findings) stays visible on purpose and is never a leak.
-Messages are Spanish: they are shown to the user.
+What the reviewer chose to keep (removed findings) and the suggestions left unapplied (D12: URLs
+that are not personal) stay visible on purpose and are never a leak. Messages are Spanish: they
+are shown to the user.
 """
 
 from __future__ import annotations
@@ -54,9 +55,10 @@ def _within(boxes: list[pymupdf.Rect | None], a: int, b: int, zones: list[pymupd
 
 
 def pdf_leaks(
-    path: Path, active: list[Finding], removed: list[Finding], from_text_layer: Callable[[Finding], bool]
+    path: Path, active: list[Finding], kept: list[Finding], from_text_layer: Callable[[Finding], bool]
 ) -> list[Leak]:
-    """Leaks of an exported PDF. ``from_text_layer(f)`` says if the text of ``f`` was read from the text layer."""
+    """Leaks of an exported PDF. ``kept``: findings left visible on purpose (removed or suggested).
+    ``from_text_layer(f)`` says if the text of ``f`` was read from the text layer."""
     leaks: list[Leak] = []
     with PDF_LOCK:
         with pymupdf.open(path) as doc:
@@ -73,9 +75,9 @@ def pdf_leaks(
         normalized = normalize_1to1(text)
         # What the reviewer kept is not looked at, but only where it was kept: the same text in
         # another place may belong to an active finding whose zone failed to remove it.
-        kept = [f for f in removed if f.page == n and f.text]
-        zones = [(pymupdf.Rect(*bbox_of(f.polygon)) * to_page).normalize() + (-1, -1, 1, 1) for f in kept]
-        for f in kept:
+        here = [f for f in kept if f.page == n and f.text]
+        zones = [(pymupdf.Rect(*bbox_of(f.polygon)) * to_page).normalize() + (-1, -1, 1, 1) for f in here]
+        for f in here:
             pattern = needle(f.text)
             for m in pattern.finditer(normalized) if pattern else ():
                 if _within(boxes, m.start(), m.end(), zones):
