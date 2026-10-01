@@ -1977,6 +1977,9 @@
     } else {
       verif.append("—");
     }
+    // The leak check only covers what was searched: say what was not (detection groups off).
+    const off = processed ? groupsOff(f.options) : [];
+    if (off.length) verif.append(h("div", { class: "warntxt", text: `No se buscaron: ${joinEs(off.map((g) => g.short))}. Revisa esas partes a mano.` }));
     if (res && res.exported) {
       state.append(h("span", { class: "state ok", text: "Exportado" }));
       if (res.output_path) {
@@ -2079,6 +2082,13 @@
             : "Estos archivos no se exportaron:",
         }));
         parts.push(h("ul", null, blocked.map((r) => h("li", null, h("b", { text: nameOf(r.file_id) }), `: ${r.message || "tiene fugas sin resolver."}`))));
+      }
+      // Exported, but analyzed with detection groups off: the leak check did not cover those parts.
+      const partial = ok.filter((r) => groupsOff((fileById(r.file_id) || {}).options).length);
+      if (partial.length) {
+        parts.push(h("p", { text: "En estos archivos no se buscó todo. Revisa esas partes a mano antes de publicarlos:" }));
+        parts.push(h("ul", null, partial.map((r) => h("li", null, h("b", { text: nameOf(r.file_id) }),
+          `: no se buscaron ${joinEs(groupsOff(fileById(r.file_id).options).map((g) => g.short))}.`))));
       }
       const audit = (res && res.audit) || {};
       if (audit.message) parts.push(h("p", null, h("b", { text: audit.message })));

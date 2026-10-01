@@ -87,13 +87,14 @@ def test_app_js_syntax():
                 "Listo en ",
                 "En este archivo no se buscaron: ",
                 "Revisa esas partes a mano.",
+                "En estos archivos no se buscó todo.",
                 "Otros enlaces (sin censurar)",
                 "Censurar todos los otros enlaces",
                 "No censurar",
                 "sin censurar",
             ],
         ),
-        ("app.css", [".zone.suggested", ".result .zone.suggested", ".detect", ".license"]),
+        ("app.css", [".zone.suggested", ".result .zone.suggested", ".detect", ".license", "td .warntxt"]),
     ],
 )
 def test_new_spanish_strings_are_present(name, strings):

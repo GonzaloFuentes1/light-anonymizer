@@ -509,6 +509,17 @@ def test_estimate(client):
     assert client.get("/api/estimate").json()["files"] == []  # nothing left to process
 
 
+def test_estimate_total_is_never_below_its_groups(client):
+    # Two one-page PDFs: text 2 x 0.075 = 0.15 s, which a total rounded to tenths showed as 0.1.
+    client.put("/api/options", json={"groups": {"ocr": False, "faces": False, "qr": False}})
+    for n in range(2):
+        upload(client, f"ficticio_{n}.pdf", make_pdf())
+    body = client.get("/api/estimate").json()
+    for row in [body, *body["files"]]:
+        enabled = [v for k, v in row["groups"].items() if k not in ("ocr", "faces", "qr")]
+        assert row["total"] >= max(enabled) > 0
+
+
 def test_estimate_learns_from_measured_times(tmp_path):
     path = tmp_path / "estimates.json"
     app = create_app(FakeEngine(), TOKEN, estimates_path=path)
@@ -553,6 +564,7 @@ def test_other_urls_are_suggested_and_can_be_applied(client, tmp_path):
     r = client.post("/api/export", json={"dest_dir": str(tmp_path / "a"), "audit_pdf": True, "audit_json": True})
     result = r.json()["results"][0]
     assert result["exported"] and result["leaks"] == [] and result["removed_by_reviewer"] == 0
+    assert "no se buscaron" not in result["message"]  # every detection group was on
     with pymupdf.open(result["output_path"]) as doc:
         text = doc[0].get_text()
     assert OTHER_URL in text and PERSONAL_URL not in text and VALID_RUT not in text
@@ -601,6 +613,12 @@ def test_audit_lists_the_groups_that_were_off(client, tmp_path):
     file_id = processed(client, make_pdf(), "ficticio.pdf")
     client.post(f"/api/files/{file_id}/confirm")
     r = client.post("/api/export", json={"dest_dir": str(tmp_path), "audit_pdf": True, "audit_json": True})
+    # "No leaks" covers only what was searched: the export result itself says what was not.
+    result = r.json()["results"][0]
+    assert result["exported"] and result["message"].startswith("Archivo exportado.")
+    assert result["message"].endswith(
+        "En este archivo no se buscaron: rostros y códigos QR. Revisa esas partes a mano."
+    )
     record = json.loads(Path(r.json()["audit"]["json_path"]).read_text(encoding="utf-8"))["files"][0]
     assert record["detections_off"] == ["faces", "qr"]
     assert {d["key"]: d["enabled"] for d in record["detections"]}["faces"] is False

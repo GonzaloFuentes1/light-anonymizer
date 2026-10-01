@@ -7,7 +7,10 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
+import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -80,6 +83,33 @@ class FakeWindow:
     def create_confirmation_dialog(self, title, message):
         self.asked += 1
         return self.answer
+
+
+def test_browser_run_stops_cleanly_when_the_url_file_is_deleted(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "app_data_dir", lambda: tmp_path / "appdata")
+    monkeypatch.setattr(server, "setup_logging", lambda: None)  # keep the developer's log untouched
+    monkeypatch.setattr(server, "cleanup_stale_sessions", lambda: 0)
+    url_file = tmp_path / "url.json"
+    sessions = lambda: set(Path(tempfile.gettempdir()).glob(server.SESSION_PREFIX + "*"))  # noqa: E731
+    before = sessions()
+    result = []
+    argv = ["--browser", "--no-open", "--engine", "fake", "--url-file", str(url_file)]
+    runner = threading.Thread(target=lambda: result.append(app.main(argv)), daemon=True)
+    runner.start()
+    try:
+        deadline = time.monotonic() + 30
+        while not url_file.exists() and runner.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert url_file.exists()
+        mine = sessions() - before
+        assert len(mine) == 1
+        url_file.unlink()
+        runner.join(timeout=20)
+        assert not runner.is_alive() and result == [0]
+        assert not any(folder.exists() for folder in mine)  # the working copies went with the session
+    finally:
+        url_file.unlink(missing_ok=True)
+        runner.join(timeout=20)
 
 
 def test_closing_asks_only_when_work_would_be_lost():

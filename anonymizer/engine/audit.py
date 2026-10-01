@@ -91,6 +91,17 @@ def _unread_images(file: AnalyzedFile) -> bool:
     return not _options(file).ocr and (file.kind == "image" or any(p.scanned for p in file.pages))
 
 
+def not_searched(file: AnalyzedFile) -> str | None:
+    """Spanish warning for a file analyzed with detection groups off (None when every one was on).
+
+    The leak check only looks for what was censored, so "no leaks" says nothing about what was
+    not searched: the export result repeats it next to that verdict.
+    """
+    options = _options(file)
+    off = [g.short for g in DETECTION_GROUPS if g.detection and not getattr(options, g.key)]
+    return f"En este archivo no se buscaron: {_join(off)}. Revisa esas partes a mano." if off else None
+
+
 def seconds_text(value: float) -> str:
     """Spanish duration: "0,4 s", "12 s", "1 min 20 s"."""
     if value < 0.1:

@@ -8,6 +8,8 @@ executable refuses it and never falls back to it (see :func:`load_engine`).
 ``--url-file PATH`` writes the launch URL and the session token to ``PATH`` (JSON) once the server
 answers, for tests and automation: the windowed executable has no console to print them to, and
 they are written nowhere unless this flag is given (the file is deleted when the app closes).
+With ``--browser``, deleting that file stops the app cleanly (working folder deleted): the
+windowed executable cannot receive Ctrl+C, and killing it leaves the working copies behind.
 
 Nothing leaves the computer: the server only listens on 127.0.0.1, every API call needs a random
 session token, and WebView2 runs with its background network and Windows-account features turned
@@ -241,6 +243,9 @@ def main(argv: list[str] | None = None) -> int:
                 webbrowser.open(launch_url)
             try:
                 while local.thread and local.thread.is_alive():
+                    if args.url_file and not args.url_file.exists():
+                        log.info("url file deleted: stopping")
+                        break
                     local.thread.join(timeout=0.5)
             except KeyboardInterrupt:
                 pass

@@ -282,6 +282,7 @@ tbody tr:last-child td { border-bottom: 0; }
 td.num { font-variant-numeric: tabular-nums; text-align: right; }
 td .fmeta { margin-top: 4px; }
 td .badtxt { color: var(--bad); font-weight: 700; }
+td .warntxt { margin-top: 4px; font-size: 13px; color: var(--warn); font-weight: 700; }
 .opts { display: grid; gap: 8px; padding: 14px; }
 .result { border-radius: var(--r-m); padding: 14px 16px; background: var(--ok-soft); display: grid; gap: 6px; }
 .result.bad { background: var(--bad-soft); }

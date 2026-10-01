@@ -55,7 +55,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Annotated
@@ -410,7 +410,8 @@ class Session:
                     "id": file.id,
                     "groups": _rounded(estimate.by_group(own)),
                     "render": round(own["render"], 2),
-                    "total": round(estimate.total(own, options), 1),
+                    # Same rounding as the groups, so a total is never shown below one of its parts.
+                    "total": round(estimate.total(own, options), 2),
                 }
             )
         return {
@@ -418,7 +419,7 @@ class Session:
             "groups": _rounded(estimate.by_group(stages)),
             # Rendering pages and decoding images: shared by OCR, faces and QR, counted when one is on.
             "render": round(stages["render"], 2),
-            "total": round(estimate.total(stages, options), 1),
+            "total": round(estimate.total(stages, options), 2),
             "calibrated": self.costs.calibrated,
         }
 
@@ -1018,6 +1019,9 @@ def create_app(
                     message="No se pudo exportar este archivo. El detalle quedó en el registro técnico.",
                 )
             else:
+                note = audit.not_searched(file) if result.exported else None
+                if note:  # "no leaks" must not read as "nothing left": say what was not searched
+                    result = replace(result, message=f"{result.message} {note}")
                 with session.lock:
                     # A review change made during the export reopened the file ("ready"): the change
                     # is not in this output, so the file must be confirmed and exported again.
