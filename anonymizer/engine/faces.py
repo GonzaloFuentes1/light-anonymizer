@@ -19,9 +19,10 @@ import numpy as np
 from anonymizer.engine.common import Zone
 from anonymizer.engine.ocr import rotate_points
 from anonymizer.engine.text import face_doubt
+from anonymizer.paths import resource
 
-ROOT = Path(__file__).resolve().parents[2]
-MODELS_DIR = Path(os.environ.get("ANONYMIZER_MODELS_DIR", ROOT / "models"))
+# ``models/`` of the repository, or of the bundle in the packaged app (see anonymizer.paths).
+MODELS_DIR = Path(os.environ.get("ANONYMIZER_MODELS_DIR", resource("models")))
 YUNET_MODEL = MODELS_DIR / "face_detection_yunet_2023mar.onnx"
 # The detector object keeps its input size between calls: one call at a time.
 FACE_LOCK = threading.Lock()
@@ -31,9 +32,20 @@ def available() -> bool:
     return YUNET_MODEL.is_file()
 
 
+def load_detector(model: Path):
+    """A YuNet detector for the ONNX file ``model``.
+
+    The model is read by Python and handed to OpenCV as bytes: on Windows OpenCV cannot open a
+    path with non-ASCII characters (a user folder "Muñoz", "OneDrive - Gobierno Regional de Ñuble").
+    """
+    weights = np.frombuffer(Path(model).read_bytes(), np.uint8)
+    return cv2.FaceDetectorYN.create("onnx", weights, np.empty(0, np.uint8), (320, 320), 0.5, 0.3, 5000)
+
+
 @lru_cache(maxsize=1)
-def _yunet():
-    return cv2.FaceDetectorYN.create(str(YUNET_MODEL), "", (320, 320), 0.5, 0.3, 5000)
+def detector():
+    """The detector of the app (YUNET_MODEL), loaded once."""
+    return load_detector(YUNET_MODEL)
 
 
 def detect(bgr: np.ndarray, threshold: float = 0.5, check: Callable[[], None] | None = None) -> list[Zone]:
@@ -51,7 +63,7 @@ def detect(bgr: np.ndarray, threshold: float = 0.5, check: Callable[[], None] | 
             f = side / max(rh, rw)
             img = cv2.resize(rot, (max(1, round(rw * f)), max(1, round(rh * f))))
             with FACE_LOCK:
-                det = _yunet()
+                det = detector()
                 det.setScoreThreshold(threshold)
                 det.setInputSize((img.shape[1], img.shape[0]))
                 _, detections = det.detect(img)

@@ -20,6 +20,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+build = [
+    "pyinstaller>=6.22.3",
+]
 data = [
     "matplotlib>=3.11.2",
     "piexif>=1.1.3",

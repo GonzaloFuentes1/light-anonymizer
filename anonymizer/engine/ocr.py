@@ -17,6 +17,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from anonymizer.paths import package_dir
+
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 OCR_LOCK = threading.Lock()
@@ -41,11 +43,10 @@ class OcrLine(NamedTuple):
 
 def model_paths() -> dict[str, Path] | None:
     """Path of each OCR model inside the installed ``rapidocr`` package (None when it is not installed)."""
-    spec = importlib.util.find_spec("rapidocr")
-    if spec is None or not spec.origin:
+    package = package_dir("rapidocr")
+    if package is None:
         return None
-    folder = Path(spec.origin).parent / "models"
-    return {stage: folder / name for stage, name in MODEL_FILES.items()}
+    return {stage: package / "models" / name for stage, name in MODEL_FILES.items()}
 
 
 def available() -> bool:

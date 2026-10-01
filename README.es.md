@@ -24,7 +24,8 @@ test_bench/      herramientas de desarrollo: generadores del conjunto de prueba,
   generators/    un módulo por familia de documentos (PDF con texto, escaneos, imágenes giradas, EXIF, cédula, pantallazos, rostros…)
   evaluation/    comprobaciones de recall y fugas (texto, bytes, píxeles, imágenes tapadas, imágenes huérfanas, trazos, metadatos)
   baselines/     identidad, oráculo, cuaderno y prototipo (ejecuta el motor real)
-scripts/         generate_test_data.py, download_models.py, demo_notebook_leak.py
+scripts/         generate_test_data.py, download_models.py, build_exe.py, demo_notebook_leak.py
+packaging/       especificación de PyInstaller y lanzador del ejecutable para Windows, y los textos de licencia que faltan en los wheels
 tests/           pruebas con pytest
 docs/            definición de la métrica
 test_data/       conjunto de prueba generado y cachés (no se versiona)
@@ -54,6 +55,24 @@ uv run pytest -q                            # pruebas
 ```
 
 En un equipo con 8 GB de RAM, usa como máximo 3 procesos en paralelo (cada proceso de OCR ocupa unos 600 MB).
+
+## Compilar el ejecutable para Windows
+
+Una versión preliminar para Windows (todavía no hay instalador), hecha con PyInstaller en modo carpeta:
+
+```bash
+uv run python scripts/download_models.py           # una vez: modelo de rostros YuNet, con verificación SHA-256
+uv run --group build python scripts/build_exe.py   # unos 2 minutos, desde una copia sin cambios pendientes
+```
+
+La AGPL exige ofrecer el código fuente exacto de lo que se entrega, así que el script rechaza una copia de trabajo con cambios sin confirmar; `--allow-dirty` hace una compilación de prueba, que su `LEEME.txt` marca como no distribuible. El script revisa los modelos (el SHA-256 de YuNet y los modelos PP-OCR que trae `rapidocr`), ejecuta PyInstaller con `packaging/light_anonymizer.spec`, reúne las licencias de terceros (`scripts/collect_licenses.py`: los archivos de licencia de cada paquete incluido, más los textos de `packaging/licenses/` que faltan en sus wheels; la compilación falla si un paquete incluido no tiene ninguno), comprueba que no se haya incluido nada propio del desarrollo ni ningún documento (banco de pruebas, datos de prueba, pytest, matplotlib, la DLL de FFmpeg de OpenCV, cualquier PDF, imagen o archivo de oficina, un RUT con puntos en el código de la aplicación…) y genera:
+
+- `dist/LightAnonymizer/LightAnonymizer.exe` junto con su carpeta `_internal/` (unos 260 MB): la aplicación, sin ventana de consola. A su lado quedan `LEEME.txt` (cómo abrirla, la licencia, la ausencia de garantía y el commit y la URL de su código fuente), `LICENSE.txt`, `LICENSES.md` y `THIRD_PARTY_LICENSES/` (con `INDEX.txt`: cada componente, su versión, licencia y código fuente). Copia siempre la carpeta completa, no solo el `.exe`.
+- `dist/LightAnonymizer-<versión>-windows.zip` (unos 120 MB): la misma carpeta comprimida, para entregarla.
+
+Se usa una carpeta y no un archivo único porque así la aplicación abre en uno o dos segundos, en vez de descomprimir cientos de MB en `%TEMP%` cada vez que se abre, y los antivirus la marcan menos (la primera vez que se abre después de descomprimirla tarda más, mientras el antivirus la revisa). Necesita el componente WebView2, que ya viene en Windows 10 y 11, y no se conecta a internet (WebView2 corre con sus servicios en segundo plano y su inicio de sesión con la cuenta de Windows desactivados: con ese inicio de sesión activo, se conectaba a Microsoft 365 cada vez que se abría). Descomprímela en una ruta corta y fuera de OneDrive, como `C:\Apps\LightAnonymizer`: con rutas largas Windows puede no cargar las bibliotecas nativas.
+
+El ejecutable acepta las mismas opciones que `python -m anonymizer.app` (`--browser`, `--no-open`, `--engine`), salvo que siempre usa el motor definitivo: rechaza `--engine fake`, ignora `ANONYMIZER_ENGINE` y, si faltan componentes del motor (un antivirus puede poner uno en cuarentena), muestra un error en vez de pasar al motor de prueba, que exportaría páginas escaneadas y fotos sin censurar. Los errores al abrir aparecen en un mensaje en español, y cerrar la ventana con archivos en proceso o revisados sin exportar pide confirmación. Como no tiene consola, `--url-file RUTA` escribe la URL y el token de sesión en un archivo JSON para las pruebas automáticas; no se escribe nada si no se usa la opción, y el archivo se borra al cerrar la aplicación.
 
 ## El banco de pruebas
 
