@@ -1,4 +1,4 @@
-# Entorno
+# Environment
 .venv/
 __pycache__/
 *.py[cod]
@@ -8,18 +8,19 @@ build/
 dist/
 *.spec.bak
 
-# Datos generados (se regeneran con scripts/generar_datos_prueba.py)
-datos_prueba/generado/
-datos_prueba/cache/
-salida/
-resultados/
+# Generated data (regenerated with scripts/generate_test_data.py)
+test_data/generated/
+test_data/cache/
+output/
+results/
 
-# Modelos (se descargan con scripts/descargar_modelos.py)
-modelos/*.onnx
-modelos/**/*.onnx
+# Models (downloaded with scripts/download_models.py)
+models/*.onnx
+models/**/*.onnx
 
-# Registros
+# Logs
 *.log
 
-# Documentos públicos reales descargados para pruebas (contienen datos de personas reales: no versionar ni redistribuir)
-datos_prueba/reales/
+# Real public documents downloaded for testing (they contain data of real people: never version or redistribute)
+test_data/real/
+test_data/problem_pages/

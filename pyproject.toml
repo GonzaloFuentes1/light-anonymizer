@@ -1,13 +1,18 @@
 [project]
-name = "anonimizador"
+name = "light-anonymizer"
 version = "0.1.0"
-description = "Anonimizador local de documentos e imágenes (CoP 33 / SmartGORE)"
+description = "Local anonymizer for documents and images (CoP 33 / SmartGORE)"
 authors = [{ name = "Gonzalo Fuentes", email = "gonzalo.fuentes@cenia.cl" }]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.142.2",
+    "python-multipart>=0.0.32",
+    "pywebview>=6.2.1",
+    "uvicorn>=0.54.0",
+]
 
 [dependency-groups]
-datos = [
+data = [
     "matplotlib>=3.11.2",
     "numpy>=2.4.6",
     "opencv-python-headless>=5.0.0.93",
@@ -20,7 +25,7 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
-prototipo = [
+prototype = [
     "onnxruntime>=1.30.0",
     "rapidfuzz>=3.14.6",
     "rapidocr>=3.9.2",
@@ -31,7 +36,7 @@ requires = ["uv_build>=0.11.13,<0.12.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "anonimizador"
+module-name = "anonymizer"
 module-root = ""
 
 [tool.ruff]
@@ -50,5 +55,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.uv]
-# rapidocr pide opencv-python con interfaz gráfica (Qt, FFmpeg); se usa la versión sin interfaz.
+# rapidocr requires opencv-python with a GUI (Qt, FFmpeg); the headless build is used instead.
 override-dependencies = ["opencv-python; sys_platform == 'never'"]

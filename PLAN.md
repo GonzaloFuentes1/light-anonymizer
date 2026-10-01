@@ -1,568 +1,570 @@
-# Plan: anonimizador local de documentos e imágenes (CoP 33 / SmartGORE)
+# Plan: local anonymizer for documents and images (CoP 33 / SmartGORE)
 
-Estado: **fase 0 terminada, esperando revisión.** Este documento resume lo que se construyó en
-la fase 0, propone el plan de las fases 1 a 3 y deja explícitas las decisiones que necesito que
-tomes antes de empezar la fase 1 (sección 12). Nada de lo que sigue está implementado en el
-motor todavía: la fase 0 solo construyó el conjunto de prueba y la métrica.
-
----
-
-## 1. Resumen
-
-**Lo que se hizo en la fase 0**
-
-- Se leyó el cuaderno completo y se ejecutó su lógica contra un conjunto de prueba nuevo, para
-  medir qué cubre y qué no (sección 2).
-- Se construyó un **banco de pruebas** reproducible (`banco_pruebas/`, `scripts/generar_datos_prueba.py`):
-  102 archivos ficticios en 10 categorías, con 971 datos personales ubicados con exactitud
-  (polígonos verificados contra la tinta), 1 900 textos neutros de referencia, 44 metadatos
-  sensibles escondidos y 7 archivos que deben rechazarse. Aparte, 28 documentos públicos reales
-  de hasta 5 páginas (solo locales, sin verdad de terreno) para experimentos.
-- A pedido, se construyó además un **prototipo del motor** (sección 11.3), que ya cumple el
-  criterio de aceptación en el conjunto de prueba. Es un adelanto para ver resultados, no el
-  motor de la fase 1.
-- Se definió la **métrica** (`docs/metricas.md`): recall por tipo y fugas comprobadas en el
-  archivo de salida por seis vías independientes. El evaluador se valida a sí mismo con tres
-  líneas base (identidad, oráculo y cuaderno).
-- Se verificaron, con evidencia primaria y verificación adversarial independiente, las licencias
-  de todas las dependencias previstas, las fuentes de rostros, el comportamiento real de
-  PyMuPDF y pdfium, y los formatos chilenos de RUT, teléfono, correo y cédula.
-
-**Lo más importante que encontré**
-
-0. **El PDF que entrega el cuaderno conserva el texto original completo.** `doc.save(salida)`
-   deja dentro del archivo el flujo de contenido anterior a la censura como objeto huérfano:
-   nombre, RUT, correo, teléfono, dirección y URL siguen ahí, legibles con cualquier
-   herramienta PDF, aunque la página ya no los muestre y la verificación del cuaderno diga
-   "eliminados". Lo mismo pasa con las imágenes censuradas. Se reproduce con el código del
-   cuaderno sin cambios: `uv run python scripts/demo_fuga_cuaderno.py`. En 28 documentos
-   públicos reales, 39 de los 60 datos que el cuaderno "censuró" seguían recuperables. Si
-   alguien llegó a usar el boceto, la corrección es guardar con
-   `doc.save(salida, garbage=4, deflate=True, clean=True)`.
-1. **PyMuPDF tiene licencia AGPL-3.0** (o comercial de Artifex). Choca con tu política de
-   licencias permisivas y con la decisión técnica de usar `apply_redactions`. Existe un camino
-   permisivo ya probado en un prototipo (pdfium). Hay que decidir (D1).
-2. **El patrón de teléfono del cuaderno detecta completas solo 14 de 52 formas reales de
-   escribir un número chileno**: ningún fijo regional (`(41) 221 3456`), ni `22 123 4567`, ni
-   `+56-9-8123-4567`. Para gobiernos regionales es el hueco más grave.
-3. **YuNet solo detecta bien rostros de unos 10 a 300 píxeles**: falla en retratos grandes
-   si se usa a resolución completa y en rostros pequeños si se reduce la imagen. Hay que
-   detectar a varias escalas. Además pierde 2 de 3 perfiles puros.
-4. **OpenCV de PyPI en macOS trae FFmpeg con licencia GPL-3.0** enlazado de forma que no se
-   puede quitar. En Windows se puede quitar. Afecta la viabilidad de macOS (D4).
-5. **RapidOCR arrastra dependencias con copyleft y código que usa la red** (descarga de modelos,
-   lectura de URLs). Propongo usar sus modelos y portar solo la inferencia (sección 5.4).
-6. **La cédula chilena codifica el RUN, el número de documento y la fecha de nacimiento en su
-   QR y en la zona MRZ del dorso**, que ningún patrón de texto detecta. Propongo detectores
-   de QR y MRZ (D7).
+Status: **phase 0 finished, awaiting review.** This document summarizes what was built in
+phase 0, proposes the plan for phases 1 to 3 and spells out the decisions I need you to make
+before phase 1 starts (section 12). None of what follows is implemented in the engine yet:
+phase 0 only built the test set and the metric.
 
 ---
 
-## 2. Lo que se hereda del cuaderno y lo que hay que corregir
+## 1. Summary
 
-Se conserva la filosofía completa del cuaderno: patrones deterministas, **recall sobre
-precisión** (el dígito verificador solo ordena la revisión), comprobación previa de que el PDF
-tiene texto, censura real (eliminar contenido, no tapar), verificación extrayendo el texto de
-la salida, barrido final con los mismos patrones, lista de nombres, y la revisión humana como
-paso obligatorio.
+**What was done in phase 0**
 
-Estas debilidades se comprobaron ejecutando el código del cuaderno (línea base `cuaderno`):
+- The whole notebook (the CoP 33 notebook this project starts from) was read and its logic
+  was run against a new test set, to measure what it covers and what it does not (section 2).
+- A reproducible **test bench** was built (`test_bench/`, `scripts/generate_test_data.py`):
+  102 fictitious files in 10 categories, with 971 precisely located personal-data items
+  (polygons verified against the ink), 1 900 neutral reference texts, 44 hidden sensitive
+  metadata items and 7 files that must be rejected. Separately, 28 real public documents of up
+  to 5 pages (local only, with no ground truth) for experiments.
+- On request, an **engine prototype** was also built (section 11.3), which already meets the
+  acceptance criterion on the test set. It is a preview to look at results, not the phase 1
+  engine.
+- The **metric** was defined (`docs/metrics.md`): recall by type, and leaks checked in the
+  output file through six independent routes. The evaluator validates itself with three
+  baselines (identity, oracle and notebook).
+- With primary evidence and independent adversarial verification, the following were
+  verified: the licenses of every planned dependency, the face sources, the actual behavior of
+  PyMuPDF and pdfium, and the Chilean formats of RUT (Rol Único Tributario, the national
+  tax/ID number), phone, email and cédula (the national ID card).
 
-| Tema | Qué pasa hoy | Evidencia | Corrección en la fase 1 |
+**The most important things I found**
+
+0. **The PDF the notebook produces keeps the full original text.** `doc.save(salida)` leaves
+   the pre-redaction content stream inside the file as an orphan object: name, RUT, email,
+   phone, address and URL are still there, readable with any PDF tool, even though the page no
+   longer shows them and the notebook's check says "eliminados" (removed). The same happens
+   with redacted images. It reproduces with the notebook's code unchanged:
+   `uv run python scripts/demo_notebook_leak.py`. In 28 real public documents, 39 of the 60
+   data items the notebook "redacted" were still recoverable. If anyone has used the draft,
+   the fix is to save with `doc.save(salida, garbage=4, deflate=True, clean=True)`.
+1. **PyMuPDF is licensed AGPL-3.0** (or under an Artifex commercial license). That clashes
+   with your permissive-license policy and with the technical decision to use
+   `apply_redactions`. There is a permissive path already proven in a prototype (pdfium). A
+   decision is needed (D1).
+2. **The notebook's phone pattern fully detects only 14 of 52 real ways of writing a Chilean
+   number**: no regional landline (`(41) 221 3456`), no `22 123 4567`, no
+   `+56-9-8123-4567`. For regional governments (GOREs, Gobiernos Regionales) it is the most
+   serious gap.
+3. **YuNet only detects faces well at roughly 10 to 300 pixels**: it fails on large portraits
+   at full resolution and on small faces if the image is downscaled. Detection has to run at
+   several scales. It also misses 2 of 3 pure profiles.
+4. **OpenCV from PyPI on macOS ships GPL-3.0 FFmpeg**, linked in a way that cannot be removed.
+   On Windows it can be removed. This affects the viability of macOS (D4).
+5. **RapidOCR pulls in copyleft dependencies and code that uses the network** (model downloads,
+   reading URLs). I propose using its models and porting only the inference (section 5.4).
+6. **The Chilean cédula encodes the RUN (Rol Único Nacional, the personal ID number), the
+   document number and the date of birth in its QR code and in the MRZ on the back**, which no
+   text pattern detects. I propose QR and MRZ detectors (D7).
+
+---
+
+## 2. What we inherit from the notebook and what has to be fixed
+
+We keep the notebook's whole philosophy: deterministic patterns, **recall over precision**
+(the check digit only orders the review), checking up front that the PDF has text, real
+redaction (deleting content, not covering it), verification by extracting the output's text,
+a final sweep with the same patterns, a name list, and human review as a mandatory step.
+
+These weaknesses were confirmed by running the notebook's code (the `notebook` baseline):
+
+| Topic | What happens today | Evidence | Fix in phase 1 |
 |---|---|---|---|
-| Teléfonos | 14 de 52 formatos reales completos; 0 fijos regionales; falsos positivos como `Folio 2912345678` | prueba de 52 variantes | candidatos amplios de dígitos, normalización (+56, 0056, 0 troncal) y clasificación por largo; `anexo NNN` incluido |
-| RUT | no reconoce guion largo (`12.345.678–5`), sin guion, cuerpos de 9 dígitos (`100.000.019-8`, MINEDUC) ni cuerpo y DV en columnas separadas | idem | patrón ampliado; sin guion o con DV inválido solo cerca de una etiqueta (RUT/RUN/C.I.) o en tabla; variantes de OCR |
-| Correo | 16 de 31 variantes; se escapan `[arroba]`, `(at)`, espacios alrededor de `@`, cortes de línea del PDF, `©` leído por OCR | prueba de 31 variantes | normalización NFKC, unión de cortes de línea, pasada de ofuscaciones y confusiones de OCR |
-| **Texto censurado** | **el `doc.save()` simple deja dentro del PDF el flujo de contenido original, con todo el texto antes de censurar**, como objeto huérfano. La verificación del cuaderno solo mira el texto de la página y no lo ve | `scripts/demo_fuga_cuaderno.py` con el código del cuaderno sin cambios; en el conjunto de prueba, 141 de los 205 datos que el cuaderno sí encontró y tapó siguen en los bytes del archivo | guardar con `garbage=4, deflate=True, clean=True` (o documento nuevo) y verificar los bytes de la salida, no solo el texto visible |
-| Imágenes censuradas | igual que el texto: **queda dentro del PDF la imagen original sin censurar** | experimento: tras censurar parte de una imagen, el JPEG original seguía en el archivo; con `garbage=4` desaparece | reescritura completa del archivo y verificación de que ninguna imagen original sobrevive |
-| Búsqueda de lo detectado | `search_for(valor)` vuelve a buscar el texto: si el hallazgo cruza un salto de línea (el patrón de RUT admite `\s` alrededor del guion) la zona no se encuentra, y la búsqueda literal de un nombre de la lista falla si el PDF usa espacios o guiones especiales (U+00A0, U+00AD). En ambos casos **el dato queda sin censurar sin aviso** | revisión del código e investigación | usar las cajas de cada carácter del propio hallazgo, nunca volver a buscar el texto |
-| Texto fuera de la página | `get_text()` recorta a la página visible: el texto fuera del recuadro no se detecta, pero sigue en el archivo | experimento | extraer sin recorte y censurar también fuera de la página |
-| Capas ocultas | el texto en una capa opcional apagada no aparece en `get_text()` | experimento | revelar capas antes de detectar; eliminar capas y sus nombres |
-| Formularios | el valor de un campo de formulario sobrevive a la censura | experimento | aplanar formularios y anotaciones antes de censurar |
-| Metadatos | tras censurar, el autor sigue en los metadatos; no se tocan XMP, anotaciones, adjuntos, JavaScript, marcadores | experimento | limpieza estructural completa (sección 6) |
-| Guardado | `save()` simple conserva objetos huérfanos (como la imagen de la fila anterior) | experimento | reescritura completa (`garbage=4`, `clean`) o documento nuevo |
-| Escaneos, imágenes, rostros | no se procesan (el cuaderno lo avisa) | — | OCR, rostros y censura de píxeles |
-| Verificación | compara cadenas exactas | revisión del código | repasar la salida con los mismos detectores más comprobaciones estructurales (sección 7) |
+| Phones | 14 of 52 real formats fully matched; 0 regional landlines; false positives such as `Folio 2912345678` | test of 52 variants | broad digit candidates, normalization (+56, 0056, trunk 0) and classification by length; `anexo NNN` (extension) included |
+| RUT | does not recognize the en dash (`12.345.678–5`), no hyphen, 9-digit bodies (`100.000.019-8`, MINEDUC) or body and check digit (DV) in separate columns | same | extended pattern; without a hyphen or with an invalid DV only near a label (RUT/RUN/C.I.) or in a table; OCR variants |
+| Email | 16 of 31 variants; `[arroba]`, `(at)`, spaces around `@`, PDF line breaks and `©` read by OCR slip through | test of 31 variants | NFKC normalization, joining line breaks, a pass for obfuscations and OCR confusions |
+| **Redacted text** | **a plain `doc.save()` leaves the original content stream inside the PDF, with all the text before redaction**, as an orphan object. The notebook's check only looks at the page text and does not see it | `scripts/demo_notebook_leak.py` with the notebook's code unchanged; on the test set, 141 of the 205 data items the notebook did find and cover are still in the file bytes | save with `garbage=4, deflate=True, clean=True` (or a new document) and verify the output bytes, not just the visible text |
+| Redacted images | same as text: **the original unredacted image stays inside the PDF** | experiment: after redacting part of an image, the original JPEG was still in the file; with `garbage=4` it goes away | full rewrite of the file and a check that no original image survives |
+| Searching for what was detected | `search_for(valor)` searches for the text again: if the finding crosses a line break (the RUT pattern allows `\s` around the hyphen) the area is not found, and the literal search for a name from the list fails if the PDF uses special spaces or hyphens (U+00A0, U+00AD). In both cases **the data item stays unredacted with no warning** | code review and research | use the boxes of each character of the finding itself, never search for the text again |
+| Text off the page | `get_text()` clips to the visible page: text outside the box is not detected, but it is still in the file | experiment | extract without clipping and also redact off the page |
+| Hidden layers | text in a turned-off optional layer does not appear in `get_text()` | experiment | reveal layers before detecting; remove layers and their names |
+| Forms | the value of a form field survives redaction | experiment | flatten forms and annotations before redacting |
+| Metadata | after redaction, the author is still in the metadata; XMP, annotations, attachments, JavaScript and bookmarks are not touched | experiment | full structural cleanup (section 6) |
+| Saving | a plain `save()` keeps orphan objects (like the image in the row above) | experiment | full rewrite (`garbage=4`, `clean`) or a new document |
+| Scans, images, faces | not processed (the notebook says so) | — | OCR, faces and pixel redaction |
+| Verification | compares exact strings | code review | go over the output with the same detectors plus structural checks (section 7) |
 
-**Cifras de la línea base `cuaderno`** en el conjunto de prueba: recall global 22,9 %
-(62,8 % en PDF con texto; 0 % en escaneos, imágenes, cédulas y pantallazos, que no procesa),
-150 fugas críticas y 17 de 44 metadatos con fuga. Reporte completo en
-`resultados/detalle/cuaderno/evaluacion.md` (se regenera con los comandos de la sección 11).
+**Figures for the `notebook` baseline** on the test set: overall recall 22.9 % (62.8 % on text
+PDFs; 0 % on scans, images, ID cards and screenshots, which it does not process), 150 critical
+leaks and 17 of 44 metadata items leaked. Full report in
+`results/details/notebook/evaluation.md` (regenerated with the commands in section 11).
 
 ---
 
-## 3. Arquitectura
+## 3. Architecture
 
 ```
-anonimizador/
-  motor/                 # librería pura, tipada, sin UI
-    modelo.py            # Hallazgo, Documento, Pagina, Poligono, EstadoRevision, Decision
-    cargar.py            # detección de formato por contenido (no por extensión) y errores comprensibles
-    orientacion.py       # EXIF, rotaciones 0/90/180/270, transformación de coordenadas
-    detectores/
-      patrones.py        # RUT, correo, teléfono, URL + variantes de OCR; dígito verificador solo para ordenar
-      nombres.py         # lista de nombres y direcciones con coincidencia difusa (rapidfuzz)
-      rostros.py         # YuNet a varias escalas y orientaciones, unión y expansión de cajas
-      ocr.py             # detector, orientación y reconocedor PP-OCR sobre onnxruntime
-      codigos.py         # QR y MRZ (propuesto, D7)
+anonymizer/
+  engine/                # pure, typed library, no UI
+    model.py             # Finding, Document, Page, Polygon, ReviewStatus, Decision
+    loader.py            # format detection by content (not by extension) and understandable errors
+    orientation.py       # EXIF, 0/90/180/270 rotations, coordinate transforms
+    detectors/
+      patterns.py        # RUT, email, phone, URL + OCR variants; check digit only for ordering
+      names.py           # list of names and addresses with fuzzy matching (rapidfuzz)
+      faces.py           # YuNet at several scales and orientations, box merging and expansion
+      ocr.py             # PP-OCR detector, orientation and recognizer on onnxruntime
+      codes.py           # QR and MRZ (proposed, D7)
     pdf/
-      analisis.py        # inventario de la página: texto, imágenes, trazos, capas, anotaciones, formularios
-      censura.py         # eliminación real del contenido (motor según D1)
-      limpieza.py        # metadatos, XMP, anotaciones, adjuntos, JavaScript, capas, marcadores
-    imagen/
-      censura.py         # relleno de polígonos; reescritura de píxeles sin metadatos
-    verificacion.py      # repasa la salida con todos los detectores y comprobaciones estructurales
-    informe.py           # informe de auditoría (JSON y PDF)
-    proceso.py           # orquestación: analizar() -> hallazgos; exportar(decisiones) -> salida + verificación
-    config.py            # umbrales, rutas de modelos, lista de nombres
-    registro.py          # registro técnico a archivo local
-  cli.py                 # anonimizador procesar entrada/ salida/
-  api/                   # FastAPI en 127.0.0.1, puerto aleatorio, usa motor/
-  ui/                    # frontend estático
-  app.py                 # ventana nativa con pywebview
-banco_pruebas/           # herramienta de desarrollo: generador, evaluador, líneas base (no se distribuye)
+      analysis.py        # page inventory: text, images, paths, layers, annotations, forms
+      redaction.py       # real content removal (engine per D1)
+      cleanup.py         # metadata, XMP, annotations, attachments, JavaScript, layers, bookmarks
+    image/
+      redaction.py       # polygon fill; pixel rewrite without metadata
+    verification.py      # goes over the output with every detector and structural check
+    report.py            # audit report (JSON and PDF)
+    pipeline.py          # orchestration: analyze() -> findings; export(decisions) -> output + verification
+    config.py            # thresholds, model paths, name list
+    log.py               # technical log to a local file
+  cli.py                 # anonymizer process input/ output/
+  api/                   # FastAPI on 127.0.0.1, random port, uses engine/
+  ui/                    # static frontend
+  app.py                 # native window with pywebview
+test_bench/              # development tool: generator, evaluator, baselines (not shipped)
 tests/
-datos_prueba/            # generado por script (no se versiona)
-modelos/                 # ONNX (no se versionan), con script de descarga y verificación SHA-256
+test_data/               # generated by script (not versioned)
+models/                  # ONNX (not versioned), with a download script and SHA-256 verification
 ```
 
-**El hallazgo** es el objeto central, el mismo en motor, CLI, API, UI e informe:
+**The finding** is the central object, the same in the engine, CLI, API, UI and report:
 
-| Campo | Contenido |
+| Field | Content |
 |---|---|
-| `id` | identificador estable |
-| `archivo`, `pagina` | dónde está |
-| `tipo` | `rut`, `correo`, `telefono`, `url`, `nombre`, `direccion`, `rostro`, `texto_ocr`, `qr`, `mrz`, `manual` |
-| `poligono` | lista de puntos en coordenadas de la página (puntos PDF sin rotar, o píxeles de la imagen ya orientada) |
-| `texto` | texto detectado, si aplica |
-| `detector` | `regex`, `lista_nombres`, `yunet`, `ocr`, `qr`, `revisor`… |
-| `score` | confianza del detector (nunca decide si se censura) |
-| `dudoso`, `motivo` | para ordenar la revisión: DV inválido, OCR de baja confianza, rostro pequeño, perfil, detectado en una sola orientación |
-| `estado` | `propuesto` → `confirmado` / `quitado` (con motivo opcional) / `agregado` por el revisor |
-| `historial` | cambios con fecha y motivo |
+| `id` | stable identifier |
+| `file`, `page` | where it is |
+| `type` | `rut`, `email`, `phone`, `url`, `name`, `address`, `face`, `ocr_text`, `qr`, `mrz`, `manual` |
+| `polygon` | list of points in page coordinates (unrotated PDF points, or pixels of the already-oriented image) |
+| `text` | detected text, if applicable |
+| `detector` | `regex`, `name_list`, `yunet`, `ocr`, `qr`, `reviewer`… |
+| `score` | detector confidence (never decides whether something is redacted) |
+| `doubtful`, `reason` | for ordering the review: invalid DV, low-confidence OCR, small face, profile, detected in a single orientation |
+| `status` | `proposed` → `confirmed` / `removed` (with an optional reason) / `added` by the reviewer |
+| `history` | changes with date and reason |
 
 ```mermaid
 flowchart LR
-  A[Archivo] --> B[cargar: formato real, contraseña, corrupto]
-  B --> C[orientar: EXIF y páginas]
-  C --> D[analizar: texto, imágenes, trazos, capas, metadatos]
-  D --> E[detectores: patrones, nombres, OCR x4, rostros x4 x escalas, QR/MRZ]
-  E --> F[hallazgos propuestos]
-  F --> G[revisión humana obligatoria]
-  G --> H[exportar: censura real + limpieza]
-  H --> I[verificación de fugas sobre la salida]
-  I --> J[informe de auditoría PDF + JSON]
-  I -- fuga --> G
+  A[File] --> B[load: real format, password, corrupt]
+  B --> C[orient: EXIF and pages]
+  C --> D[analyze: text, images, paths, layers, metadata]
+  D --> E[detectors: patterns, names, OCR x4, faces x4 x scales, QR/MRZ]
+  E --> F[proposed findings]
+  F --> G[mandatory human review]
+  G --> H[export: real redaction + cleanup]
+  H --> I[leak check on the output]
+  I --> J[audit report PDF + JSON]
+  I -- leak --> G
 ```
 
-El motor procesa página por página y expone progreso y cancelación, de modo que la UI nunca se
-congela y la memoria queda acotada (una página A4 a 300 ppp ocupa unos 26 MB).
+The engine processes page by page and exposes progress and cancellation, so the UI never
+freezes and memory stays bounded (an A4 page at 300 dpi takes about 26 MB).
 
 ---
 
-## 4. Cómo se procesa cada tipo de archivo
+## 4. How each file type is processed
 
-**Formato real.** El tipo se decide por los bytes iniciales, no por la extensión. Contraseña,
-archivo vacío, corrupto o formato no soportado producen un mensaje claro ("Este archivo está
-protegido con contraseña") y quedan en el informe. Un PDF con contraseña solo de permisos se
-abre y se procesa (esas restricciones no protegen nada), y el informe lo menciona.
+**Real format.** The type is decided by the first bytes, not by the extension. A password, an
+empty, corrupt or unsupported file produce a clear message ("Este archivo está protegido con
+contraseña", "This file is password-protected") and are listed in the report. A PDF with only a
+permissions password is opened and processed (those restrictions protect nothing), and the
+report mentions it.
 
-**PDF con capa de texto.**
-1. Inventario de la página: texto (sin recortar a la página), capas opcionales (se revelan),
-   anotaciones y formularios (se aplanan), imágenes (con su ubicación), trazos vectoriales.
-2. Aviso previo de **censuras falsas**: rectángulos oscuros sobre texto que sigue siendo
-   extraíble y anotaciones de censura sin aplicar. Es el error clásico de transparencia; se
-   muestran al revisor y el texto de abajo se detecta como cualquier otro.
-3. Patrones y nombres sobre el texto normalizado, con la geometría de cada carácter.
-4. Cada imagen incrustada: OCR y rostros; las zonas se llevan a coordenadas de página.
-5. Páginas con texto convertido en trazos (sin texto extraíble pero con tinta): se dibujan y se
-   les aplica OCR. Cuándo hacerlo es un compromiso entre tiempo y recall (D8).
-6. Exportación: eliminación real del contenido bajo cada zona (texto, píxeles de imágenes,
-   trazos), limpieza estructural y reescritura completa del archivo.
+**PDF with a text layer.**
+1. Page inventory: text (without clipping to the page), optional layers (revealed),
+   annotations and forms (flattened), images (with their location), vector paths.
+2. Up-front warning about **fake redactions**: dark rectangles over text that is still
+   extractable, and redaction annotations that were never applied. This is the classic
+   transparency mistake; they are shown to the reviewer and the text underneath is detected
+   like any other.
+3. Patterns and names on the normalized text, with the geometry of each character.
+4. Every embedded image: OCR and faces; the areas are mapped to page coordinates.
+5. Pages with text converted to paths (no extractable text but with ink): they are rendered
+   and OCR is applied. When to do it is a trade-off between time and recall (D8).
+6. Export: real removal of the content under each area (text, image pixels, paths),
+   structural cleanup and a full rewrite of the file.
 
-**PDF escaneado (sin capa de texto) o página mixta.** Se dibuja la página a 300 ppp (200 ppp si
-la página es muy grande), OCR y rostros con rotaciones, y la página se reconstruye como imagen
-censurada. Si trae una capa de texto invisible de OCR (PDF "sándwich" de escáner), esa capa
-también contiene los datos y se elimina junto con los píxeles.
+**Scanned PDF (no text layer) or mixed page.** The page is rendered at 300 dpi (200 dpi if the
+page is very large), OCR and faces run with rotations, and the page is rebuilt as a redacted
+image. If it carries an invisible OCR text layer (a scanner's "sandwich" PDF), that layer also
+contains the data and is removed along with the pixels.
 
-**Imagen (JPG, PNG, WEBP, TIFF multipágina).** Se aplica la orientación EXIF y se detecta con
-rotaciones. La salida se escribe desde los píxeles, con el mismo formato y **sin ningún
-metadato**: ni EXIF ni GPS, tampoco la miniatura EXIF (que conserva la imagen original sin
-censurar), XMP, IPTC ni bloques de texto PNG. Las páginas TIFF se procesan una a una.
+**Image (JPG, PNG, WEBP, multi-page TIFF).** The EXIF orientation is applied and detection runs
+with rotations. The output is written from the pixels, in the same format and **with no
+metadata at all**: no EXIF or GPS, nor the EXIF thumbnail (which keeps the original unredacted
+image), XMP, IPTC or PNG text chunks. TIFF pages are processed one by one.
 
-**HEIC.** No es viable sin copyleft: la única biblioteca de lectura sin GPL (pi-heif) es LGPL-3.0
+**HEIC.** Not viable without copyleft: the only non-GPL reading library (pi-heif) is LGPL-3.0
 (D5).
 
 ---
 
-## 5. Detectores
+## 5. Detectors
 
-### 5.1 Patrones (RUT, correo, teléfono, URL)
+### 5.1 Patterns (RUT, email, phone, URL)
 
-Base: los `PATRONES` del cuaderno, más lo que la investigación mostró que falta:
+Base: the notebook's `PATRONES` (patterns), plus what the research showed is missing:
 
-- **RUT**: cuerpo de 1 a 9 dígitos con separadores `.`, espacio, `,` o `·`; cualquier guion
-  (`-`, `–`, `—`, `‑`) o ninguno; etiquetas RUT, RUN, R.U.T., C.I., "Cédula de identidad" sin
-  distinguir mayúsculas. Sin guion o con DV inválido solo junto a una etiqueta o en una tabla
-  (un 9 % de los celulares pasan el DV leídos como RUT). El DV **nunca descarta**: un RUT con DV
-  inválido se censura y se marca como dudoso.
-- **Teléfono**: todas las áreas actuales (2, 32–35, 41–45, 51–53, 55, 57, 58, 61, 63–65, 67,
-  71–73, 75, más 44 de VoIP), móviles, formatos antiguos con 0 y 09, números de 8 dígitos
-  antiguos solo junto a una etiqueta (Fono, Tel., Cel., WhatsApp), anexos. Los 600/800 son
-  institucionales: por defecto se censuran igual y el revisor decide (D10).
-- **Correo**: NFKC, apóstrofos, ofuscaciones (`[arroba]`, `(at)`, `arroba … punto cl`), cortes
-  de línea y guiones blandos del PDF.
-- **Tolerancia a errores de OCR** (solo sobre texto que viene del OCR): O/o/D/Q→0, l/I/i/|→1,
-  Z→2, S/$→5, B→8, g/q→9, `@` leído como `©`/`®`, `.cl` leído como `.c1`/`,cl`, espacios o
-  puntos de más. Se prueba primero la lectura literal y luego la corregida. Si la corregida
-  valida el DV, sube la confianza; si no, igual se censura.
+- **RUT**: a body of 1 to 9 digits with `.`, space, `,` or `·` separators; any hyphen
+  (`-`, `–`, `—`, `‑`) or none; the labels RUT, RUN, R.U.T., C.I., "Cédula de identidad"
+  case-insensitively. Without a hyphen or with an invalid DV, only next to a label or in a
+  table (about 9 % of mobile numbers pass the DV when read as a RUT). The DV **never
+  discards**: a RUT with an invalid DV is redacted and flagged as doubtful.
+- **Phone**: every current area code (2, 32–35, 41–45, 51–53, 55, 57, 58, 61, 63–65, 67,
+  71–73, 75, plus 44 for VoIP), mobiles, old formats with 0 and 09, old 8-digit numbers only
+  next to a label (Fono, Tel., Cel., WhatsApp), extensions. 600/800 numbers are institutional:
+  by default they are redacted anyway and the reviewer decides (D10).
+- **Email**: NFKC, apostrophes, obfuscations (`[arroba]`, `(at)`, `arroba … punto cl`), PDF
+  line breaks and soft hyphens.
+- **Tolerance to OCR errors** (only on text that comes from OCR): O/o/D/Q→0, l/I/i/|→1, Z→2,
+  S/$→5, B→8, g/q→9, `@` read as `©`/`®`, `.cl` read as `.c1`/`,cl`, extra spaces or periods.
+  The literal reading is tried first and then the corrected one. If the corrected one
+  validates the DV, confidence goes up; if not, it is redacted anyway.
 
-### 5.2 Nombres y direcciones
+### 5.2 Names and addresses
 
-Lista (un nombre o una dirección por línea) con coincidencia difusa: sin distinguir tildes ni
-mayúsculas, en cualquier orden ("Rojas Peña, Ana María"), parcial (nombre y primer apellido),
-y tolerante a errores de OCR (distancia de edición acotada con rapidfuzz). Los nombres que no
-están en la lista **no se detectan**: es un límite documentado, y el conjunto de prueba lo mide
-a propósito.
+A list (one name or one address per line) with fuzzy matching: ignoring accents and case, in
+any order ("Rojas Peña, Ana María"), partial (first name and first surname), and tolerant to
+OCR errors (bounded edit distance with rapidfuzz). Names that are not on the list **are not
+detected**: this is a documented limit, and the test set measures it on purpose.
 
-### 5.3 Rostros
+### 5.3 Faces
 
-- YuNet (`face_detection_yunet_2026may.onnx`, MIT; entrada dinámica pensada para OpenCV 5).
-- Orientación EXIF primero; luego 0°, 90°, 180° y 270°. Las cajas vuelven a coordenadas
-  originales y se unen.
-- **Varias escalas** (hallazgo de la investigación): YuNet funciona con caras de unos 10 a
-  300 px. Se detecta con el lado mayor a 640 y a 1280 px y, para caras pequeñas, en mosaicos a
-  resolución completa. En la prueba, un retrato a 2048 px dio cajas erróneas y a 640–1280 px
-  dio la caja correcta.
-- Umbral bajo (recall), unión de cajas y expansión del 20 % para cubrir pelo y orejas.
-- Perfiles: YuNet perdió 2 de 3 perfiles puros y confundió orejas con caras. Propongo medir en
-  la fase 1 un segundo detector con licencia permisiva (clasificador de perfiles de OpenCV) y
-  marcar como dudosas las imágenes con personas pero sin rostro detectado.
-- Ángulos intermedios: si a 45° el recall cae (probable), se agregan pasadas a 45°, 135°, 225°
-  y 315°. YuNet es rápido, así que el costo es bajo; se decide con los números de la fase 1.
+- YuNet (`face_detection_yunet_2026may.onnx`, MIT; dynamic input intended for OpenCV 5).
+- EXIF orientation first; then 0°, 90°, 180° and 270°. The boxes go back to the original
+  coordinates and are merged.
+- **Several scales** (a research finding): YuNet works with faces of about 10 to 300 px.
+  Detection runs with the long side at 640 and at 1280 px and, for small faces, on tiles at
+  full resolution. In the test, a portrait at 2048 px produced wrong boxes and at 640–1280 px
+  produced the correct box.
+- Low threshold (recall), box merging and a 20 % expansion to cover hair and ears.
+- Profiles: YuNet missed 2 of 3 pure profiles and mistook ears for faces. I propose measuring
+  a second, permissively licensed detector in phase 1 (OpenCV's profile classifier) and
+  flagging as doubtful the images with people but no detected face.
+- Intermediate angles: if recall drops at 45° (likely), passes at 45°, 135°, 225° and 315° are
+  added. YuNet is fast, so the cost is low; it is decided with the phase 1 numbers.
 
-### 5.4 Texto en imágenes (OCR)
+### 5.4 Text in images (OCR)
 
-- Modelos PaddleOCR en ONNX (Apache-2.0), vía RapidOCR: detector, clasificador de orientación
-  y reconocedor. El paquete `rapidocr` 3.9.2 trae PP-OCRv6 *small* (detector de 9,9 MB y
-  reconocedor de 21,2 MB) y el clasificador 0/180 de 0,6 MB. El reconocedor es multilingüe e
-  incluye todas las tildes, ñ/Ñ, ü, ¿, º y ª (le falta solo ¡). En una prueba sintética leyó
-  sin errores líneas con RUT, correo, teléfono y "Peña Muñoz" a 0°, 15° y 180°, y falló a
-  90°: las 4 rotaciones son necesarias. En otra prueba, el detector PP-OCRv5 *mobile* encontró
-  5 de 5 líneas y los PP-OCRv6 4 de 5; se elige con el conjunto de prueba en la fase 1. El
-  reconocedor entrega también cuadriláteros por palabra, lo que permite censurar solo el RUT
-  y no la línea completa.
-- **Propuesta ante un problema concreto:** no usar el paquete `rapidocr` tal cual. Exige
-  OpenCV con interfaz gráfica (Qt y FFmpeg), shapely (GEOS, LGPL), requests/certifi y tqdm
-  (MPL), y tiene código que descarga modelos y abre URLs. En su lugar, portar solo la
-  inferencia (preproceso, posproceso del detector, clasificador, decodificación del
-  reconocedor; unas 400 líneas con atribución Apache-2.0) sobre onnxruntime, numpy, OpenCV sin
-  interfaz y pyclipper (MIT). Así no queda código de red en la aplicación y se controla la
-  salida poligonal.
-- Clasificador de orientación activado, más las 4 rotaciones de la imagen completa; las cajas
-  poligonales (cuadriláteros rotados) vuelven a coordenadas originales y se unen.
-- Se censura con el **polígono rotado** del detector, no con su rectángulo envolvente.
-- Modo "censurar todo el texto de esta imagen", activable por archivo.
-- Texto espejado (foto con cámara frontal): las 4 rotaciones no lo leen. Agregar la versión
-  espejada duplica el tiempo de OCR (D6).
+- PaddleOCR models in ONNX (Apache-2.0), via RapidOCR: detector, orientation classifier and
+  recognizer. The `rapidocr` 3.9.2 package ships PP-OCRv6 *small* (a 9.9 MB detector and a
+  21.2 MB recognizer) and the 0.6 MB 0/180 classifier. The recognizer is multilingual and
+  includes every accented letter, ñ/Ñ, ü, ¿, º and ª (it lacks only ¡). In a synthetic test it
+  read lines with a RUT, an email, a phone and "Peña Muñoz" without errors at 0°, 15° and 180°,
+  and failed at 90°: the 4 rotations are needed. In another test, the PP-OCRv5 *mobile*
+  detector found 5 of 5 lines and the PP-OCRv6 ones 4 of 5; the choice is made with the test
+  set in phase 1. The recognizer also returns per-word quadrilaterals, which makes it possible
+  to redact only the RUT and not the whole line.
+- **Proposal for a concrete problem:** do not use the `rapidocr` package as-is. It requires
+  OpenCV with a GUI (Qt and FFmpeg), shapely (GEOS, LGPL), requests/certifi and tqdm (MPL), and
+  it has code that downloads models and opens URLs. Instead, port only the inference
+  (preprocessing, detector postprocessing, classifier, recognizer decoding; about 400 lines
+  with Apache-2.0 attribution) on top of onnxruntime, numpy, headless OpenCV and pyclipper
+  (MIT). That way there is no network code in the application and the polygon output is under
+  our control.
+- Orientation classifier enabled, plus the 4 rotations of the whole image; the polygonal boxes
+  (rotated quadrilaterals) go back to the original coordinates and are merged.
+- Redaction uses the detector's **rotated polygon**, not its bounding rectangle.
+- A "redact all text in this image" mode, which can be enabled per file.
+- Mirrored text (photo taken with a front camera): the 4 rotations do not read it. Adding the
+  mirrored version doubles the OCR time (D6).
 
-### 5.5 QR y MRZ (propuesto)
+### 5.5 QR and MRZ (proposed)
 
-El QR de la cédula codifica una URL con el RUN, el número de documento y la fecha de
-nacimiento. La MRZ del dorso (3 líneas de 30 caracteres) contiene apellidos, nombres, RUN y
-fechas sin puntos ni guion. OpenCV decodifica QR sin red (Apache-2.0), y la MRZ se reconoce
-por su forma en el texto del OCR. Propongo censurar siempre el bloque completo (D7).
-
----
-
-## 5.6 Nada sale del computador
-
-- El código de la aplicación no hace llamadas de red. RapidOCR no tiene telemetría, pero sí
-  descarga modelos de ModelScope si falta un archivo o su SHA-256 no coincide, y abre imágenes
-  desde URL. Al portar la inferencia (5.4), ese código no existe.
-- **onnxruntime trae telemetría.** En Windows registra eventos ETW de Microsoft; se desactiva
-  con `onnxruntime.disable_telemetry_events()` y lo que se envíe depende de la configuración
-  de diagnóstico de Windows. En macOS, desde la versión 1.29, sube eventos por HTTPS a
-  Microsoft y guarda un identificador del equipo, salvo que se defina `ORT_DISABLE_TELEMETRY=1`
-  antes de importarlo. Ambas medidas van al inicio del programa, con una prueba.
-- **WebView2 (la ventana de pywebview en Windows) se conecta por su cuenta**: en la prueba pidió
-  la configuración de experimentos de Edge y buscó un proxy (WPAD), mientras mostraba solo
-  `http://127.0.0.1`. Con argumentos de arranque endurecidos esas dos conexiones desaparecen,
-  pero quedó una conexión TLS del proceso WebView2 a servidores de Microsoft (probablemente del
-  inicio de sesión de Windows), que ningún argumento suprime. Los documentos nunca viajan por
-  ahí, pero no se puede afirmar "cero tráfico" del componente de Windows (D11).
-- Rutas cortas de instalación: en rutas largas (como la de OneDrive) Windows falla al cargar
-  bibliotecas nativas.
-
-## 6. Censura real y limpieza
-
-Independiente del motor PDF que se elija (D1), el contrato es el mismo:
-
-- **PDF**: se elimina el contenido bajo cada zona: caracteres, píxeles de las imágenes
-  (incluidas las que tienen transparencia, CMYK, 1 bit e imágenes en línea) y trazos. Se aplanan
-  formularios y anotaciones. Se eliminan metadatos, XMP, adjuntos, JavaScript, capas y sus
-  nombres, marcadores, etiquetas de página, miniaturas, `ActualText`/`Alt`. El archivo se
-  reescribe completo, sin revisiones anteriores ni objetos huérfanos, y sin contraseña.
-- **Imagen**: relleno sólido del polígono (rostros: relleno sólido por defecto; pixelado fuerte
-  opcional, con bloques de al menos un sexto del ancho de la cara). La imagen de salida se crea
-  desde los píxeles, sin metadatos.
-- Lo que la investigación de PyMuPDF dejó como reglas (aplican si se usa PyMuPDF):
-  `add_redact_annot` con un cuadrilátero rotado censura su rectángulo envolvente (se usan
-  varios rectángulos pequeños); ampliar cada zona 1–2 pt; `scrub()` por defecto falla con
-  respuestas a anotaciones, borra la capa de OCR de los escaneos y no borra píxeles al aplicar
-  censuras pendientes, así que se llama con parámetros explícitos y se completa a mano; las
-  imágenes censuradas quedan sin comprimir salvo que se guarde con `deflate=True`.
+The cédula's QR code encodes a URL with the RUN, the document number and the date of birth.
+The MRZ on the back (3 lines of 30 characters) contains surnames, given names, RUN and dates
+without dots or hyphens. OpenCV decodes QR codes without the network (Apache-2.0), and the MRZ
+is recognized by its shape in the OCR text. I propose always redacting the whole block (D7).
 
 ---
 
-## 7. Verificación de fugas
+## 5.6 Nothing leaves the computer
 
-Después de exportar, el motor abre la salida y la repasa:
+- The application code makes no network calls. RapidOCR has no telemetry, but it does download
+  models from ModelScope if a file is missing or its SHA-256 does not match, and it opens images
+  from URLs. Once the inference is ported (5.4), that code does not exist.
+- **onnxruntime ships telemetry.** On Windows it logs Microsoft ETW events; it is disabled with
+  `onnxruntime.disable_telemetry_events()`, and what gets sent depends on the Windows
+  diagnostic settings. On macOS, since version 1.29, it uploads events over HTTPS to Microsoft
+  and stores a machine identifier unless `ORT_DISABLE_TELEMETRY=1` is set before importing it.
+  Both measures go at program startup, with a test.
+- **WebView2 (pywebview's window on Windows) connects on its own**: in the test it requested
+  Edge's experiment configuration and looked for a proxy (WPAD), while showing only
+  `http://127.0.0.1`. With hardened startup arguments those two connections go away, but one
+  TLS connection from the WebView2 process to Microsoft servers remained (probably from the
+  Windows sign-in), which no argument suppresses. Documents never travel through it, but "zero
+  traffic" cannot be claimed for the Windows component (D11).
+- Short install paths: with long paths (such as OneDrive's) Windows fails to load native
+  libraries.
 
-1. Los mismos detectores sobre la salida: patrones y nombres sobre el texto extraído por
-   **dos motores independientes** (pdfium extrae también el texto oculto y fuera de página),
-   OCR y rostros sobre las páginas dibujadas.
-2. Búsqueda de cada valor censurado en los bytes del archivo, en los flujos descomprimidos y en
-   las cadenas de todos los objetos.
-3. Comprobaciones estructurales: metadatos, anotaciones, adjuntos, capas, JavaScript,
-   revisiones anteriores, EXIF, miniatura, XMP y bloques de texto de la imagen.
-4. Bajo cada zona censurada, que no quede una imagen con los píxeles originales debajo del
-   relleno.
+## 6. Real redaction and cleanup
 
-Todo lo que aparezca es una **fuga**: se muestra en rojo en la revisión, bloquea la exportación
-de ese archivo hasta que el revisor la resuelva y queda en el informe. La app nunca dice
-"documento limpio"; dice "revisión lista para confirmar".
+Regardless of the PDF engine chosen (D1), the contract is the same:
 
----
-
-## 8. Revisión humana e informe
-
-Fase 2 en detalle, con mockup previo para tu aprobación. En resumen:
-
-- Pantalla de revisión con visor, zonas coloreadas por tipo y lista lateral de hallazgos con
-  los **dudosos primero** (DV inválido, OCR de baja confianza, rostros pequeños o de perfil,
-  detectados en una sola orientación).
-- Agregar zonas dibujando; **quitar una zona exige confirmación y queda registrado** con motivo
-  opcional.
-- Informe de auditoría (PDF y JSON): qué se censuró, dónde, con qué detector, qué cambió el
-  revisor y el resultado de la verificación de fugas. El JSON sigue el contrato que usa el
-  evaluador del banco de pruebas, de modo que la app se puede evaluar tal cual.
-
----
-
-## 9. Rendimiento y memoria
-
-- Medición en la fase 1 con el conjunto de prueba, limitando onnxruntime y OpenCV a 4 hilos para
-  aproximar un PC normal. El equipo de desarrollo es más potente (i7-13620H, 16 GB), así que se
-  reportarán ambas cifras.
-- Metas iniciales, para discutir con los números en la mano: imagen suelta ≤ 5 s; página
-  escaneada ≤ 10 s; página con texto ≤ 1 s (sin OCR de página); memoria máxima < 2 GB.
-- El costo dominante será el OCR con 4 rotaciones (o 8, con espejo). Si el tiempo choca con el
-  recall, lo presento como decisión con cifras, no lo resuelvo en silencio.
+- **PDF**: the content under each area is removed: characters, image pixels (including images
+  with transparency, CMYK, 1-bit and inline images) and paths. Forms and annotations are
+  flattened. Metadata, XMP, attachments, JavaScript, layers and their names, bookmarks, page
+  labels, thumbnails and `ActualText`/`Alt` are removed. The file is fully rewritten, with no
+  previous revisions or orphan objects, and without a password.
+- **Image**: solid fill of the polygon (faces: solid fill by default; strong pixelation
+  optional, with blocks of at least one sixth of the face width). The output image is created
+  from the pixels, without metadata.
+- What the PyMuPDF research left as rules (they apply if PyMuPDF is used):
+  `add_redact_annot` with a rotated quadrilateral redacts its bounding rectangle (several small
+  rectangles are used instead); grow each area by 1–2 pt; `scrub()` with its defaults fails on
+  annotation replies, deletes the OCR layer of scans and does not erase pixels when applying
+  pending redactions, so it is called with explicit parameters and completed by hand; redacted
+  images are left uncompressed unless the file is saved with `deflate=True`.
 
 ---
 
-## 10. Fases siguientes
+## 7. Leak check
 
-**Fase 1: motor y CLI.**
-1. Modelo de datos, carga y errores comprensibles.
-2. Patrones nuevos, con pruebas unitarias de las 52 variantes de teléfono y las de RUT y correo.
-3. Nombres con coincidencia difusa.
-4. OCR portado y rostros a varias escalas y orientaciones.
-5. PDF: inventario, censura real, limpieza (según D1).
-6. Imágenes y TIFF.
-7. Verificación de fugas.
-8. Informe JSON (compatible con el evaluador) y CLI.
-9. Medición de recall, fugas y tiempos con `banco_pruebas.evaluar`.
+After exporting, the engine opens the output and goes over it:
 
-Criterio de aceptación: el de `docs/metricas.md`, sección 5.
+1. The same detectors on the output: patterns and names on the text extracted by **two
+   independent engines** (pdfium also extracts hidden and off-page text), OCR and faces on the
+   rendered pages.
+2. A search for every redacted value in the file bytes, in the decompressed streams and in the
+   strings of every object.
+3. Structural checks: metadata, annotations, attachments, layers, JavaScript, previous
+   revisions, EXIF, thumbnail, XMP and the image's text chunks.
+4. Under each redacted area, that no image with the original pixels remains under the fill.
 
-**Fase 2: API y UI.** Primero, mockup de la pantalla de revisión para aprobación. Luego la API
-local (127.0.0.1, puerto aleatorio, token de sesión), la UI (inicio, progreso cancelable,
-revisión, exportación), modo claro y oscuro, contraste AA, navegación completa con teclado, y
-todo en español de Chile.
-
-**Fase 3: empaquetado.** PyInstaller en modo carpeta (deja reemplazables las bibliotecas LGPL o
-MPL que se acepten). El `.spec` excluye el DLL de FFmpeg de OpenCV, las fuentes GPL de
-reportlab y todo lo de desarrollo, y una prueba falla si aparecen. Además: `LICENCIAS.md`
-generado desde los archivos de licencia reales, una prueba de que no hay tráfico de red, el
-tamaño final, `README.md` con capturas y `DESARROLLO.md`. macOS según D4.
+Anything that shows up is a **leak**: it is shown in red in the review, blocks the export of
+that file until the reviewer resolves it, and is recorded in the report. The app never says
+"documento limpio" ("clean document"); it says "revisión lista para confirmar" ("review ready
+to confirm").
 
 ---
 
-## 11. Conjunto de prueba y métrica (entregables de la fase 0)
+## 8. Human review and report
 
-### 11.1 Conjunto de prueba ficticio (`datos_prueba/generado/`)
+Phase 2 in detail, with a mockup first for your approval. In short:
 
-| Categoría | Archivos | Datos personales | Metadatos | Qué ejercita |
+- A review screen with a viewer, areas colored by type and a side list of findings with the
+  **doubtful ones first** (invalid DV, low-confidence OCR, small or profile faces, detected in
+  a single orientation).
+- Add areas by drawing; **removing an area requires confirmation and is logged**, with an
+  optional reason.
+- Audit report (PDF and JSON): what was redacted, where, by which detector, what the reviewer
+  changed and the result of the leak check. The JSON follows the contract used by the test
+  bench evaluator, so the app can be evaluated as-is.
+
+---
+
+## 9. Performance and memory
+
+- Measured in phase 1 with the test set, limiting onnxruntime and OpenCV to 4 threads to
+  approximate an ordinary PC. The development machine is more powerful (i7-13620H, 16 GB), so
+  both figures will be reported.
+- Initial targets, to be discussed with the numbers in hand: standalone image ≤ 5 s; scanned
+  page ≤ 10 s; text page ≤ 1 s (without page OCR); peak memory < 2 GB.
+- The dominant cost will be OCR with 4 rotations (or 8, with mirroring). If time clashes with
+  recall, I will present it as a decision with figures, not settle it silently.
+
+---
+
+## 10. Next phases
+
+**Phase 1: engine and CLI.**
+1. Data model, loading and understandable errors.
+2. New patterns, with unit tests for the 52 phone variants and the RUT and email ones.
+3. Names with fuzzy matching.
+4. Ported OCR and faces at several scales and orientations.
+5. PDF: inventory, real redaction, cleanup (per D1).
+6. Images and TIFF.
+7. Leak check.
+8. JSON report (compatible with the evaluator) and CLI.
+9. Measurement of recall, leaks and times with `test_bench.evaluate`.
+
+Acceptance criterion: the one in `docs/metrics.md`, section 5.
+
+**Phase 2: API and UI.** First, a mockup of the review screen for approval. Then the local API
+(127.0.0.1, random port, session token), the UI (start, cancellable progress, review,
+export), light and dark mode, AA contrast, full keyboard navigation, and everything in Chilean
+Spanish.
+
+**Phase 3: packaging.** PyInstaller in folder mode (keeps any accepted LGPL or MPL libraries
+replaceable). The `.spec` excludes OpenCV's FFmpeg DLL, reportlab's GPL fonts and everything
+development-only, and a test fails if they show up. Also: `LICENSES.md` generated from the
+actual license files, a test that there is no network traffic, the final size, `README.md`
+with screenshots and `DEVELOPMENT.md`. macOS per D4.
+
+---
+
+## 11. Test set and metric (phase 0 deliverables)
+
+### 11.1 Fictitious test set (`test_data/generated/`)
+
+| Category | Files | Personal data | Metadata | What it exercises |
 |---|---|---|---|---|
-| PDF con texto | 12 | 292 | — | todos los formatos de RUT, teléfono y correo; página con `/Rotate 90`; texto girado; texto diminuto, blanco sobre blanco, bajo imagen y fuera de la página; texto convertido en trazos; imágenes incrustadas, QR |
-| PDF con metadatos | 4 | 28 | 17 | Info, XMP, anotaciones, adjuntos, capa oculta, formulario, marcadores, JavaScript, revisión incremental, censura falsa, PDF con contraseña de permisos |
-| PDF escaneado | 8 | 107 | — | 300/200/150 ppp, torcido, invertido, de lado, con foto, mixto, sándwich de OCR, timbre, firma, manuscrito |
-| Imagen girada | 17 | 84 | — | 0/90/180/270/15/45°, espejo, ruido, texto de 12 px, bajo contraste |
-| EXIF | 8 | 33 | 23 | orientaciones 3/6/8 y EXIF incorrecto, GPS, miniatura, XMP, IPTC, PNG y WEBP |
-| TIFF | 2 | 22 | 4 | multipágina con páginas de distinto tamaño y giro, 1 bit |
-| Cédula ficticia | 7 | 45 | — | plana, fotografiada en perspectiva, girada 30°, con reflejo, dorso con MRZ y QR, PDF con ambos lados |
-| Pantallazos | 7 | 192 | — | correo, chat de celular, planilla (también reducida a 8 px), formulario web, alta densidad |
-| Rostros | 30 | 168 | — | retratos de frente, tres cuartos y perfil; rotados; grupos de 22 a 190 px; 9 fotos reales; afiche; oclusión; baja resolución |
-| Errores | 7 | — | — | contraseña, corrupto, vacío, formato falso, imagen truncada, .docx |
+| Text PDF | 12 | 292 | — | every RUT, phone and email format; page with `/Rotate 90`; rotated text; tiny text, white on white, under an image and off the page; text converted to paths; embedded images, QR |
+| PDF with metadata | 4 | 28 | 17 | Info, XMP, annotations, attachments, hidden layer, form, bookmarks, JavaScript, incremental revision, fake redaction, PDF with a permissions password |
+| Scanned PDF | 8 | 107 | — | 300/200/150 dpi, skewed, upside down, sideways, with a photo, mixed, OCR sandwich, stamp, signature, handwriting |
+| Rotated image | 17 | 84 | — | 0/90/180/270/15/45°, mirror, noise, 12 px text, low contrast |
+| EXIF | 8 | 33 | 23 | orientations 3/6/8 and wrong EXIF, GPS, thumbnail, XMP, IPTC, PNG and WEBP |
+| TIFF | 2 | 22 | 4 | multi-page with pages of different size and rotation, 1-bit |
+| Fictitious cédula | 7 | 45 | — | flat, photographed in perspective, rotated 30°, with glare, back with MRZ and QR, PDF with both sides |
+| Screenshots | 7 | 192 | — | email, mobile chat, spreadsheet (also downscaled to 8 px), web form, high density |
+| Faces | 30 | 168 | — | frontal, three-quarter and profile portraits; rotated; groups from 22 to 190 px; 9 real photos; poster; occlusion; low resolution |
+| Errors | 7 | — | — | password, corrupt, empty, fake format, truncated image, .docx |
 
-Rostros: Face Research Lab London Set (CC BY 4.0, con consentimiento), Open Images V7 (CC BY 2.0)
-y retratos de dominio público de EE. UU. Detalle y atribuciones en `LICENCIAS.md`.
+Faces: Face Research Lab London Set (CC BY 4.0, with consent), Open Images V7 (CC BY 2.0) and
+US public-domain portraits. Details and attributions in `LICENSES.md`.
 
-### 11.2 Validación del evaluador
+### 11.2 Validating the evaluator
 
-| Sistema | Recall | Fugas críticas | Metadatos con fuga | Errores bien rechazados |
+| System | Recall | Critical leaks | Metadata leaked | Errors correctly rejected |
 |---|---|---|---|---|
-| identidad (copia sin cambios) | 0 % | 397 (todas) | 44 de 44 | 0 de 7 |
-| oráculo (censura con la respuesta) | 100 % | 0 | 0 | 7 de 7 |
-| cuaderno | 22,9 % | 150 | 17 de 44 | 0 de 7 |
+| identity (unchanged copy) | 0 % | 397 (all) | 44 of 44 | 0 of 7 |
+| oracle (redacts using the answer) | 100 % | 0 | 0 | 7 of 7 |
+| notebook | 22.9 % | 150 | 17 of 44 | 0 of 7 |
 
-Identidad marca todo como fuga (el evaluador no es ciego a ningún caso) y el oráculo no marca
-nada (la verdad de terreno y las coordenadas son correctas).
+Identity flags everything as a leak (the evaluator is not blind to any case) and the oracle
+flags nothing (the ground truth and the coordinates are correct).
 
-### 11.3 Prototipo del motor (adelanto)
+### 11.3 Engine prototype (preview)
 
-`banco_pruebas/lineas_base/prototipo.py`: patrones ampliados sobre la geometría de cada carácter,
-lista de nombres, OCR (PP-OCRv6) en 0/90/270° más el clasificador de 180°, YuNet en 4
-orientaciones y 2 escalas, QR, censura real y limpieza completa. Resultado en el conjunto de
-prueba:
+`test_bench/baselines/prototype.py`: extended patterns on the geometry of each character, name
+list, OCR (PP-OCRv6) at 0/90/270° plus the 180° classifier, YuNet in 4 orientations and 2
+scales, QR, real redaction and full cleanup. Result on the test set:
 
-| Tipo (nivel base) | Recall | Fugas |
+| Type (base level) | Recall | Leaks |
 |---|---|---|
 | RUT (112) | 100 % | 0 |
-| Correo (155) | 100 % | 0 |
-| Teléfono (130) | 100 % | 0 |
+| Email (155) | 100 % | 0 |
+| Phone (130) | 100 % | 0 |
 | URL (23) | 100 % | 0 |
-| Nombre de la lista (160) | 100 % | 0 |
-| Dirección de la lista (35) | 100 % | 0 |
-| Rostro (161) | 96,9 % | 5, todas en fotos reales de multitudes |
+| Name from the list (160) | 100 % | 0 |
+| Address from the list (35) | 100 % | 0 |
+| Face (161) | 96.9 % | 5, all in real crowd photos |
 
-Metadatos con fuga: 0 de 44. Errores bien rechazados: 7 de 7. **Veredicto del criterio de la
-fase 1: APROBADO.** En estrés: RUT 81 %, correo 89 %, teléfono 93 %, rostros 100 %. Fuera de
-alcance, como corresponde: nombres fuera de la lista y firmas.
+Metadata leaked: 0 of 44. Errors correctly rejected: 7 of 7. **Verdict on the phase 1
+criterion: PASSED.** Under stress: RUT 81 %, email 89 %, phone 93 %, faces 100 %. Out of scope,
+as expected: names not on the list and signatures.
 
-Lo que falta para que sea el motor de la fase 1: censurar solo el dato y no la línea completa
-de OCR (hoy tapa el 13 % del texto neutro), verificación de fugas propia, motor PDF según D1,
-tiempos (mediana 12 s por imagen y hasta 100 s por página escaneada en este equipo cargado),
-rostros pequeños en multitudes, y todo lo de la sección 10.
+What is missing for it to be the phase 1 engine: redacting only the data item and not the whole
+OCR line (today it covers 13 % of the neutral text), its own leak check, the PDF engine per D1,
+times (median 12 s per image and up to 100 s per scanned page on this loaded machine), small
+faces in crowds, and everything in section 10.
 
-**Métrica**: ver `docs/metricas.md`.
+**Metric**: see `docs/metrics.md`.
 
-**Cómo regenerar**:
+**How to regenerate**:
 
 ```
-uv sync --group datos
-uv run python scripts/generar_datos_prueba.py        # datos_prueba/generado/ + manifiesto.json
-uv run python -m banco_pruebas.linea_base oraculo --manifiesto datos_prueba/generado/manifiesto.json --salida resultados/detalle/oraculo
-uv run python -m banco_pruebas.evaluar --manifiesto datos_prueba/generado/manifiesto.json --informe resultados/detalle/oraculo/informe.json --salida-archivos resultados/detalle/oraculo/archivos --reporte resultados/detalle/oraculo
-uv run python -m banco_pruebas.visualizar datos_prueba/generado/manifiesto.json --salida resultados/detalle/superposiciones
-uv sync --group prototipo --group datos   # para el prototipo (OCR y rostros)
-uv run python -m banco_pruebas.linea_base prototipo --manifiesto datos_prueba/generado/manifiesto.json --salida resultados/detalle/prototipo --procesos 5
-uv run python -m banco_pruebas.comparar          # láminas en resultados/ejemplos
-uv run python -m banco_pruebas.procesar_carpeta <carpeta con documentos> --salida resultados/gore
+uv sync --group data
+uv run python scripts/generate_test_data.py        # test_data/generated/ + manifest.json
+uv run python -m test_bench.baseline oracle --manifest test_data/generated/manifest.json --output results/details/oracle
+uv run python -m test_bench.evaluate --manifest test_data/generated/manifest.json --redaction-report results/details/oracle/report.json --outputs-dir results/details/oracle/files --report-dir results/details/oracle
+uv run python -m test_bench.visualize test_data/generated/manifest.json --output results/details/overlays
+uv sync --group prototype --group data   # for the prototype (OCR and faces)
+uv run python -m test_bench.baseline prototype --manifest test_data/generated/manifest.json --output results/details/prototype --processes 5
+uv run python -m test_bench.compare          # sheets in results/examples
+uv run python -m test_bench.process_folder <folder with documents> --output results/gore
 ```
 
 ---
 
-## 12. Decisiones que necesito
+## 12. Decisions I need
 
-**D1. Motor PDF: PyMuPDF (AGPL) contra la política de licencias.** Es el choque principal.
+**D1. PDF engine: PyMuPDF (AGPL) versus the license policy.** This is the main clash.
 
-| Opción | Ventajas | Costos y riesgos |
+| Option | Advantages | Costs and risks |
 |---|---|---|
-| **A. pdfium (BSD/Apache) + pypdf (BSD) + rasterizado de respaldo** | Respeta la política. Un prototipo ya eliminó texto de verdad, incluso parte de una línea, y reescribió píxeles de imágenes sin dejar rastro en el archivo. | Unos 3 a 6 días más de desarrollo. Fuentes raras (Type3, sin tabla de caracteres) pueden no reconstruirse: en esas páginas se rasteriza automáticamente. Los glifos de la fuente incrustada siguen en el archivo (revela qué letras se usan, no el texto). |
-| B. PyMuPDF con licencia comercial de Artifex | Es el motor más probado (`apply_redactions`); el plan técnico original funciona tal cual. | Licencia de pago (por copia o suscripción, con mínimo trimestral) y trámite de compra. |
-| C. PyMuPDF bajo AGPL | Sin costo y sin trabajo extra. | Toda la aplicación pasa a ser AGPL y cada entrega a otro servicio obliga a ofrecer el código fuente completo. Contradice tu política. |
-| D. Rasterizar siempre | Lo más simple y seguro. | Se pierde la capa de texto: el PDF deja de ser buscable y accesible, y pesa más. |
+| **A. pdfium (BSD/Apache) + pypdf (BSD) + fallback rasterization** | Respects the policy. A prototype already removed text for real, even part of a line, and rewrote image pixels without leaving a trace in the file. | About 3 to 6 more days of development. Unusual fonts (Type3, no character map) may not be rebuilt: those pages are rasterized automatically. The glyphs of the embedded font stay in the file (it reveals which letters are used, not the text). |
+| B. PyMuPDF with an Artifex commercial license | It is the most proven engine (`apply_redactions`); the original technical plan works as-is. | Paid license (per copy or subscription, with a quarterly minimum) and a purchasing process. |
+| C. PyMuPDF under AGPL | No cost and no extra work. | The whole application becomes AGPL and every delivery to another agency requires offering the complete source code. It contradicts your policy. |
+| D. Always rasterize | The simplest and safest. | The text layer is lost: the PDF is no longer searchable or accessible, and it is larger. |
 
-**Mi recomendación: A**, con rasterizado automático de las páginas que la verificación no
-pueda confirmar, y rasterizado total como modo "máxima seguridad". Si hay presupuesto y
-prefieren el motor más probado, B. PyMuPDF queda solo en el banco de pruebas (no se distribuye).
+**My recommendation: A**, with automatic rasterization of the pages the verification cannot
+confirm, and full rasterization as a "maximum security" mode. If there is budget and you
+prefer the most proven engine, B. PyMuPDF stays only in the test bench (not shipped).
 
-**D2. Alcance de "cero fugas".** Propongo que el criterio de aceptación de la fase 1 aplique al
-nivel `base` en **todas** las categorías (PDF con texto, escaneos, imágenes giradas en
-0/90/180/270/15/45°, cédula, pantallazos, TIFF), y que los casos `estres` (texto de 8 px,
-espejado, fax de 150 ppp, formatos antiguos, ofuscaciones) y `fuera_de_alcance` (nombres fuera
-de la lista, firmas, manuscrito) se reporten sin bloquear. ¿Lo confirmas?
+**D2. Scope of "zero leaks".** I propose that the phase 1 acceptance criterion apply to the
+`base` level in **every** category (text PDF, scans, images rotated at 0/90/180/270/15/45°,
+cédula, screenshots, TIFF), and that the `stress` cases (8 px text, mirrored, 150 dpi fax, old
+formats, obfuscations) and the `out_of_scope` ones (names not on the list, signatures,
+handwriting) be reported without blocking. Do you confirm?
 
-**D3. Licencias con copyleft débil.** ¿Se acepta algún componente LGPL o MPL si se cumple su
-licencia y queda reemplazable (por ejemplo certifi, o Eigen dentro de onnxruntime, que es MPL
-solo de cabeceras)? ¿Se acepta la licencia de Intel IPP (no OSI) que viene dentro de OpenCV para
-Windows? Si la respuesta es "estrictamente MIT/Apache/BSD", compilamos OpenCV sin FFmpeg ni IPP.
+**D3. Weak-copyleft licenses.** Is any LGPL or MPL component acceptable if its license is
+complied with and it stays replaceable (for example certifi, or Eigen inside onnxruntime, which
+is header-only MPL)? Is the Intel IPP license (not OSI) that comes inside OpenCV for Windows
+acceptable? If the answer is "strictly MIT/Apache/BSD", we build OpenCV without FFmpeg or IPP.
 
-**D4. macOS.** Con las ruedas de PyPI no es viable (FFmpeg GPL dentro de OpenCV). Es viable
-compilando OpenCV sin FFmpeg, o ejecutando YuNet directamente con onnxruntime. Requiere un Mac
-con macOS 14 o superior para construir y probar. ¿Es requisito de la versión 1?
+**D4. macOS.** With the PyPI wheels it is not viable (GPL FFmpeg inside OpenCV). It is viable
+by building OpenCV without FFmpeg, or by running YuNet directly with onnxruntime. It requires a
+Mac with macOS 14 or later to build and test. Is it a requirement for version 1?
 
-**D5. HEIC.** Opciones: no soportarlo en la versión 1 y pedir a los usuarios que conviertan a JPG
-(mi recomendación), o usar pi-heif (LGPL-3.0, solo lectura).
+**D5. HEIC.** Options: do not support it in version 1 and ask users to convert to JPG (my
+recommendation), or use pi-heif (LGPL-3.0, read-only).
 
-**D6. Imágenes espejadas.** "Volteadas" puede significar giradas 180° (cubierto) o espejadas
-(foto con cámara frontal). Para el espejo, el OCR debe correr también sobre la imagen espejada,
-lo que duplica su tiempo. Propongo activarlo solo cuando la pasada normal no encuentre texto
-legible, o como opción por archivo. ¿Qué significa "volteadas" para ustedes?
+**D6. Mirrored images.** "Volteadas" (flipped) can mean rotated 180° (covered) or mirrored
+(photo taken with a front camera). For mirroring, OCR must also run on the mirrored image,
+which doubles its time. I propose enabling it only when the normal pass finds no legible text,
+or as a per-file option. What does "volteadas" mean to you?
 
-**D7. QR, MRZ y cédulas.** Propongo agregar detectores de QR y MRZ y, cuando una imagen parezca
-una cédula (MRZ o etiquetas como "NÚMERO DOCUMENTO"), sugerir el modo "censurar todo el texto".
-¿De acuerdo?
+**D7. QR, MRZ and cédulas.** I propose adding QR and MRZ detectors and, when an image looks
+like a cédula (an MRZ or labels such as "NÚMERO DOCUMENTO"), suggesting the "redact all text"
+mode. Agreed?
 
-**D8. OCR de páginas con texto.** El texto convertido en trazos (común en PDF exportados desde
-herramientas de diseño) solo se ve con OCR. Opciones: OCR de toda página con texto (más recall,
-unos segundos por página) u OCR solo de páginas con trazos sospechosos (más rápido). Lo decido
-con cifras en la fase 1, salvo que prefieras fijarlo ya.
+**D8. OCR of text pages.** Text converted to paths (common in PDFs exported from design tools)
+is only visible with OCR. Options: OCR every text page (more recall, a few seconds per page) or
+OCR only pages with suspicious paths (faster). I will decide with figures in phase 1, unless
+you prefer to fix it now.
 
-**D9. Salida de los escaneos.** Propongo reconstruir la página solo como imagen, sin capa de
-texto. Agregar una capa de OCR invisible haría el PDF buscable, pero reintroduce texto (y
-errores de OCR) en el archivo publicado.
+**D9. Output of scans.** I propose rebuilding the page only as an image, without a text layer.
+Adding an invisible OCR layer would make the PDF searchable, but it reintroduces text (and OCR
+errors) into the published file.
 
-**D10. Datos institucionales.** Los números 600/800 y los RUT de instituciones (por ejemplo
-72.xxx.xxx-x de un GORE) no son datos personales. Propongo censurarlos igual por defecto (recall)
-y permitir una lista blanca configurable. Los montos y las fechas no se censuran (como en el
-cuaderno), a confirmar con la unidad de transparencia.
+**D10. Institutional data.** 600/800 numbers and the RUTs of institutions (for example a GORE's
+72.xxx.xxx-x) are not personal data. I propose redacting them anyway by default (recall) and
+allowing a configurable allowlist. Amounts and dates are not redacted (as in the notebook), to
+be confirmed with the transparency unit.
 
-**D11. WebView2 y el tráfico de red.** La ventana de la app usa WebView2, un componente de
-Windows que se comunica con Microsoft por su cuenta (sección 5.6). Opciones: (a) mantener
-pywebview con los argumentos endurecidos, SmartScreen y reportes de fallas desactivados, y
-decirlo claramente en la documentación (recomendado); (b) además, pedir a TI una política de
-equipo o una regla de firewall para el proceso; (c) cambiar a una interfaz sin motor web, lo
-que implica Qt (LGPL) o una interfaz mucho más pobre. ¿Es aceptable (a), o el requisito es
-cero tráfico medido con firewall también para los componentes del sistema?
+**D11. WebView2 and network traffic.** The app window uses WebView2, a Windows component that
+talks to Microsoft on its own (section 5.6). Options: (a) keep pywebview with the hardened
+arguments, SmartScreen and crash reports disabled, and say so clearly in the documentation
+(recommended); (b) in addition, ask IT for a machine policy or a firewall rule for the process;
+(c) switch to an interface without a web engine, which means Qt (LGPL) or a much poorer
+interface. Is (a) acceptable, or is the requirement zero traffic measured with a firewall for
+the system components as well?
 
-**D12. URL.** El patrón del cuaderno censuraba todas las URL. En un informe real eso tapó 36
-enlaces a noticias institucionales (y a medias, porque la URL seguía en la línea siguiente). El
-prototipo ahora censura solo las URL personales: las que contienen un dato (RUT, correo,
-teléfono, nombre de la lista), las de redes sociales, reuniones o archivos compartidos (Teams,
-Zoom, Drive, OneDrive…) y las que llevan identificadores en la consulta (`?rut=`, `?id=`,
-`?token=`). ¿Lo adoptamos como regla, o prefieren censurar todas las URL?
+**D12. URLs.** The notebook's pattern redacted every URL. In a real report that covered 36
+links to institutional news (and only halfway, because the URL continued on the next line).
+The prototype now redacts only personal URLs: those that contain a data item (RUT, email,
+phone, a name from the list), social-network, meeting or shared-file URLs (Teams, Zoom, Drive,
+OneDrive…) and those that carry identifiers in the query (`?rut=`, `?id=`, `?token=`). Do we
+adopt this as the rule, or do you prefer to redact every URL?
 
-**D13. Nombres fuera de la lista.** Tu especificación dice que los nombres en texto libre solo se
-detectan si están en la lista. En los informes reales eso dejaba a la vista firmantes, nombres de
-pila junto a apellidos de la lista y listas de asistencia manuscritas. El prototipo agrega reglas
-de contexto: nombre completo alrededor de un apellido de la lista, nombres que empiezan con un
-nombre de pila conocido en líneas cortas (firmas, celdas, encabezados de correo) o después de
-"don/doña/Sr./Sra.", pares etiqueta-valor (NOMBRE, RUT, Correo, De:, Para:) y columnas de tablas
-(Nombre, Correo, Teléfono, Firma). En el texto corrido sigue rigiendo la lista. ¿De acuerdo?
+**D13. Names not on the list.** Your specification says names in free text are only detected
+if they are on the list. In the real reports that left signatories, given names next to
+surnames from the list, and handwritten attendance lists exposed. The prototype adds context
+rules: a full name around a surname from the list, names that start with a known given name in
+short lines (signatures, cells, email headers) or after "don/doña/Sr./Sra." (Mr./Mrs.),
+label-value pairs (NOMBRE, RUT, Correo, De:, Para:, i.e. name, RUT, email, from, to) and table
+columns (Nombre, Correo, Teléfono, Firma, i.e. name, email, phone, signature). In running text
+the list still rules. Agreed?
 
 ---
 
-## 13. Riesgos
+## 13. Risks
 
-| Riesgo | Mitigación |
+| Risk | Mitigation |
 |---|---|
-| Fuentes PDF raras rompen la reconstrucción del texto (opción A de D1) | verificación con dos extractores y rasterizado automático de la página |
-| Perfiles y rostros ocluidos no detectados | varias escalas, segundo detector, marcar dudosos, revisión humana |
-| OCR con letra pequeña o baja resolución | reescalar antes del OCR y mosaicos; límite documentado |
-| Tiempo de OCR con 4 u 8 orientaciones | medir y decidir con cifras (sección 9) |
-| Dependencias que traen código de red | portar la inferencia OCR, prueba de tráfico de red, onnxruntime sin telemetría |
-| Cambios de URL en las fuentes de rostros | catálogo con SHA-256 y caché local |
-| El repositorio vive en OneDrive | `.venv` y datos generados se sincronizan; conviene moverlo o excluir carpetas |
+| Unusual PDF fonts break the text rebuild (option A of D1) | verification with two extractors and automatic rasterization of the page |
+| Profiles and occluded faces not detected | several scales, a second detector, flagging doubtful ones, human review |
+| OCR with small print or low resolution | upscaling before OCR and tiling; documented limit |
+| OCR time with 4 or 8 orientations | measure and decide with figures (section 9) |
+| Dependencies that bring network code | port the OCR inference, a network-traffic test, onnxruntime without telemetry |
+| URL changes in the face sources | catalog with SHA-256 and a local cache |
+| The repository lives in OneDrive | `.venv` and generated data get synced; better to move it or exclude folders |
 
-## 14. Límites que quedarán documentados en la app y en el README
+## 14. Limits that will be documented in the app and in the README
 
-- Los montos y las fechas no se censuran por defecto (confirmar con la unidad de transparencia).
-- Los nombres y direcciones en texto corrido solo se detectan si están en la lista; en firmas, celdas,
-  tablas y encabezados de correo se detectan también por contexto (D13).
-- El OCR puede fallar con letra manuscrita, texto muy pequeño o imágenes de muy baja resolución.
-- Los rostros de perfil, muy pequeños o tapados pueden no detectarse.
-- La revisión humana de cada documento es obligatoria antes de publicar.
+- Amounts and dates are not redacted by default (to be confirmed with the transparency unit).
+- Names and addresses in running text are only detected if they are on the list; in
+  signatures, cells, tables and email headers they are also detected by context (D13).
+- OCR can fail with handwriting, very small text or very low-resolution images.
+- Profile, very small or occluded faces may not be detected.
+- Human review of every document before publishing is mandatory.
