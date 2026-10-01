@@ -87,7 +87,7 @@ Estas debilidades se comprobaron ejecutando el código del cuaderno (línea base
 **Cifras de la línea base `cuaderno`** en el conjunto de prueba: recall global 22,9 %
 (62,8 % en PDF con texto; 0 % en escaneos, imágenes, cédulas y pantallazos, que no procesa),
 150 fugas críticas y 17 de 44 metadatos con fuga. Reporte completo en
-`resultados/cuaderno/evaluacion.md` (se regenera con los comandos de la sección 11).
+`resultados/detalle/cuaderno/evaluacion.md` (se regenera con los comandos de la sección 11).
 
 ---
 
@@ -454,9 +454,13 @@ rostros pequeños en multitudes, y todo lo de la sección 10.
 ```
 uv sync --group datos
 uv run python scripts/generar_datos_prueba.py        # datos_prueba/generado/ + manifiesto.json
-uv run python -m banco_pruebas.linea_base oraculo --manifiesto datos_prueba/generado/manifiesto.json --salida resultados/oraculo
-uv run python -m banco_pruebas.evaluar --manifiesto datos_prueba/generado/manifiesto.json --informe resultados/oraculo/informe.json --salida-archivos resultados/oraculo/archivos --reporte resultados/oraculo
-uv run python -m banco_pruebas.visualizar datos_prueba/generado/manifiesto.json --salida resultados/superposiciones
+uv run python -m banco_pruebas.linea_base oraculo --manifiesto datos_prueba/generado/manifiesto.json --salida resultados/detalle/oraculo
+uv run python -m banco_pruebas.evaluar --manifiesto datos_prueba/generado/manifiesto.json --informe resultados/detalle/oraculo/informe.json --salida-archivos resultados/detalle/oraculo/archivos --reporte resultados/detalle/oraculo
+uv run python -m banco_pruebas.visualizar datos_prueba/generado/manifiesto.json --salida resultados/detalle/superposiciones
+uv sync --group prototipo --group datos   # para el prototipo (OCR y rostros)
+uv run python -m banco_pruebas.linea_base prototipo --manifiesto datos_prueba/generado/manifiesto.json --salida resultados/detalle/prototipo --procesos 5
+uv run python -m banco_pruebas.comparar          # láminas en resultados/ejemplos
+uv run python -m banco_pruebas.procesar_carpeta <carpeta con documentos> --salida resultados/gore
 ```
 
 ---
@@ -525,6 +529,21 @@ equipo o una regla de firewall para el proceso; (c) cambiar a una interfaz sin m
 que implica Qt (LGPL) o una interfaz mucho más pobre. ¿Es aceptable (a), o el requisito es
 cero tráfico medido con firewall también para los componentes del sistema?
 
+**D12. URL.** El patrón del cuaderno censuraba todas las URL. En un informe real eso tapó 36
+enlaces a noticias institucionales (y a medias, porque la URL seguía en la línea siguiente). El
+prototipo ahora censura solo las URL personales: las que contienen un dato (RUT, correo,
+teléfono, nombre de la lista), las de redes sociales, reuniones o archivos compartidos (Teams,
+Zoom, Drive, OneDrive…) y las que llevan identificadores en la consulta (`?rut=`, `?id=`,
+`?token=`). ¿Lo adoptamos como regla, o prefieren censurar todas las URL?
+
+**D13. Nombres fuera de la lista.** Tu especificación dice que los nombres en texto libre solo se
+detectan si están en la lista. En los informes reales eso dejaba a la vista firmantes, nombres de
+pila junto a apellidos de la lista y listas de asistencia manuscritas. El prototipo agrega reglas
+de contexto: nombre completo alrededor de un apellido de la lista, nombres que empiezan con un
+nombre de pila conocido en líneas cortas (firmas, celdas, encabezados de correo) o después de
+"don/doña/Sr./Sra.", pares etiqueta-valor (NOMBRE, RUT, Correo, De:, Para:) y columnas de tablas
+(Nombre, Correo, Teléfono, Firma). En el texto corrido sigue rigiendo la lista. ¿De acuerdo?
+
 ---
 
 ## 13. Riesgos
@@ -542,7 +561,8 @@ cero tráfico medido con firewall también para los componentes del sistema?
 ## 14. Límites que quedarán documentados en la app y en el README
 
 - Los montos y las fechas no se censuran por defecto (confirmar con la unidad de transparencia).
-- Los nombres y direcciones en texto libre solo se detectan si están en la lista.
+- Los nombres y direcciones en texto corrido solo se detectan si están en la lista; en firmas, celdas,
+  tablas y encabezados de correo se detectan también por contexto (D13).
 - El OCR puede fallar con letra manuscrita, texto muy pequeño o imágenes de muy baja resolución.
 - Los rostros de perfil, muy pequeños o tapados pueden no detectarse.
 - La revisión humana de cada documento es obligatoria antes de publicar.

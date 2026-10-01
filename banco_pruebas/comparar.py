@@ -82,9 +82,9 @@ def lamina(man: Manifiesto, archivo_id: str, pagina: int, sistemas: list[str], r
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Láminas de antes y después.")
     ap.add_argument("--manifiesto", type=Path, default=Path("datos_prueba/generado/manifiesto.json"))
-    ap.add_argument("--resultados", type=Path, default=Path("resultados"))
-    ap.add_argument("--sistemas", nargs="+", default=["oraculo", "cuaderno"])
-    ap.add_argument("--salida", type=Path, default=Path("resultados/comparaciones"))
+    ap.add_argument("--resultados", type=Path, default=Path("resultados/detalle"))
+    ap.add_argument("--sistemas", nargs="+", default=["prototipo", "cuaderno"])
+    ap.add_argument("--salida", type=Path, default=Path("resultados/ejemplos"))
     ap.add_argument("--id", nargs="*", help="ID o ID:pagina (sin esto, uno por categoría)")
     args = ap.parse_args(argv)
     man = Manifiesto.cargar(args.manifiesto)
