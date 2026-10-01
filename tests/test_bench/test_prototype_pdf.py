@@ -1,4 +1,4 @@
-"""Regression cases of the prototype over small PDFs built here (all data is made up)."""
+"""Regression cases of the prototype (now the real engine) over small PDFs built here (all data is made up)."""
 
 import importlib.util
 from pathlib import Path
@@ -8,6 +8,7 @@ import pymupdf
 import pytest
 from PIL import Image, ImageDraw
 
+from anonymizer.engine import faces, raster
 from test_bench.baselines import prototype
 from test_bench.canvas import font
 
@@ -74,7 +75,7 @@ def _boxes(*rects):
 
 def test_overlapping_faces_are_merged_into_their_union():
     zones = _boxes((100, 100, 200, 220), (104, 96, 206, 224), (110, 110, 190, 200), (400, 100, 480, 200))
-    merged = prototype._merge_faces(zones)
+    merged = faces.merge(zones)
     assert len(merged) == 2
     boxes = sorted(tuple(z[1].min(axis=0)) + tuple(z[1].max(axis=0)) for z in merged)
     assert boxes[0] == (100, 96, 206, 224)  # union, never smaller than any of the detections
@@ -83,7 +84,7 @@ def test_overlapping_faces_are_merged_into_their_union():
 
 def test_separate_faces_are_not_merged():
     zones = _boxes((100, 100, 200, 200), (190, 100, 290, 200))  # touching, small overlap
-    assert len(prototype._merge_faces(zones)) == 2
+    assert len(faces.merge(zones)) == 2
 
 
 @pytest.mark.skipif(importlib.util.find_spec("rapidocr") is None, reason="needs the OCR models (rapidocr)")
@@ -116,11 +117,11 @@ def test_same_image_on_every_page_is_read_once(tmp_path, monkeypatch):
         page.insert_image(pymupdf.Rect(72, 40, 132, 70), filename=str(png))
     calls = []
 
-    def fake_detect(rgb, name_list, ocr=True, **kw):
-        calls.append(kw.get("qr", True))
+    def fake_detect(rgb, name_list, **kw):
+        calls.append(kw.get("qr_enabled", True))
         return []
 
-    monkeypatch.setattr(prototype, "detect_in_image", fake_detect)
+    monkeypatch.setattr(raster, "detect_in_image", fake_detect)
     _run(tmp_path, doc)
     assert calls.count(False) == 1  # one OCR of the image region for the three pages
     assert calls.count(True) == 3  # QR codes are still searched on every page

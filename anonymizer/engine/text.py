@@ -1,0 +1,159 @@
+"""Personal data in a piece of text: patterns, the name list and the given-name dictionary.
+
+Also the reasons a finding is marked doubtful (shown to the reviewer, in Spanish) and the
+"needle" used to look for a finding's text elsewhere (propagation and leak check).
+"""
+
+from __future__ import annotations
+
+import re
+from functools import lru_cache
+
+from anonymizer.engine import names, patterns
+from anonymizer.engine.patterns import (
+    EMAIL,
+    LOOSE_EMAIL,
+    RUT,
+    RUT_OCR,
+    TYPE_PRIORITY,
+    URL,
+    normalize_1to1,
+    ocr_variant,
+    phones,
+    rut_is_valid,
+    rut_valid_by_shape,
+)
+
+# Doubt reasons (Spanish, shown to the reviewer).
+DOUBT_RUT = "El dígito verificador no coincide: revisa el original"
+DOUBT_OCR = "Texto leído con baja confianza"
+DOUBT_FACE = "Rostro pequeño o poco claro"
+DOUBT_CONTEXT_NAME = "Nombre detectado por el contexto; no está en la lista"
+
+OCR_MIN_SCORE = 0.75
+FACE_MIN_SIDE_PX = 40
+FACE_MIN_SCORE = 0.7
+
+Span = tuple[str, int, int, str]  # type, start, end, detector
+DETECTOR_PRIORITY = {"regex": 0, "name_list": 1, "context": 2}
+
+
+def detect_spans(text: str, name_list: tuple[str, ...], ocr: bool = False, all_urls: bool = True) -> list[Span]:
+    """Spans (type, start, end, detector) with personal data in ``text``.
+
+    Detector: ``regex`` (RUT, e-mail, phone, URL), ``name_list`` (entries of the list and their
+    variants, extended to neighbouring given names) or ``context`` (given-name dictionary).
+    """
+    found: list[Span] = []
+    variants = [text]
+    if ocr:
+        variants.append(ocr_variant(text))
+    for t in variants:
+        found += [("rut", m.start(), m.end(), "regex") for m in RUT.finditer(t) if rut_valid_by_shape(m)]
+        if ocr:
+            found += [("rut", m.start(), m.end(), "regex") for m in RUT_OCR.finditer(t)]
+        found += [("phone", a, b, "regex") for a, b in phones(t)]
+    found = [s for s in found if not patterns.is_amount(text, s[1], s[2])]
+    found += [("email", m.start(), m.end(), "regex") for m in EMAIL.finditer(text)]
+    found += [("email", m.start(), m.end(), "regex") for m in LOOSE_EMAIL.finditer(text)]
+    for m in URL.finditer(text):
+        a, b = patterns.complete_url(text, m.start(), m.end())
+        url = text[a:b]
+        if all_urls or patterns.PERSONAL_URL.search(url) or has_data(url, name_list):
+            found.append(("url", a, b, "regex"))
+    normalized = normalize_1to1(text)
+    for type_, pattern in names.list_patterns(name_list):
+        for m in pattern.finditer(normalized):
+            a, b = names.expand_name(text, m.start(), m.end()) if type_ == "name" else (m.start(), m.end())
+            found.append((type_, a, b, "name_list"))
+    found += [("name", a, b, "context") for a, b in names.names_by_dictionary(text)]
+    return found
+
+
+def dedup_spans(spans: list[Span]) -> list[Span]:
+    """Drops repeated spans and spans inside another one (their zone is inside the other's zone).
+
+    For the same characters, the most specific detector stays: patterns, then the list, then context.
+    """
+    ordered = sorted(
+        set(spans),
+        key=lambda s: (s[1], -s[2], DETECTOR_PRIORITY.get(s[3], 9), TYPE_PRIORITY.index(s[0])
+                       if s[0] in TYPE_PRIORITY else 99),
+    )  # fmt: skip
+    kept: list[Span] = []
+    for s in ordered:
+        if s[2] <= s[1]:
+            continue
+        if any(k[1] <= s[1] and s[2] <= k[2] for k in kept):
+            continue
+        kept.append(s)
+    return kept
+
+
+def find_spans(
+    text: str, name_list: tuple[str, ...], ocr: bool = False, all_urls: bool = True
+) -> list[tuple[str, int, int]]:
+    """Spans (type, start, end) with personal data in ``text`` (the prototype's interface)."""
+    return [(type_, a, b) for type_, a, b, _ in detect_spans(text, name_list, ocr=ocr, all_urls=all_urls)]
+
+
+def has_data(url: str, name_list: tuple[str, ...]) -> bool:
+    """The URL contains a piece of personal data (RUT, e-mail, phone or a name of the list)."""
+    no_dashes = normalize_1to1(url.replace("-", " ").replace("_", " "))
+    return bool(
+        RUT.search(url)
+        or LOOSE_EMAIL.search(url)
+        or phones(url)
+        or any(p.search(no_dashes) for _, p in names.list_patterns(name_list))
+    )
+
+
+def in_list(text: str, name_list: tuple[str, ...]) -> bool:
+    """``text`` contains a person or address of the list."""
+    if not name_list:
+        return False
+    normalized = normalize_1to1(text)
+    return any(p.search(normalized) for _, p in names.list_patterns(name_list))
+
+
+def rut_doubt(text: str | None) -> str | None:
+    """``DOUBT_RUT`` when ``text`` has RUTs and none of them has a valid check digit."""
+    if not text:
+        return None
+    candidates = [m.group(0) for t in (text, ocr_variant(text)) for m in (*RUT.finditer(t), *RUT_OCR.finditer(t))]
+    if not candidates or any(rut_is_valid(c) for c in candidates):
+        return None
+    return DOUBT_RUT
+
+
+def face_doubt(min_side_px: float, score: float) -> str | None:
+    return DOUBT_FACE if min_side_px < FACE_MIN_SIDE_PX or score < FACE_MIN_SCORE else None
+
+
+def ocr_doubt(score: float | None) -> str | None:
+    return DOUBT_OCR if score is not None and score < OCR_MIN_SCORE else None
+
+
+# ---------------------------------------------------------------------------
+# Needles: the same text somewhere else
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=4096)
+def needle(text: str) -> re.Pattern[str] | None:
+    """Pattern that finds ``text`` again in ``normalize_1to1`` text, whole words only.
+
+    Separators between words may differ (spaces, line breaks, punctuation): the text extracted
+    from a PDF changes its spacing when parts of the page are removed.
+    """
+    tokens = re.findall(r"\w+", normalize_1to1(text))
+    if not tokens:
+        return None
+    return re.compile(r"(?<!\w)" + r"\W*".join(re.escape(t) for t in tokens) + r"(?!\w)")
+
+
+def strong_needle(text: str) -> bool:
+    """Texts specific enough to look for in the whole document (not just their page)."""
+    tokens = re.findall(r"\w+", normalize_1to1(text))
+    alnum = sum(len(t) for t in tokens)
+    return alnum >= 6 and (len(tokens) >= 2 or any(c.isdigit() for c in text) or "@" in text)

@@ -39,20 +39,18 @@ FILE_TYPES = (
 
 
 def load_engine(choice: str | None):
+    """The engine to use; falls back to the development engine when the real one cannot run."""
     if choice:
         os.environ["ANONYMIZER_ENGINE"] = choice
     from anonymizer.engine import get_engine
 
-    try:
-        return get_engine()
-    except ImportError:
-        if os.environ.get("ANONYMIZER_ENGINE", "real") == "fake":
-            raise
-        log.warning("real engine not available yet, using the development engine")
-        print("Aviso: el motor definitivo aún no está disponible; se usa el motor de prueba.", file=sys.stderr)
-        from anonymizer.engine.fake import FakeEngine
-
-        return FakeEngine()
+    engine = get_engine()
+    if getattr(engine, "name", "") == "fake" and os.environ.get("ANONYMIZER_ENGINE", "real") != "fake":
+        print(
+            "Aviso: faltan los modelos del motor definitivo; se usa el motor de prueba (sin OCR ni rostros).",
+            file=sys.stderr,
+        )
+    return engine
 
 
 def bind_socket() -> socket.socket:

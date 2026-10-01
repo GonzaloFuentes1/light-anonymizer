@@ -1,0 +1,568 @@
+"""The real engine against the engine contract (invented data only)."""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import threading
+from pathlib import Path
+
+import pymupdf
+import pytest
+from PIL import Image, ImageDraw
+
+from anonymizer.engine import common, faces, get_engine, verify
+from anonymizer.engine.fake import FakeEngine
+from anonymizer.engine.model import AnalyzedFile, Finding
+from anonymizer.engine.patterns import rut_check_digit
+from anonymizer.engine.real import RealEngine
+from anonymizer.engine.text import DOUBT_CONTEXT_NAME, DOUBT_OCR, DOUBT_RUT
+from test_bench.canvas import font
+
+needs_ocr = pytest.mark.skipif(
+    importlib.util.find_spec("rapidocr") is None or not faces.available(), reason="needs the OCR and face models"
+)
+
+VALID_RUT = f"12.345.678-{rut_check_digit('12345678')}"
+BAD_RUT = "11.111.111-2"
+EMAIL = "ana.prueba@ejemplo.cl"
+PHONE = "+56 9 8123 4567"
+SIGNER = "Ana Luisa Soto"  # starts with a known given name: found by the dictionary
+
+
+def make_pdf(path: Path, rotation: int = 0, extra: list[str] | None = None) -> Path:
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    lines = [
+        "Informe ficticio de prueba para el motor de anonimización, con texto neutro de relleno.",
+        f"RUT: {VALID_RUT}",
+        f"Correo: {EMAIL}",
+        f"Teléfono: {PHONE}",
+        f"Segundo RUT {BAD_RUT} de la contraparte",
+        SIGNER,
+        *(extra or []),
+    ]
+    for i, line in enumerate(lines):
+        page.insert_text((72, 100 + 22 * i), line, fontsize=11)
+    page.set_rotation(rotation)
+    doc.set_metadata({"author": "Persona Inventada", "title": "Documento ficticio"})
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def analyzed(path: Path, names: list[str] | None = None, engine: RealEngine | None = None, **kw) -> AnalyzedFile:
+    engine = engine or RealEngine()
+    file = AnalyzedFile(id="f1", name=path.name, path=str(path), **kw)
+    engine.analyze(file, names or [])
+    return file
+
+
+def output_text(path: str) -> str:
+    with pymupdf.open(path) as doc:
+        return "\n".join(page.get_text() for page in doc)
+
+
+# ---------------------------------------------------------------------------
+# analyze
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 270])
+def test_findings_are_in_view_space(tmp_path, rotation):
+    path = make_pdf(tmp_path / "a.pdf", rotation)
+    file = analyzed(path)
+    assert file.status == "ready" and file.kind == "pdf"
+    page = file.pages[0]
+    assert (page.width, page.height) == ((842, 595) if rotation in (90, 270) else (595, 842))
+    rut = next(f for f in file.findings if f.type == "rut" and f.text == VALID_RUT)
+    with pymupdf.open(path) as doc:
+        expected = doc[0].search_for(VALID_RUT)[0] * doc[0].rotation_matrix
+    x0, y0, x1, y1 = common.bbox_of(rut.polygon)
+    assert abs((x0 + x1) / 2 - (expected.x0 + expected.x1) / 2) < 3
+    assert abs((y0 + y1) / 2 - (expected.y0 + expected.y1) / 2) < 3
+    assert 0 <= x0 < x1 <= page.width and 0 <= y0 < y1 <= page.height
+
+
+def test_types_detectors_and_doubts(tmp_path):
+    file = analyzed(make_pdf(tmp_path / "a.pdf"))
+    by_text = {f.text: f for f in file.findings}
+    assert by_text[VALID_RUT].detector == "regex" and not by_text[VALID_RUT].doubtful
+    assert by_text[BAD_RUT].doubtful and by_text[BAD_RUT].doubt_reason == DOUBT_RUT
+    assert by_text[EMAIL].type == "email" and by_text[PHONE].type == "phone"
+    signer = by_text[SIGNER]
+    assert signer.type == "name" and signer.detector == "context"
+    assert signer.doubtful and signer.doubt_reason == DOUBT_CONTEXT_NAME
+    assert all(f.history and f.history[0].action == "proposed" for f in file.findings)
+
+
+def test_name_on_the_list_is_not_doubtful(tmp_path):
+    file = analyzed(make_pdf(tmp_path / "a.pdf"), [SIGNER])
+    signer = [f for f in file.findings if f.text == SIGNER]
+    assert signer and not any(f.doubtful for f in signer)
+    assert {f.detector for f in signer} == {"name_list"}
+
+
+def test_same_name_elsewhere_on_the_page_is_redacted_too(tmp_path):
+    # In a long line the dictionary rule does not apply: the name is found because it was found above.
+    long_line = f"En la reunión del comité de evaluación del proyecto participó {SIGNER} como representante."
+    file = analyzed(make_pdf(tmp_path / "a.pdf", extra=[long_line]))
+    assert len([f for f in file.findings if f.text == SIGNER]) == 2
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    assert result.exported, [leak.message for leak in result.leaks]
+    assert "Soto" not in output_text(result.output_path)
+
+
+def test_progress_and_cancel(tmp_path):
+    path = make_pdf(tmp_path / "a.pdf")
+    steps: list[tuple[float, str]] = []
+    file = AnalyzedFile(id="f1", name="a.pdf", path=str(path))
+    RealEngine().analyze(file, [], progress=lambda fraction, step: steps.append((fraction, step)))
+    assert "Leyendo el texto de la página 1 de 1" in [s for _, s in steps]
+    assert [f for f, _ in steps] == sorted(f for f, _ in steps)
+    cancel = threading.Event()
+    cancel.set()
+    file = AnalyzedFile(id="f2", name="a.pdf", path=str(path))
+    RealEngine().analyze(file, [], cancel=cancel)
+    assert file.status == "cancelled" and not file.findings
+
+
+def test_errors_by_content(tmp_path):
+    (tmp_path / "empty.pdf").write_bytes(b"")
+    (tmp_path / "doc.pdf").write_bytes(b"PK\x03\x04 not a pdf")
+    (tmp_path / "bad.pdf").write_bytes(b"%PDF-1.7\n garbage garbage")
+    (tmp_path / "bad.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 64)
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Contenido ficticio")
+    doc.save(tmp_path / "locked.pdf", encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="clave", owner_pw="clave")
+    doc.close()
+    expected = {"empty.pdf": "empty", "doc.pdf": "format", "bad.pdf": "corrupt", "bad.jpg": "corrupt"}
+    expected["locked.pdf"] = "password"
+    for name, code in expected.items():
+        file = analyzed(tmp_path / name)
+        assert (file.status, file.error) == ("error", code), name
+        assert file.error_message
+
+
+# ---------------------------------------------------------------------------
+# export
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("rotation", [0, 90])
+def test_export_applies_active_findings_only(tmp_path, rotation):
+    file = analyzed(make_pdf(tmp_path / "a.pdf", rotation))
+    kept = next(f for f in file.findings if f.text == EMAIL)
+    kept.status = "removed"
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    assert result.exported, [leak.message for leak in result.leaks]
+    assert result.removed_by_reviewer == 1
+    text = output_text(result.output_path)
+    assert EMAIL in text  # the reviewer kept it: not a leak
+    assert VALID_RUT not in text and "8123" not in text and BAD_RUT not in text
+    assert "Informe ficticio" in text
+    with pymupdf.open(result.output_path) as doc:
+        assert not any(v for k, v in doc.metadata.items() if k not in ("format", "encryption"))
+        assert doc[0].rotation == rotation
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 270])
+def test_manual_finding_drawn_in_view_space(tmp_path, rotation):
+    path = make_pdf(tmp_path / "a.pdf", rotation)
+    file = analyzed(path)
+    for f in file.findings:  # the reviewer keeps every proposal visible and draws one zone
+        f.status = "removed"
+    with pymupdf.open(path) as doc:
+        target = doc[0].search_for("Informe ficticio")[0] * doc[0].rotation_matrix
+    target.normalize()
+    polygon = common.rect_polygon(target.x0 - 2, target.y0 - 2, target.x1 + 2, target.y1 + 2)
+    file.findings.append(
+        Finding(id="m1", file_id="f1", page=0, type="manual", polygon=polygon, detector="reviewer", status="added")
+    )
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    assert result.exported
+    text = output_text(result.output_path)
+    assert "Informe ficticio" not in text and VALID_RUT in text
+
+
+def test_leak_blocks_export_and_never_overwrites(tmp_path):
+    engine = RealEngine()
+    file = analyzed(make_pdf(tmp_path / "a.pdf"), engine=engine)
+    out = tmp_path / "out"
+    first = engine.export(file, str(out))
+    second = engine.export(file, str(out))
+    assert Path(first.output_path).name == "a.pdf" and Path(second.output_path).name == "a (2).pdf"
+    rut = next(f for f in file.findings if f.text == VALID_RUT)
+    rut.polygon = [[0, 0], [5, 0], [5, 5], [0, 5]]  # its zone no longer covers the text
+    blocked = engine.export(file, str(tmp_path / "blocked"))
+    assert not blocked.exported and blocked.output_path is None
+    assert any("RUT sigue legible en la página 1" in leak.message for leak in blocked.leaks)
+    assert not any((tmp_path / "blocked").iterdir())
+
+
+def test_unmarked_pattern_in_the_output_is_a_leak(tmp_path):
+    file = analyzed(make_pdf(tmp_path / "a.pdf"))
+    file.findings = [f for f in file.findings if f.type != "phone"]  # as if the phone was never proposed
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    assert not result.exported
+    assert any(leak.type == "phone" and "no estaba marcado" in leak.message for leak in result.leaks)
+
+
+def test_image_metadata_check(tmp_path):
+    img = Image.new("RGB", (40, 30), "white")
+    exif = Image.Exif()
+    exif[315] = "Persona Inventada"
+    img.save(tmp_path / "with.jpg", exif=exif)
+    img.save(tmp_path / "clean.png")
+    assert verify.image_leaks(tmp_path / "with.jpg")
+    assert not verify.image_leaks(tmp_path / "clean.png")
+
+
+# ---------------------------------------------------------------------------
+# images (OCR and faces)
+# ---------------------------------------------------------------------------
+
+
+def _text_image(lines: list[str], size=(760, 760)) -> Image.Image:
+    img = Image.new("RGB", size, "white")
+    draw = ImageDraw.Draw(img)
+    for i, line in enumerate(lines):
+        draw.text((30, 30 + 60 * i), line, font=font("sans", 32), fill=(0, 0, 0))
+    return img
+
+
+@needs_ocr
+def test_image_with_exif_orientation(tmp_path):
+    upright = _text_image([f"Correo: {EMAIL}", "Texto neutro de la nota"])
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored rotated: shown rotated 90° clockwise back to upright
+    upright.transpose(Image.Transpose.ROTATE_90).save(tmp_path / "nota.jpg", exif=exif, quality=95)
+    engine = RealEngine()
+    file = analyzed(tmp_path / "nota.jpg", engine=engine)
+    assert file.status == "ready" and file.kind == "image"
+    assert (file.pages[0].width, file.pages[0].height) == upright.size  # view space: after EXIF
+    email = next(f for f in file.findings if f.type == "email")
+    assert email.detector == "ocr" and email.score is not None
+    x0, y0, x1, y1 = common.bbox_of(email.polygon)
+    assert y1 < 120 and x0 < 100  # first line, at the top left of the upright image
+    result = engine.export(file, str(tmp_path / "out"))
+    assert result.exported
+    with Image.open(result.output_path) as out:
+        assert out.size == upright.size and not len(out.getexif())
+        assert out.convert("L").getpixel((int((x0 + x1) / 2), int((y0 + y1) / 2))) < 40
+
+
+@needs_ocr
+def test_all_text_mode_turns_every_line_into_a_finding(tmp_path):
+    _text_image([f"Correo: {EMAIL}", "Texto neutro de la nota"]).save(tmp_path / "nota.png")
+    normal = analyzed(tmp_path / "nota.png")
+    every = analyzed(tmp_path / "nota.png", all_text=True)
+    assert not any(f.type == "text" for f in normal.findings)
+    assert any(f.type == "text" and "neutro" in (f.text or "") for f in every.findings)
+
+
+@needs_ocr
+def test_low_confidence_ocr_is_doubtful():
+    from anonymizer.engine import raster
+
+    assert raster._line_doubt("email", EMAIL, 0.5, "ocr", ()) == DOUBT_OCR
+    assert raster._line_doubt("email", EMAIL, 0.9, "ocr", ()) is None
+
+
+def test_small_faces_are_doubtful():
+    import numpy as np
+
+    box = np.array([[0, 0], [30, 0], [30, 30], [0, 30]], float)
+    big = np.array([[0, 0], [90, 0], [90, 90], [0, 90]], float)
+    small = faces.merge([("face", box, "", "faces", 0.95)])
+    assert small[0].doubt is not None
+    assert faces.merge([("face", big, "", "faces", 0.95)])[0].doubt is None
+    assert faces.merge([("face", big, "", "faces", 0.6)])[0].doubt is not None
+
+
+# ---------------------------------------------------------------------------
+# render and engine selection
+# ---------------------------------------------------------------------------
+
+
+def test_render_page_in_view_space(tmp_path):
+    file = analyzed(make_pdf(tmp_path / "a.pdf", 90))
+    png = RealEngine().render_page(file, 0, 0.5)
+    with Image.open(io.BytesIO(png)) as img:
+        assert img.size == (421, 298)
+
+
+def test_get_engine_falls_back_when_models_are_missing(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANONYMIZER_ENGINE", raising=False)
+    monkeypatch.setattr(faces, "YUNET_MODEL", tmp_path / "missing.onnx")
+    assert isinstance(get_engine(), FakeEngine)
+    monkeypatch.setenv("ANONYMIZER_ENGINE", "fake")
+    assert isinstance(get_engine(), FakeEngine)
+
+
+@needs_ocr
+def test_get_engine_defaults_to_real(monkeypatch):
+    monkeypatch.delenv("ANONYMIZER_ENGINE", raising=False)
+    assert isinstance(get_engine(), RealEngine)
+
+
+def test_api_flow_with_the_real_engine(tmp_path):
+    from anonymizer.api.server import create_app
+    from tests.live_client import LiveClient
+    from tests.test_api import TOKEN, upload, wait_status
+
+    app = create_app(RealEngine(), TOKEN)
+    with LiveClient(app) as client:
+        client.headers["X-Session-Token"] = TOKEN
+        file_id = upload(client, "informe.pdf", make_pdf(tmp_path / "a.pdf", 90).read_bytes())
+        assert client.get("/api/state").json()["engine"] == "real"
+        client.post("/api/process", json={"file_ids": [file_id]})
+        assert wait_status(client, file_id)["status"] == "ready"
+        file = client.get(f"/api/files/{file_id}").json()
+        assert any(f["doubtful"] for f in file["findings"])
+        signer = next(f for f in file["findings"] if f["text"] == SIGNER)
+        client.patch(f"/api/files/{file_id}/findings/{signer['id']}", json={"action": "remove"})
+        assert client.post(f"/api/files/{file_id}/confirm").status_code == 200
+        dest = tmp_path / "salida"
+        r = client.post("/api/export", json={"dest_dir": str(dest), "audit_pdf": False, "audit_json": True})
+        assert r.status_code == 200, r.text
+        exported = dest / "informe.pdf"
+        text = output_text(str(exported))
+        assert SIGNER in text and VALID_RUT not in text and EMAIL not in text
+
+
+def test_tilted_line_read_in_several_orientations_is_one_finding():
+    import numpy as np
+
+    from anonymizer.engine import raster
+    from anonymizer.engine.common import Zone
+
+    # The same tilted line (a photo, a crooked scan) as the OCR passes at 0°, 90° and 270° return it:
+    # nearly the same quadrilateral, starting at a different corner.
+    base = np.array([[100.0, 100.0], [500.0, 130.0], [497.0, 170.0], [97.0, 140.0]])
+    readings = [base, np.roll(base + 1.5, 1, axis=0), np.roll(base - 1.0, 2, axis=0)]
+    zones = [
+        Zone("rut", pol, "RUT 1", "ocr", 0.9 - 0.1 * i, None if i else "Lectura dudosa")
+        for i, pol in enumerate(readings)
+    ]
+    zones.append(Zone("rut", base + [0, 200], "RUT 2", "ocr", 0.9))  # another line
+    zones.append(Zone("face", base, "", "faces", 0.9))  # another detector: never joined
+    out = raster.dedup(zones)
+    assert [z.type for z in out] == ["rut", "rut", "face"]
+    joined = np.asarray(out[0].polygon, np.float64)
+    for pol in readings:  # covers every reading
+        for x, y in pol:
+            assert cv2_inside(joined, x, y)
+    assert out[0].doubt is None and out[0].score == pytest.approx(0.9)
+
+
+def cv2_inside(polygon, x: float, y: float) -> bool:
+    import cv2
+    import numpy as np
+
+    return cv2.pointPolygonTest(np.asarray(polygon, np.float32), (float(x), float(y)), True) >= -0.01
+
+
+def test_power_throttling_is_turned_off_on_windows():
+    import sys
+
+    assert common.disable_power_throttling() is (sys.platform == "win32")
+
+
+# ---------------------------------------------------------------------------
+# review findings: geometry, leak check, no network, safe output
+# ---------------------------------------------------------------------------
+
+
+def _boxed_pdf(path: Path, rotation: int, box: str) -> Path:
+    """A text page whose CropBox or MediaBox does not start at (0, 0), rotated."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=600)
+    if box == "mediabox":
+        doc.xref_set_key(page.xref, "MediaBox", "[100 200 500 800]")
+        page = doc.reload_page(page)
+    else:
+        page.set_cropbox(pymupdf.Rect(20, 30, 380, 580))
+    page.insert_text((60, 300), f"RUT: {VALID_RUT}", fontsize=12)
+    page.insert_text((60, 500), "Texto neutro de relleno para la prueba del motor, sin datos.", fontsize=10)
+    page.set_rotation(rotation)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def _gray(path: str, page: int = 0):
+    import numpy as np
+
+    with pymupdf.open(path) as doc:
+        pix = doc[page].get_pixmap(alpha=False)
+        return np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].mean(axis=2)
+
+
+@pytest.mark.parametrize("box", ["cropbox", "mediabox"])
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_zone_drawn_in_view_space_lands_there_on_rotated_cropped_pages(tmp_path, rotation, box):
+    import hashlib
+
+    path = _boxed_pdf(tmp_path / "a.pdf", rotation, box)
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    engine = RealEngine()
+    file = analyzed(path, engine=engine)
+    w, h = file.pages[0].width, file.pages[0].height
+    assert any(f.type == "rut" for f in file.findings)
+    x0, y0, x1, y1 = w * 0.1, h * 0.05, w * 0.4, h * 0.15  # blank paper, top left as the user sees it
+    file.findings.append(
+        Finding(id="m1", file_id="f1", page=0, type="manual", polygon=common.rect_polygon(x0, y0, x1, y1),
+                detector="reviewer", status="added")
+    )  # fmt: skip
+    result = engine.export(file, str(tmp_path / "out"))
+    assert result.exported, [leak.message for leak in result.leaks]
+    gray = _gray(result.output_path)
+    assert gray.shape == (round(h), round(w))
+    assert gray[int(y0) + 2 : int(y1) - 2, int(x0) + 2 : int(x1) - 2].mean() < 10  # black where it was drawn
+    assert gray[int(h * 0.85) : int(h * 0.95), int(w * 0.6) : int(w * 0.9)].mean() > 245  # nothing elsewhere
+    assert VALID_RUT not in output_text(result.output_path)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before  # the working copy is never modified
+
+
+@pytest.mark.parametrize("orientation", [3, 6, 8])
+def test_zone_drawn_on_an_image_with_exif_orientation(tmp_path, orientation):
+    import numpy as np
+
+    transpose = {3: Image.Transpose.ROTATE_180, 6: Image.Transpose.ROTATE_90, 8: Image.Transpose.ROTATE_270}
+    upright = Image.new("RGB", (300, 200), "white")
+    upright.paste((255, 0, 0), (200, 120, 280, 180))  # a red mark at the bottom right, as the user sees it
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    upright.transpose(transpose[orientation]).save(tmp_path / "foto.png", exif=exif.tobytes())
+    file = AnalyzedFile(id="f1", name="foto.png", path=str(tmp_path / "foto.png"), kind="image")
+    with Image.open(io.BytesIO(RealEngine().render_page(file, 0))) as view:
+        assert view.size == (300, 200) and view.convert("RGB").getpixel((240, 150)) == (255, 0, 0)
+    file.findings = [
+        Finding(id="m1", file_id="f1", page=0, type="manual", polygon=common.rect_polygon(20, 20, 120, 80),
+                detector="reviewer", status="added"),
+        Finding(id="k1", file_id="f1", page=0, type="face", polygon=common.rect_polygon(200, 120, 280, 180),
+                detector="faces", status="removed"),
+    ]  # fmt: skip
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    assert result.exported
+    with Image.open(result.output_path) as out:
+        pixels = np.array(out.convert("RGB"))
+    assert pixels.shape[:2] == (200, 300)
+    assert pixels[22:78, 22:118].max() == 0  # the drawn zone, in the same place
+    assert tuple(pixels[150, 240]) == (255, 0, 0)  # what the reviewer kept is untouched
+    assert pixels[150, 60].min() == 255
+
+
+def _skip_zones(monkeypatch, skip):
+    """Makes the PDF redaction skip the zones of the findings in ``skip`` (as a faulty apply would)."""
+    from anonymizer.engine import pdf
+
+    original = pdf.redact
+    boxes = [common.bbox_of(f.polygon) for f in skip]
+
+    def faulty(source, dest, rects_by_page):
+        kept = {
+            n: [r for r in rects if not any(abs(r.x0 - b[0]) < 0.01 and abs(r.y0 - b[1]) < 0.01 for b in boxes)]
+            for n, rects in rects_by_page.items()
+        }
+        return original(source, dest, kept)
+
+    monkeypatch.setattr(pdf, "redact", faulty)
+
+
+def test_leak_check_when_the_same_text_was_kept_in_another_place(tmp_path, monkeypatch):
+    path = make_pdf(tmp_path / "a.pdf", extra=[f"Repetido al final: {VALID_RUT}"])
+    engine = RealEngine()
+    file = analyzed(path, engine=engine)
+    first, second = sorted((f for f in file.findings if f.text == VALID_RUT), key=lambda f: f.polygon[0][1])
+    first.status = "removed"  # the reviewer keeps the first one visible
+    clean = engine.export(file, str(tmp_path / "clean"))
+    assert clean.exported, [leak.message for leak in clean.leaks]  # the kept one is not a leak
+    assert output_text(clean.output_path).count(VALID_RUT) == 1
+    _skip_zones(monkeypatch, [second])  # the second one's zone is not applied
+    blocked = engine.export(file, str(tmp_path / "blocked"))
+    assert not blocked.exported
+    assert any(leak.finding_id == second.id for leak in blocked.leaks)
+    assert not any((tmp_path / "blocked").iterdir())
+
+
+def test_zone_without_text_that_was_not_applied_blocks_the_export(tmp_path, monkeypatch):
+    path = make_pdf(tmp_path / "a.pdf")
+    engine = RealEngine()
+    file = analyzed(path, engine=engine)
+    drawn = Finding(id="m1", file_id="f1", page=0, type="manual", polygon=common.rect_polygon(300, 500, 400, 560),
+                    detector="reviewer", status="added")  # fmt: skip
+    file.findings.append(drawn)
+    _skip_zones(monkeypatch, [drawn])
+    result = engine.export(file, str(tmp_path / "out"))
+    assert not result.exported
+    leak = next(leak for leak in result.leaks if leak.finding_id == "m1")
+    assert leak.message == "Una zona marcada en la página 1 (Agregada) no quedó tapada por completo."
+
+
+def test_image_zone_that_was_not_applied_blocks_the_export(tmp_path, monkeypatch):
+    from anonymizer.engine import image
+
+    Image.new("RGB", (200, 100), "white").save(tmp_path / "a.png")
+    file = AnalyzedFile(id="f1", name="a.png", path=str(tmp_path / "a.png"), kind="image")
+    file.findings = [Finding(id="q1", file_id="f1", page=0, type="qr", polygon=common.rect_polygon(10, 10, 60, 60),
+                             detector="qr", status="proposed")]  # fmt: skip
+    original = image.redact
+    monkeypatch.setattr(image, "redact", lambda source, polygons, folder: original(source, {}, folder))
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    assert not result.exported and result.leaks[0].finding_id == "q1"
+    assert not any((tmp_path / "out").iterdir())
+
+
+def test_output_is_never_left_half_written(tmp_path, monkeypatch):
+    staged = tmp_path / "staged.pdf"
+    staged.write_bytes(b"%PDF-1.7 contenido")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.pdf").write_bytes(b"anterior")
+    assert common.publish(staged, dest, "a.pdf") == dest / "a (2).pdf"
+    assert (dest / "a.pdf").read_bytes() == b"anterior"
+
+    def broken_copy(source, target):
+        Path(target).write_bytes(b"%PDF-1.7 con")
+        raise OSError("disco lleno")
+
+    monkeypatch.setattr(common.shutil, "copyfile", broken_copy)
+    with pytest.raises(OSError):
+        common.publish(staged, dest, "b.pdf")
+    assert sorted(p.name for p in dest.iterdir()) == ["a (2).pdf", "a.pdf"]
+
+
+def test_ocr_models_are_local(monkeypatch):
+    from anonymizer.engine import ocr
+
+    paths = ocr.model_paths()
+    if paths is None:
+        pytest.skip("rapidocr is not installed")
+    assert set(paths) == {"Det", "Cls", "Rec"}
+    monkeypatch.setitem(ocr.MODEL_FILES, "Rec", "missing.onnx")
+    assert not ocr.available()  # a missing model is reported, never downloaded
+
+
+@needs_ocr
+def test_ocr_starts_without_network(monkeypatch):
+    import socket
+
+    import numpy as np
+
+    from anonymizer.engine import ocr
+
+    attempts = []
+
+    def deny(*args, **kwargs):
+        attempts.append(args)
+        raise OSError("sin red en la prueba")
+
+    monkeypatch.setattr(socket.socket, "connect", deny)
+    monkeypatch.setattr(socket, "create_connection", deny)
+    monkeypatch.setattr(socket, "getaddrinfo", deny)
+    reader = ocr.engine.__wrapped__()  # a new engine, not the cached one
+    img = np.array(_text_image([EMAIL], size=(700, 120)))[:, :, ::-1].copy()
+    assert any(EMAIL in txt for txt in reader(img).txts or ())
+    assert not attempts

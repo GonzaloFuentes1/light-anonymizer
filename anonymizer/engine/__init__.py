@@ -1,8 +1,10 @@
 """Engine interface used by the API.
 
-The real implementation will be built from the prototype (``test_bench/baselines/prototype.py``),
-split into *detect* and *apply* so the user can review findings in between. Until then the API
-can run against :mod:`anonymizer.engine.fake`, which follows the same contract.
+The real implementation is :mod:`anonymizer.engine.real`: the prototype's detection
+(``test_bench/baselines/prototype.py`` now runs it for the test bench), split into *detect* and
+*apply* so the user can review findings in between. :mod:`anonymizer.engine.fake` follows the
+same contract with simple, fast detection, for UI development and as a fallback when the
+models are not installed.
 
 Contract
 --------
@@ -24,10 +26,13 @@ Contract
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Protocol
 
 from anonymizer.engine.model import AnalyzedFile, ExportResult
+
+log = logging.getLogger(__name__)
 
 
 class Engine(Protocol):
@@ -39,11 +44,22 @@ class Engine(Protocol):
 
 
 def get_engine() -> Engine:
-    """Engine selected by ``ANONYMIZER_ENGINE`` (``fake`` for UI development, default ``real``)."""
+    """Engine selected by ``ANONYMIZER_ENGINE`` (``fake`` for UI development, default ``real``).
+
+    When the real engine cannot run (its models or libraries are missing), the development engine
+    is used and a warning is logged; ``/api/state`` reports it as ``engine: "fake"``.
+    """
+    from anonymizer.engine import fake
+
     if os.environ.get("ANONYMIZER_ENGINE", "real") == "fake":
-        from anonymizer.engine import fake
-
         return fake.FakeEngine()
-    from anonymizer.engine import real  # noqa: F401  (provided in the engine step)
-
+    try:
+        from anonymizer.engine import real
+    except ImportError as exc:
+        log.warning("real engine unavailable (%s): using the development engine", exc)
+        return fake.FakeEngine()
+    missing = real.missing_requirements()
+    if missing:
+        log.warning("real engine unavailable, missing %s: using the development engine", ", ".join(missing))
+        return fake.FakeEngine()
     return real.RealEngine()

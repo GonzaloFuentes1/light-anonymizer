@@ -812,10 +812,15 @@ def create_app(
                     message="No se pudo exportar este archivo. El detalle quedó en el registro técnico.",
                 )
             else:
-                if result.exported:
-                    file.status, file.step = "exported", "Exportado"
-                elif result.leaks:
-                    file.status, file.step = "ready", "Tiene datos que siguen legibles: vuelve a revisar"
+                with session.lock:
+                    # A review change made during the export reopened the file ("ready"): the change
+                    # is not in this output, so the file must be confirmed and exported again.
+                    if file.status != "confirmed":
+                        pass
+                    elif result.exported:
+                        file.status, file.step = "exported", "Exportado"
+                    elif result.leaks:
+                        file.status, file.step = "ready", "Tiene datos que siguen legibles: vuelve a revisar"
             log.info("export of %s: exported=%s leaks=%d", file.id, result.exported, len(result.leaks))
             results.append(result)
         audit_paths = {"json_path": None, "pdf_path": None}

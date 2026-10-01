@@ -4,7 +4,7 @@
 
 Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computador**, pensada para funcionarios públicos chilenos que publican documentos por transparencia (CoP 33 / SmartGORE). Encuentra datos personales —RUT, correo, teléfono, URL, nombres de una lista, rostros y texto dentro de escaneos y fotos—, los elimina de verdad (no con rectángulos negros dibujados encima), limpia los metadatos y después revisa la salida para detectar fugas. Nada sale del computador.
 
-> **Estado: fase 0 terminada; fases 1 a 3 pendientes.** El repositorio contiene el banco de pruebas (un conjunto de prueba ficticio con verdad de terreno exacta, el evaluador y las líneas base) y un **prototipo** del motor. Todavía no hay una aplicación para usuarios finales. La revisión humana de cada documento antes de publicarlo es obligatoria, siempre.
+> **Estado: fase 0 terminada, fases 1 y 2 en curso, fase 3 pendiente.** El repositorio contiene el banco de pruebas (un conjunto de prueba ficticio con verdad de terreno exacta, el evaluador y las líneas base), el motor y una aplicación de escritorio preliminar que lo usa. Todavía no hay instalador. La revisión humana de cada documento antes de publicarlo es obligatoria, siempre.
 
 ## Principios
 
@@ -40,6 +40,7 @@ Requiere [uv](https://docs.astral.sh/uv/) y Python 3.12.
 uv sync --all-groups                        # dependencias
 uv run python scripts/download_models.py    # modelo de rostros YuNet, con verificación SHA-256
 uv run python scripts/generate_test_data.py # conjunto de prueba ficticio -> test_data/generated
+uv run python -m anonymizer.app             # aplicación de escritorio (--browser para abrirla en el navegador)
 
 # correr un sistema sobre el conjunto de prueba y evaluarlo
 uv run python -m test_bench.baseline prototype --manifest test_data/generated/manifest.json --output results/details/prototype --processes 3

@@ -377,3 +377,24 @@ def test_leak_blocks_export(tmp_path):
     assert result.exported is False and result.output_path is None
     assert result.leaks and "RUT" in result.leaks[0].message
     assert not any(dest.iterdir())
+
+
+def test_change_during_export_is_not_marked_exported(tmp_path):
+    """A review change that arrives while the file is being exported reopens it: it is not marked exported."""
+
+    class SlowEngine(FakeEngine):
+        def export(self, file, dest_dir):
+            result = super().export(file, dest_dir)
+            file.status = "ready"  # what PATCH .../findings does to a confirmed file, meanwhile
+            return result
+
+    app = create_app(SlowEngine(), TOKEN)
+    with LiveClient(app) as c:
+        c.headers["X-Session-Token"] = TOKEN
+        file_id = upload(c, "ficticio.pdf", make_pdf())
+        c.post("/api/process", json={"file_ids": [file_id]})
+        wait_status(c, file_id)
+        c.post(f"/api/files/{file_id}/confirm")
+        r = c.post("/api/export", json={"dest_dir": str(tmp_path), "audit_pdf": False, "audit_json": False})
+        assert r.json()["results"][0]["exported"]
+        assert wait_status(c, file_id, statuses=("ready", "exported"))["status"] == "ready"

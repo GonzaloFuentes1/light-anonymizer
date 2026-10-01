@@ -4,7 +4,7 @@
 
 A desktop tool that anonymizes PDFs and images **locally**, built for Chilean public officials who publish documents under transparency rules (CoP 33 / SmartGORE). It finds personal data — RUT, email, phone, URL, names from a list, faces, and text inside scans and photos — removes it for real (not with black boxes drawn on top), strips metadata, and then re-checks the output for leaks. Nothing leaves the computer.
 
-> **Status: phase 0 finished, phases 1–3 pending.** The repository contains the test bench (a fictitious test set with exact ground truth, the evaluator and baselines) and an engine **prototype**. There is no end-user application yet. Human review of every document before publishing is mandatory, always.
+> **Status: phase 0 finished, phases 1–2 in progress, phase 3 pending.** The repository contains the test bench (a fictitious test set with exact ground truth, the evaluator and baselines), the engine and a preliminary desktop app that runs it. There is no installer yet. Human review of every document before publishing is mandatory, always.
 
 ## Principles
 
@@ -40,6 +40,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.12.
 uv sync --all-groups                        # dependencies
 uv run python scripts/download_models.py    # YuNet face model, SHA-256 checked
 uv run python scripts/generate_test_data.py # fictitious test set -> test_data/generated
+uv run python -m anonymizer.app             # desktop app (--browser to open it in the browser instead)
 
 # run a system over the test set and evaluate it
 uv run python -m test_bench.baseline prototype --manifest test_data/generated/manifest.json --output results/details/prototype --processes 3

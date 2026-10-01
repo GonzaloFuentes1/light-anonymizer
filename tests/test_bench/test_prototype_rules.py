@@ -2,10 +2,12 @@
 
 import pytest
 
+from anonymizer.engine import context, names
+from anonymizer.engine.text import find_spans
 from test_bench.baselines import rules
-from test_bench.baselines.prototype import find_spans
+from test_bench.fake_data import FEMALE_NAMES, MALE_NAMES
 
-L = rules.Line
+L = context.Line
 
 
 def _found(text, name_list=(), **kw):
@@ -86,7 +88,7 @@ def test_attendance_list_columns():
         L("Juan Soto", 90, 360, 200, 378),
         L("Depto. Finanzas", 250, 360, 360, 378),
     ]
-    spans, rects = rules.context_rules(lines, 800, 1100)
+    spans, rects = context.context_rules(lines, 800, 1100)
     redacted = {i for _, i, _, _ in spans}
     assert {5, 7, 8} <= redacted  # names and e-mail
     assert not redacted & {1, 6, 9}  # the institution is not
@@ -100,5 +102,14 @@ def test_form_cell_name_value():
         L("CARGO", 30, 210, 90, 230),
         L("PROFESIONAL DE APOYO", 160, 210, 450, 230),
     ]
-    spans, _ = rules.context_rules(lines, 800, 1100)
+    spans, _ = context.context_rules(lines, 800, 1100)
     assert [(t, i) for t, i, _, _ in spans] == [("name", 1)]
+
+
+def test_dictionary_covers_the_generator_names():
+    generated = {rules._norm(p) for n in [*FEMALE_NAMES, *MALE_NAMES] for p in n.split()}
+    assert generated <= names.GIVEN_NAMES
+
+
+def test_rules_module_still_reexports_the_engine():
+    assert rules.context_rules is context.context_rules and rules.Line is context.Line

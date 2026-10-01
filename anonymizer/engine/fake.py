@@ -13,17 +13,25 @@ from __future__ import annotations
 import io
 import os
 import re
-import shutil
 import tempfile
 import time
 import unicodedata
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pymupdf
 from PIL import Image, ImageDraw, ImageOps, ImageSequence, UnidentifiedImageError
 
+from anonymizer.engine.common import (  # noqa: F401  (re-exported for older imports)
+    IMAGE_FORMATS,
+    IMAGE_SAVE_OPTIONS,
+    Cancelled,
+    FileError,
+    bbox_of,
+    now_iso,
+    publish,
+    sniff,
+)
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import (
     ERROR_MESSAGES,
@@ -41,18 +49,6 @@ EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b")
 # Digits with spaces, parentheses, dashes or a leading +: validated as a Chilean number below.
 PHONE_CANDIDATE = re.compile(r"(?<![\w.])\+?\(?\d[\d \t()-]{6,18}\d(?![\w])")
 DOUBTFUL_RUT = "El dígito verificador no coincide: revisa el original"
-
-IMAGE_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "TIFF": ".tif"}
-IMAGE_SAVE_OPTIONS = {
-    "JPEG": {"quality": 92},
-    "WEBP": {"quality": 92},
-    "PNG": {},
-    "TIFF": {"compression": "tiff_deflate"},
-}
-
-
-def now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def rut_check_digit(body: str) -> str:
@@ -111,55 +107,13 @@ def find_spans(text: str, name_list: list[str]) -> list[tuple[str, int, int, str
     return sorted(spans, key=lambda s: (s[1], s[2]))
 
 
-def sniff(path: str) -> str:
-    """Real type of a file by its content: pdf | image | empty | format."""
-    with open(path, "rb") as fh:
-        head = fh.read(12)
-    if not head:
-        return "empty"
-    if head.startswith(b"%PDF"):
-        return "pdf"
-    if head.startswith((b"\xff\xd8\xff", b"\x89PNG", b"II*\x00", b"MM\x00*")) or (
-        head[:4] == b"RIFF" and head[8:12] == b"WEBP"
-    ):
-        return "image"
-    return "format"
-
-
-def unique_path(folder: Path, name: str) -> Path:
-    """``folder/name``, or ``name (2)``, ``name (3)``... when it already exists: never overwrite."""
-    stem, suffix = Path(name).stem, Path(name).suffix
-    candidate = folder / name
-    n = 2
-    while candidate.exists():
-        candidate = folder / f"{stem} ({n}){suffix}"
-        n += 1
-    return candidate
-
-
 def polygon_of(rect: pymupdf.Rect) -> list[list[float]]:
     r = rect.normalize()
     return [[round(x, 2), round(y, 2)] for x, y in ((r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1))]
 
 
-def bbox_of(polygon: list[list[float]]) -> tuple[float, float, float, float]:
-    xs = [p[0] for p in polygon]
-    ys = [p[1] for p in polygon]
-    return min(xs), min(ys), max(xs), max(ys)
-
-
 def squash(text: str) -> str:
     return re.sub(r"\s+", "", text)
-
-
-class Cancelled(Exception):
-    pass
-
-
-class FileError(Exception):
-    def __init__(self, code: str, detail: str = ""):
-        super().__init__(detail or code)
-        self.code = code
 
 
 class FakeEngine:
@@ -370,8 +324,7 @@ class FakeEngine:
             file.leaks = leaks
             output: Path | None = None
             if not leaks:
-                output = unique_path(dest, name)
-                shutil.copyfile(staged, output)
+                output = publish(staged, dest, name)
         file.output_path = str(output) if output else None
         file.timings["export"] = round(time.perf_counter() - started, 3)
         if leaks:
@@ -401,11 +354,19 @@ class FakeEngine:
                     by_page.setdefault(f.page, []).append(f)
                 for n in range(doc.page_count):
                     page = doc[n]
+                    to_page = pymupdf.Matrix(page.derotation_matrix)
+                    # Zones are placed on the unrotated page (see ``pdf.redact``): MuPDF misplaces them
+                    # on rotated pages whose CropBox or MediaBox does not start at (0, 0).
+                    rotation = page.rotation
+                    if rotation:
+                        page.set_rotation(0)
                     for f in by_page.get(n, []):
                         x0, y0, x1, y1 = bbox_of(f.polygon)
-                        rect = (pymupdf.Rect(x0, y0, x1, y1) * page.derotation_matrix).normalize()
+                        rect = (pymupdf.Rect(x0, y0, x1, y1) * to_page).normalize()
                         page.add_redact_annot(rect, fill=(0, 0, 0))
                     page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+                    if rotation:
+                        page.set_rotation(rotation)
                     for annot in list(page.annots() or []):
                         page.delete_annot(annot)
                     for widget in list(page.widgets() or []):
