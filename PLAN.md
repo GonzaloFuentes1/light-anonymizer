@@ -481,11 +481,19 @@ uv run python -m test_bench.process_folder <folder with documents> --output resu
 confirm, and full rasterization as a "maximum security" mode. If there is budget and you
 prefer the most proven engine, B. PyMuPDF stays only in the test bench (not shipped).
 
+> **Decided (2026-10-01): option C.** The tool is free, for internal use, and its source is
+> public on GitHub, so the AGPL is easy to comply with. PyMuPDF stays as the PDF engine and the
+> whole project is licensed under **AGPL-3.0-or-later**. When the application is given to
+> another institution, it ships with the license text and a notice pointing to the source code
+> of that exact version.
+
 **D2. Scope of "zero leaks".** I propose that the phase 1 acceptance criterion apply to the
 `base` level in **every** category (text PDF, scans, images rotated at 0/90/180/270/15/45°,
 cédula, screenshots, TIFF), and that the `stress` cases (8 px text, mirrored, 150 dpi fax, old
 formats, obfuscations) and the `out_of_scope` ones (names not on the list, signatures,
 handwriting) be reported without blocking. Do you confirm?
+
+> **Decided (2026-10-01): yes.** Zero leaks at the `base` level in every category.
 
 **D3. Weak-copyleft licenses.** Is any LGPL or MPL component acceptable if its license is
 complied with and it stays replaceable (for example certifi, or Eigen inside onnxruntime, which
@@ -537,6 +545,11 @@ phone, a name from the list), social-network, meeting or shared-file URLs (Teams
 OneDrive…) and those that carry identifiers in the query (`?rut=`, `?id=`, `?token=`). Do we
 adopt this as the rule, or do you prefer to redact every URL?
 
+> **Decided (2026-10-01): split URLs into two groups.** Every URL is detected. *Personal* URLs
+> (the cases above) are redacted by default. *Other* URLs (institutional links, news) appear in
+> the review as their own group, not redacted by default, and the reviewer can redact them one
+> by one or all at once.
+
 **D13. Names not on the list.** Your specification says names in free text are only detected
 if they are on the list. In the real reports that left signatories, given names next to
 surnames from the list, and handwritten attendance lists exposed. The prototype adds context
@@ -545,6 +558,9 @@ short lines (signatures, cells, email headers) or after "don/doña/Sr./Sra." (Mr
 label-value pairs (NOMBRE, RUT, Correo, De:, Para:, i.e. name, RUT, email, from, to) and table
 columns (Nombre, Correo, Teléfono, Firma, i.e. name, email, phone, signature). In running text
 the list still rules. Agreed?
+
+> **Decided (2026-10-01): yes**, detect by context, and mark those names as doubtful so they are
+> reviewed first.
 
 ---
 

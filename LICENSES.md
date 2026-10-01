@@ -1,8 +1,13 @@
 # Licenses
 
-Project policy: everything that ships with the application (code, libraries and models) must
-be under MIT, Apache 2.0, BSD or a similar license compatible with public and government use.
-Nothing under a non-commercial license and nothing from InsightFace.
+**Project license: GNU AGPL-3.0-or-later** (see [LICENSE](LICENSE)). The application uses
+PyMuPDF, which is AGPL-3.0, so the project as a whole is licensed under the AGPL (decision D1,
+2026-10-01). The source code is public on GitHub, which is what the AGPL requires when the
+application is given to another institution.
+
+Dependency policy: every other component that ships (libraries and models) must be under a
+license compatible with the AGPL and with public and government use (MIT, Apache 2.0, BSD or
+similar). Nothing under a non-commercial license and nothing from InsightFace.
 
 This file distinguishes three things: what **will ship** with the application, what is used
 only **for development and testing**, and the **test data**. Licenses were verified on
@@ -16,11 +21,11 @@ and a packaging test will fail if a forbidden file shows up.
 
 ## 1. Components planned for the application
 
-Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ incompatible with the policy.
+Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
 
 | Component | Version | License | Status | Notes |
 |---|---|---|---|---|
-| **PyMuPDF** (MuPDF) | 1.28.2 | AGPL-3.0 or Artifex commercial license | ⛔ | Distributing the executable to other agencies requires licensing the whole application under AGPL-3.0 and providing the complete source code. The alternative is a paid Artifex commercial license. **Decision pending** (PLAN.md, D1). |
+| **PyMuPDF** (MuPDF) | 1.28.2 | AGPL-3.0 or Artifex commercial license | ✅ | Used under the AGPL; for that reason the whole project is licensed under AGPL-3.0-or-later and its source is public (decision D1). |
 | pypdfium2 (PDFium) | 5.13.0 (PDFium 153.0.7999.0) | BSD-3-Clause / Apache-2.0 | ✅ | Bundles, among others, freetype (used under the FTL option), ICU, lcms, libjpeg-turbo, openjpeg, libpng, libtiff and zlib, all permissive. |
 | pypdf | 6.19.0 | BSD-3-Clause | ✅ | Candidate for cleaning the PDF structure (metadata, XMP, annotations, attachments, JavaScript, layers). |
 | opencv-python-headless | 5.0.0.93 | Apache-2.0 (OpenCV), MIT (packaging) | ⚠️ Windows / ⛔ macOS | Windows: bundles FFmpeg (LGPL-2.1) in a single video DLL that can be removed (YuNet was verified to keep working), and links Intel IPP ICV under the *Intel Simplified Software License* (not OSI). macOS: the PyPI wheels link a **GPL-3.0** FFmpeg with x264/x265 that cannot be removed. Alternative: build OpenCV without FFmpeg or IPP, or run YuNet directly with onnxruntime. |

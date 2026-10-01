@@ -3,6 +3,8 @@ name = "light-anonymizer"
 version = "0.1.0"
 description = "Local anonymizer for documents and images (CoP 33 / SmartGORE)"
 authors = [{ name = "Gonzalo Fuentes", email = "gonzalo.fuentes@cenia.cl" }]
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.142.2",

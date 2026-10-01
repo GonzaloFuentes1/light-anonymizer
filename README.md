@@ -13,17 +13,17 @@ A desktop tool that anonymizes PDFs and images **locally**, built for Chilean pu
 3. **Metadata scrubbing.** EXIF (including GPS and thumbnails), XMP, PDF metadata, annotations, attachments, hidden layers, forms, bookmarks and JavaScript are removed.
 4. **Automatic leak check.** The output is scanned again with the same detectors plus byte-level and structural checks; anything found is reported as a leak.
 5. **Offline.** No network calls at run time, models are bundled, no telemetry.
-6. **Permissive licenses only** for everything that ships (see [LICENSES.md](LICENSES.md)).
+6. **Free software.** The project is AGPL-3.0; every bundled component has an AGPL-compatible license and nothing is non-commercial (see [LICENSES.md](LICENSES.md)).
 7. **Human review is mandatory.** The app never says "clean document"; it says "review ready to confirm".
 
 ## Repository layout
 
 ```
-anonymizer/      future engine, CLI, API and app (phases 1–3)
+anonymizer/      engine (engine/real.py: detect + apply + leak check), local API and preliminary app
 test_bench/      development tooling: test-set generators, evaluator, baselines, prototype
   generators/    one module per document family (text PDFs, scans, rotated images, EXIF, ID card, screenshots, faces…)
   evaluation/    recall and leak checks (text, bytes, pixels, covered images, orphan images, vector paths, metadata)
-  baselines/     identity, oracle, notebook and the engine prototype
+  baselines/     identity, oracle, notebook and prototype (runs the real engine)
 scripts/         generate_test_data.py, download_models.py, demo_notebook_leak.py
 tests/           pytest suite
 docs/            metric definition
@@ -74,4 +74,4 @@ Never commit real documents or anything derived from them (names, amounts, phras
 
 ## License
 
-MIT (see [LICENSE](LICENSE)). Third-party components keep their own licenses (see [LICENSES.md](LICENSES.md)).
+GNU Affero General Public License v3.0 or later (see [LICENSE](LICENSE)). Anyone who receives the application has the right to its source code, which is this repository. Third-party components keep their own licenses (see [LICENSES.md](LICENSES.md)).

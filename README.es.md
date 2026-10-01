@@ -13,17 +13,17 @@ Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computado
 3. **Limpieza de metadatos.** Se eliminan EXIF (incluidos GPS y miniaturas), XMP, metadatos del PDF, anotaciones, adjuntos, capas ocultas, formularios, marcadores y JavaScript.
 4. **Verificación automática de fugas.** La salida se vuelve a revisar con los mismos detectores y con comprobaciones de bytes y de estructura; todo lo que aparezca se informa como fuga.
 5. **Sin conexión.** Sin llamadas de red al usarla, con los modelos incluidos y sin telemetría.
-6. **Solo licencias permisivas** en todo lo que se distribuye (ver [LICENSES.md](LICENSES.md)).
+6. **Software libre.** El proyecto es AGPL-3.0; cada componente incluido tiene una licencia compatible con la AGPL y nada es de uso no comercial (ver [LICENSES.md](LICENSES.md)).
 7. **La revisión humana es obligatoria.** La aplicación nunca dice "documento limpio"; dice "revisión lista para confirmar".
 
 ## Estructura del repositorio
 
 ```
-anonymizer/      futuro motor, CLI, API y aplicación (fases 1 a 3)
+anonymizer/      motor (engine/real.py: detección, aplicación y verificación de fugas), API local y aplicación preliminar
 test_bench/      herramientas de desarrollo: generadores del conjunto de prueba, evaluador, líneas base, prototipo
   generators/    un módulo por familia de documentos (PDF con texto, escaneos, imágenes giradas, EXIF, cédula, pantallazos, rostros…)
   evaluation/    comprobaciones de recall y fugas (texto, bytes, píxeles, imágenes tapadas, imágenes huérfanas, trazos, metadatos)
-  baselines/     identidad, oráculo, cuaderno y el prototipo del motor
+  baselines/     identidad, oráculo, cuaderno y prototipo (ejecuta el motor real)
 scripts/         generate_test_data.py, download_models.py, demo_notebook_leak.py
 tests/           pruebas con pytest
 docs/            definición de la métrica
@@ -74,4 +74,4 @@ Nunca subas documentos reales ni nada derivado de ellos (nombres, montos, frases
 
 ## Licencia
 
-MIT (ver [LICENSE](LICENSE)). Los componentes de terceros mantienen sus propias licencias (ver [LICENSES.md](LICENSES.md)).
+GNU Affero General Public License v3.0 o posterior (ver [LICENSE](LICENSE)). Quien reciba la aplicación tiene derecho a su código fuente, que es este repositorio. Los componentes de terceros mantienen sus propias licencias (ver [LICENSES.md](LICENSES.md)).
