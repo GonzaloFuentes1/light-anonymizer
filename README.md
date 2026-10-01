@@ -24,7 +24,8 @@ test_bench/      development tooling: test-set generators, evaluator, baselines,
   generators/    one module per document family (text PDFs, scans, rotated images, EXIF, ID card, screenshots, faces…)
   evaluation/    recall and leak checks (text, bytes, pixels, covered images, orphan images, vector paths, metadata)
   baselines/     identity, oracle, notebook and prototype (runs the real engine)
-scripts/         generate_test_data.py, download_models.py, demo_notebook_leak.py
+scripts/         generate_test_data.py, download_models.py, build_exe.py, demo_notebook_leak.py
+packaging/       PyInstaller spec and launcher of the Windows executable, and the license texts its wheels lack
 tests/           pytest suite
 docs/            metric definition
 test_data/       generated test set and caches (not versioned)
@@ -54,6 +55,24 @@ uv run pytest -q                            # tests
 ```
 
 Use at most 3 parallel processes on a machine with 8 GB of RAM (each OCR worker uses ~600 MB).
+
+## Building the Windows executable
+
+A preliminary Windows build (there is no installer yet), made with PyInstaller in one-folder mode:
+
+```bash
+uv run python scripts/download_models.py           # once: YuNet face model, SHA-256 checked
+uv run --group build python scripts/build_exe.py   # about 2 minutes, from a clean working copy
+```
+
+The AGPL requires offering the exact source of what is handed out, so the script refuses a working copy with uncommitted changes; `--allow-dirty` makes a test build, which its `LEEME.txt` marks as not for distribution. It checks the models (YuNet's SHA-256 and the PP-OCR models inside `rapidocr`), runs PyInstaller with `packaging/light_anonymizer.spec`, collects the third-party licenses (`scripts/collect_licenses.py`: the license files of every bundled package, plus the texts in `packaging/licenses/` that their wheels lack; the build fails if a bundled package has none), checks that nothing development-only or document-like was bundled (test bench, test data, pytest, matplotlib, OpenCV's FFmpeg DLL, any PDF, image or office file, a dotted RUT in the app's code…) and writes:
+
+- `dist/LightAnonymizer/LightAnonymizer.exe` plus its `_internal/` folder (about 260 MB): the app, without a console window. Next to it: `LEEME.txt` (how to open it, the license, no warranty, and the commit and URL of its source code, in Spanish), `LICENSE.txt`, `LICENSES.md` and `THIRD_PARTY_LICENSES/` (with `INDEX.txt`: each component, its version, license and source). Always copy the whole folder, not just the `.exe`.
+- `dist/LightAnonymizer-<version>-windows.zip` (about 120 MB): the same folder, zipped, to hand out.
+
+One folder rather than a single file: the app starts in one or two seconds instead of unpacking hundreds of MB to `%TEMP%` on every launch, and antivirus programs flag it less often (the first launch after unzipping is slower while the antivirus scans it). It needs the WebView2 runtime, which Windows 10 and 11 include, and makes no network calls (WebView2 runs with its background services and its Windows-account sign-in turned off: with the sign-in on, it connected to Microsoft 365 on every launch). Unzip it to a short path outside OneDrive, such as `C:\Apps\LightAnonymizer`: with long paths Windows can fail to load native libraries.
+
+The executable takes the same options as `python -m anonymizer.app` (`--browser`, `--no-open`, `--engine`), except that it always uses the real engine: it refuses `--engine fake`, ignores `ANONYMIZER_ENGINE`, and if the engine's components are missing (an antivirus may quarantine one) it shows an error instead of falling back to the development engine, which would export scanned pages and photos unredacted. Startup errors appear in a Spanish message box, and closing the window while files are being processed or are reviewed but not exported asks for confirmation. Because it has no console, `--url-file PATH` writes the URL and the session token to a JSON file for automated tests; nothing is written unless the flag is given, and the file is deleted when the app closes.
 
 ## The test bench
 

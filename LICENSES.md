@@ -2,8 +2,9 @@
 
 **Project license: GNU AGPL-3.0-or-later** (see [LICENSE](LICENSE)). The application uses
 PyMuPDF, which is AGPL-3.0, so the project as a whole is licensed under the AGPL (decision D1,
-2026-10-01). The source code is public on GitHub, which is what the AGPL requires when the
-application is given to another institution.
+2026-10-01). The source code is on GitHub (https://github.com/GonzaloFuentes1/light-anonymizer),
+which is what the AGPL requires when the application is given to another institution: every
+executable says in its `LEEME.txt` which commit it was built from.
 
 Dependency policy: every other component that ships (libraries and models) must be under a
 license compatible with the AGPL and with public and government use (MIT, Apache 2.0, BSD or
@@ -14,10 +15,15 @@ only **for development and testing**, and the **test data**. Licenses were verif
 2026-09-30 against the license files inside each package (not just the PyPI field, which is
 sometimes wrong), and every critical conclusion was verified independently.
 
-At packaging time (phase 3), this file will be completed automatically with the license texts
-of every bundled package (`dist-info/licenses`, onnxruntime's `ThirdPartyNotices.txt`,
-OpenCV's `LICENSE-3RD-PARTY.txt`, pypdfium2's `BUILD_LICENSES` and the WebView2 SDK license),
-and a packaging test will fail if a forbidden file shows up.
+**The Windows executable** carries the license texts of everything it bundles in
+`THIRD_PARTY_LICENSES/`, next to the `.exe`: `scripts/collect_licenses.py` copies the license,
+notice and authors files of every bundled package (`dist-info/licenses`, onnxruntime's
+`ThirdPartyNotices.txt`, OpenCV's `LICENSE-3RD-PARTY.txt`...) and the texts their wheels lack,
+kept in `packaging/licenses/` (rapidocr, antlr4, proxy_tools, the WebView2 SDK, the libraries
+compiled into MuPDF, the Python runtime's libraries, the models). Its `INDEX.txt` lists each
+component with its version, license and source package, and is the authoritative inventory of
+what ships; this file records the decisions. The build fails if a bundled package has no license
+text, or if a document, image or test file ends up in the bundle.
 
 ## 1. Components planned for the application
 
@@ -28,7 +34,7 @@ Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
 | **PyMuPDF** (MuPDF) | 1.28.2 | AGPL-3.0 or Artifex commercial license | ✅ | Used under the AGPL; for that reason the whole project is licensed under AGPL-3.0-or-later and its source is public (decision D1). |
 | pypdfium2 (PDFium) | 5.13.0 (PDFium 153.0.7999.0) | BSD-3-Clause / Apache-2.0 | ✅ | Bundles, among others, freetype (used under the FTL option), ICU, lcms, libjpeg-turbo, openjpeg, libpng, libtiff and zlib, all permissive. |
 | pypdf | 6.19.0 | BSD-3-Clause | ✅ | Candidate for cleaning the PDF structure (metadata, XMP, annotations, attachments, JavaScript, layers). |
-| opencv-python-headless | 5.0.0.93 | Apache-2.0 (OpenCV), MIT (packaging) | ⚠️ Windows / ⛔ macOS | Windows: bundles FFmpeg (LGPL-2.1) in a single video DLL that can be removed (YuNet was verified to keep working), and links Intel IPP ICV under the *Intel Simplified Software License* (not OSI). macOS: the PyPI wheels link a **GPL-3.0** FFmpeg with x264/x265 that cannot be removed. Alternative: build OpenCV without FFmpeg or IPP, or run YuNet directly with onnxruntime. |
+| opencv-python-headless | 5.0.0.93 | Apache-2.0 (OpenCV), MIT (packaging) | ⚠️ Windows / ⛔ macOS | Windows: bundles FFmpeg (LGPL-2.1) in a single video DLL that can be removed (YuNet was verified to keep working), and links Intel IPP ICV under the *Intel Simplified Software License* (not OSI). **Open issue:** IPP is statically linked into `cv2.pyd` and its license forbids modification and reverse engineering, restrictions the AGPL does not allow in the same program as AGPL MuPDF; the fix is a build of OpenCV without IPP (`-DWITH_IPP=OFF`) or dropping OpenCV (YuNet on onnxruntime). macOS: the PyPI wheels link a **GPL-3.0** FFmpeg with x264/x265 that cannot be removed. Alternative: build OpenCV without FFmpeg or IPP, or run YuNet directly with onnxruntime. |
 | onnxruntime | 1.30.0 | MIT | ✅ | Includes Eigen (MPL-2.0, headers only), which is complied with by keeping the notice. Requires macOS 14 or later (Apple Silicon). **Ships Microsoft telemetry** (ETW on Windows; HTTPS upload on macOS since 1.29), which the app disables at startup (PLAN.md, 5.6). |
 | rapidocr | 3.9.2 | Apache-2.0 | ⚠️ | The package itself is compatible, but it requires opencv-python with a GUI (Qt and FFmpeg), shapely (GEOS, LGPL-2.1), requests and certifi (MPL-2.0) and tqdm (MPL-2.0). It also includes code that downloads models and opens URLs. Proposal: use its models and port only the inference (PLAN.md, section 5.4). |
 | PaddleOCR models (ONNX) | PP-OCR | Apache-2.0 | ✅ | Per-model details in section 2. |
@@ -39,7 +45,7 @@ Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
 | pi-heif | 1.4.0 | BSD-3 (source) / LGPL-3.0 (libheif, libde265) | ⚠️ | Decode only. Acceptable only if LGPL is approved, with folder-mode packaging (not a single file). **Decision pending** (D5). |
 | rapidfuzz | 3.14.6 | MIT | ✅ | Fuzzy name matching. |
 | pyclipper | 1.4.0 | MIT | ✅ | Polygon expansion for the text detector (replaces shapely). |
-| FastAPI | 0.142.2 | MIT | ✅ | Now requires `opentelemetry-api` (Apache-2.0), which sends nothing without the SDK. A test that there is no network traffic will be added. |
+| FastAPI | 0.142.2 | MIT | ✅ | Now requires `opentelemetry-api` (Apache-2.0), which sends nothing without the SDK. The app turns FastAPI's telemetry off anyway (`telemetry=` all off, `OTEL_SDK_DISABLED`), so no exporter can be set up from the environment. |
 | Starlette / Uvicorn / Pydantic / python-multipart | 1.7.0 / 0.54.0 / 2.13.5 / 0.0.32 | BSD-3 / BSD-3 / MIT / Apache-2.0 | ✅ | |
 | pywebview | 6.2.1 | BSD-3-Clause | ✅ | Includes Microsoft's WebView2 SDK (BSD-style license; the notice is reproduced). On Windows it uses pythonnet (MIT), clr-loader (MIT), proxy-tools (MIT) and bottle (MIT). On macOS it uses pyobjc (MIT). |
 | PyInstaller | 6.22.3 | GPL-2.0 with a bootloader exception | ✅ | It is a build tool; the exception covers what ends up inside the executable. |
@@ -48,9 +54,14 @@ Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
 | qrcode / segno | 8.2 / 1.6.6 | BSD-3 / BSD-3 | ✅ | Only if QR generation is needed. QR reading is done by OpenCV. |
 | python-phonenumbers | 9.0.40 | Apache-2.0 | ✅ | Optional, as support for the phone detector. |
 
-Weak-copyleft components that could sneak in as transitive dependencies and that will be
-excluded or replaced: shapely/GEOS (LGPL-2.1), certifi and tqdm (MPL-2.0), img2pdf
-(LGPL-3.0), pyzbar/zbar (LGPL-2.1).
+Not in the current executable: pypdfium2 and piexif (test bench only), pypdf, rapidfuzz,
+reportlab, pillow-heif, pi-heif, qrcode, segno and python-phonenumbers.
+
+Weak-copyleft components: rapidocr pulls in shapely/GEOS (LGPL-2.1, shipped as separate DLLs
+that can be replaced in the one-folder layout), certifi and tqdm (MPL-2.0), plus requests; they
+ship in the executable, with their license texts and source packages listed in
+`THIRD_PARTY_LICENSES/INDEX.txt`, until the port of the inference (PLAN.md, 5.4) removes them.
+img2pdf (LGPL-3.0) and pyzbar/zbar (LGPL-2.1) are not used.
 
 ## 2. Models
 
@@ -70,7 +81,7 @@ executable.
 
 | Tool | License | Use |
 |---|---|---|
-| PyMuPDF | AGPL-3.0 | Test bench only: generating test PDFs (layers, annotations, incremental revisions) and as one of the evaluator's two independent extractors. Not included in the application. |
+| PyMuPDF | AGPL-3.0 | Besides being the application's PDF engine (section 1), the test bench uses it to generate test PDFs (layers, annotations, incremental revisions) and as one of the evaluator's two independent extractors. |
 | pypdfium2 | BSD-3 / Apache-2.0 | The evaluator's second independent extractor. |
 | matplotlib | Matplotlib License (PSF) | Only for its DejaVu and STIX fonts, used to draw the test data. |
 | piexif, OpenCV, numpy, Pillow | see above | Test-data generation. |

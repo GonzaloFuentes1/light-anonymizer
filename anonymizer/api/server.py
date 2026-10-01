@@ -79,14 +79,18 @@ from anonymizer.engine.model import (
     Finding,
     HistoryEntry,
 )
+from anonymizer.paths import resource
 
 log = logging.getLogger("anonymizer")
 
-UI_DIR = Path(__file__).resolve().parents[1] / "ui"
+UI_DIR = resource("anonymizer", "ui")  # see anonymizer.paths (development and packaged app)
 SESSION_PREFIX = "anonimizador_session_"
 SUPPORTED_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 MAX_UPLOAD_BYTES = 1024**3  # 1 GiB per file
 MAX_FILES_FROM_PATHS = 1000
+# FastAPI's built-in OpenTelemetry, all off: no spans, metrics or log records (validation errors
+# with what was sent), and no exporter set up from OTEL_* environment variables.
+NO_TELEMETRY = {"tracing": False, "metrics": False, "logs": False, "operation_spans": False, "auto_configure": False}
 ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost"})
 LAUNCH_COOKIE = "anonimizador_launch"
 SECURITY_HEADERS = {
@@ -127,12 +131,24 @@ def app_data_dir() -> Path:
     return Path(local) / "Anonimizador" if local else Path.home() / ".anonimizador"
 
 
-def setup_logging(level: int = logging.INFO) -> Path:
-    """Rotating technical log (never shown to the user). Returns the log file path."""
-    folder = app_data_dir() / "logs"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "anonimizador.log"
-    handler = logging.handlers.RotatingFileHandler(path, maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+def setup_logging(level: int = logging.INFO) -> Path | None:
+    """Rotating technical log (never shown to the user). Returns the log file path.
+
+    Falls back to the temporary folder when %LOCALAPPDATA% cannot be written, and to no log at all
+    (None) when neither can: the app must still open.
+    """
+    handler: logging.Handler = logging.NullHandler()
+    path = None
+    for folder in (app_data_dir() / "logs", Path(tempfile.gettempdir()) / "anonimizador_logs"):
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            handler = logging.handlers.RotatingFileHandler(
+                folder / "anonimizador.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8"
+            )
+        except OSError:
+            continue
+        path = folder / "anonimizador.log"
+        break
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s [%(threadName)s] %(message)s"))
     for name in ("anonymizer", "uvicorn", "uvicorn.error"):
         logger = logging.getLogger(name)
@@ -610,7 +626,7 @@ def create_app(
         yield
         session.close()
 
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan, telemetry=NO_TELEMETRY)
     app.state.session = session
     app.state.token = token
 
@@ -649,7 +665,8 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def invalid(_request: Request, exc: RequestValidationError):
-        log.info("invalid request: %s", exc.errors()[:3])
+        # Only the kind of error and the field: never the value sent (a note, a list of names).
+        log.info("invalid request: %s", [(error.get("type"), error.get("loc")) for error in exc.errors()[:3]])
         return error_response(422, "invalid", "Los datos enviados no son válidos.")
 
     @app.exception_handler(StarletteHTTPException)
@@ -973,8 +990,11 @@ def create_app(
             if dest == session.dir or session.dir in dest.parents:
                 raise ApiError(422, "invalid_dest", "Elige otra carpeta de destino.")
             dest.mkdir(parents=True, exist_ok=True)
-            probe = tempfile.NamedTemporaryFile(dir=dest, prefix=".anonimizador_", delete=True)
-            probe.close()
+            # One attempt: on Windows, tempfile retries for ever when the folder denies writing
+            # (a read-only share, "Controlled folder access" guarding Documents).
+            probe = dest / f".anonimizador_{secrets.token_hex(8)}"
+            os.close(os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            probe.unlink()
         except ApiError:
             raise
         except OSError:

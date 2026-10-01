@@ -105,6 +105,12 @@ def missing_requirements() -> list[str]:
         missing.append("rapidocr/onnxruntime")
     if not faces.available():
         missing.append(str(faces.YUNET_MODEL))
+    else:
+        try:
+            faces.detector()  # loads it now: an unreadable or damaged model shows up here, not on the first photo
+        except Exception:  # noqa: BLE001 - OpenCV raises cv2.error
+            log.warning("face model cannot be loaded", exc_info=True)
+            missing.append(f"{faces.YUNET_MODEL} (cannot be loaded)")
     return missing
 
 
