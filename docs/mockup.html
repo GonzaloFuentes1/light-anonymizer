@@ -1,0 +1,762 @@
+<title>Mockup del Anonimizador</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: una ventana de app simulada (barra de pasos + pantallas) con una columna de notas de diseño al lado; en Revisión, tres paneles: archivos/páginas, documento, hallazgos. */
+:root {
+  --paper: #F2F4F7;
+  --surface: #FFFFFF;
+  --surface-2: #E9EDF3;
+  --ink: #17212D;
+  --muted: #526073;
+  --line: #D3DAE3;
+  --accent: #2A4C9C;
+  --accent-ink: #FFFFFF;
+  --accent-soft: #E2E8F5;
+  --ok: #0A6A44; --ok-soft: #DCF1E6;
+  --warn: #8F4500; --warn-soft: #FBEAD7;
+  --bad: #AF2216; --bad-soft: #FAE2DE;
+  --chrome: #DFE4EB;
+  /* el documento es papel blanco en ambos temas, como en cualquier visor de PDF */
+  --page: #FFFFFF; --page-ink: #1C1C1C; --page-muted: #555555;
+  --z-rut: #1C5DCF; --z-correo: #7639BF; --z-telefono: #08766F; --z-nombre: #A35A00;
+  --z-direccion: #B12D63; --z-rostro: #C13A0B; --z-ocr: #4A5464; --z-manual: #111418;
+  --font-ui: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --r-s: 6px; --r-m: 10px;
+  --shadow: 0 1px 2px rgba(20, 30, 50, .06), 0 8px 28px rgba(20, 30, 50, .10);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0E131A; --surface: #151C26; --surface-2: #1C2532; --ink: #E5EAF1; --muted: #9AA6B6; --line: #2A3544;
+    --accent: #93ABEE; --accent-ink: #0E131A; --accent-soft: #1E2A44;
+    --ok: #57C892; --ok-soft: #12301F; --warn: #F1A85E; --warn-soft: #382510; --bad: #F2796F; --bad-soft: #3A1714;
+    --chrome: #1A2230;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .45);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0E131A; --surface: #151C26; --surface-2: #1C2532; --ink: #E5EAF1; --muted: #9AA6B6; --line: #2A3544;
+  --accent: #93ABEE; --accent-ink: #0E131A; --accent-soft: #1E2A44;
+  --ok: #57C892; --ok-soft: #12301F; --warn: #F1A85E; --warn-soft: #382510; --bad: #F2796F; --bad-soft: #3A1714;
+  --chrome: #1A2230;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .45);
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--paper); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.5;
+  padding-inline: 20px; padding-block: 28px 48px;
+}
+h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.2; }
+p { margin: 0; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.mono { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1480px; margin: 0 auto; display: grid; gap: 22px; }
+
+/* Encabezado de la página de mockup */
+.intro { display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: end; justify-content: space-between; }
+.intro h1 { font-size: 30px; font-weight: 700; letter-spacing: -.01em; }
+.intro p { color: var(--muted); max-width: 70ch; margin-top: 6px; }
+.eyebrow { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.theme { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: var(--surface); }
+.theme button { border: 0; background: transparent; padding: 6px 14px; cursor: pointer; color: var(--muted); }
+.theme button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 22px; align-items: start; }
+
+/* Ventana de la app */
+.win { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-m); box-shadow: var(--shadow); overflow: hidden; min-width: 0; }
+.titlebar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--chrome); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.titlebar strong { color: var(--ink); }
+.titlebar .dots { display: flex; gap: 6px; margin-left: auto; }
+.titlebar .dots i { width: 11px; height: 11px; border-radius: 50%; background: var(--line); display: block; }
+.steps { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.step { display: inline-flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 7px 12px 7px 8px; border-radius: 999px; cursor: pointer; color: var(--muted); font-weight: 700; }
+.step .n { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; border: 2px solid currentColor; font-size: 13px; }
+.step[aria-current="step"] { background: var(--accent-soft); color: var(--accent); }
+.step.done .n { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+.screen { display: none; }
+.screen.on { display: block; }
+
+/* Pantalla 1: inicio */
+.home { padding: 28px; display: grid; gap: 20px; }
+.notice { display: flex; gap: 12px; align-items: start; background: var(--warn-soft); color: var(--ink); border: 1px solid color-mix(in oklab, var(--warn) 35%, transparent); border-radius: var(--r-m); padding: 12px 14px; }
+.notice b { color: var(--warn); }
+.drop { border: 2px dashed color-mix(in oklab, var(--accent) 55%, var(--line)); border-radius: 14px; padding: 40px 20px; text-align: center; display: grid; gap: 12px; justify-items: center; background: color-mix(in oklab, var(--accent-soft) 45%, transparent); }
+.drop h2 { font-size: 22px; }
+.drop p { color: var(--muted); }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.btn { border: 1px solid var(--line); background: var(--surface); padding: 9px 16px; border-radius: var(--r-s); cursor: pointer; font-weight: 700; }
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.danger { background: var(--bad); border-color: var(--bad); color: var(--surface); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--accent); }
+.btn.small { padding: 5px 10px; font-size: 13px; }
+.formats { font-size: 13px; color: var(--muted); }
+.panel { border: 1px solid var(--line); border-radius: var(--r-m); }
+.panel-h { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.panel-h h3 { font-size: 16px; }
+.filelist { list-style: none; margin: 0; padding: 0; }
+.filelist li { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 14px; border-top: 1px solid var(--line); }
+.filelist li:first-child { border-top: 0; }
+.ficon { width: 34px; height: 40px; border-radius: 4px; border: 1px solid var(--line); background: var(--surface-2); display: grid; place-items: center; font-size: 10px; font-weight: 700; color: var(--muted); }
+.fname { font-weight: 700; overflow-wrap: anywhere; }
+.fmeta { font-size: 13px; color: var(--muted); }
+.toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
+.namelist { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; }
+
+/* Pantalla 2: procesamiento */
+.proc { padding: 24px 28px; display: grid; gap: 18px; }
+.proc-top { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
+.proc-top h2 { font-size: 20px; }
+.job { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px 14px; align-items: center; padding: 14px; border-top: 1px solid var(--line); }
+.job:first-child { border-top: 0; }
+.bar { grid-column: 2 / 4; height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.bar.ok i { background: var(--ok); }
+.state { font-size: 13px; font-weight: 700; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+.state.ok { background: var(--ok-soft); color: var(--ok); }
+.state.run { background: var(--accent-soft); color: var(--accent); }
+.state.wait { background: var(--surface-2); color: var(--muted); }
+.state.bad { background: var(--bad-soft); color: var(--bad); }
+.state.warn { background: var(--warn-soft); color: var(--warn); }
+.errbox { grid-column: 2 / 4; display: grid; gap: 8px; background: var(--bad-soft); border-radius: var(--r-s); padding: 10px 12px; }
+
+/* Pantalla 3: revisión */
+.review { display: grid; grid-template-columns: 210px minmax(0, 1fr) 340px; min-height: 720px; }
+.col { min-width: 0; }
+.col-files { border-right: 1px solid var(--line); background: var(--surface); display: grid; align-content: start; }
+.col-files h3, .col-find h3 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 12px 14px 6px; }
+.fbtn { display: grid; gap: 2px; text-align: left; border: 0; background: transparent; padding: 9px 14px; cursor: pointer; border-left: 3px solid transparent; }
+.fbtn[aria-current="true"] { background: var(--accent-soft); border-left-color: var(--accent); }
+.fbtn .fname { font-size: 14px; }
+.fbtn .state { justify-self: start; font-size: 12px; padding: 1px 8px; }
+.thumbs { display: grid; gap: 10px; padding: 8px 14px 16px; }
+.thumb { border: 1px solid var(--line); background: var(--page); border-radius: 4px; height: 96px; position: relative; cursor: pointer; padding: 8px; display: grid; align-content: start; gap: 4px; }
+.thumb[aria-current="true"] { outline: 3px solid var(--accent); outline-offset: 1px; }
+.thumb i { display: block; height: 4px; border-radius: 2px; background: #D9DCE1; }
+.thumb i.z { background: #1A1A1A; }
+.thumb b { position: absolute; right: 6px; bottom: 6px; font-size: 11px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
+
+.col-doc { background: var(--surface-2); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; }
+.tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.tool { border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-s); padding: 5px 10px; cursor: pointer; font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
+.tool[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.tool kbd, .keys kbd { font-family: var(--font-data); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface-2); color: var(--muted); }
+.tool[aria-pressed="true"] kbd { background: transparent; color: inherit; border-color: currentColor; }
+.sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+.zoomval { min-width: 48px; text-align: center; font-size: 13px; }
+.viewport { overflow: auto; padding: 24px; display: grid; justify-items: center; align-items: start; }
+.pagewrap { transform-origin: top center; transition: transform .2s ease; }
+@media (prefers-reduced-motion: reduce) { .pagewrap { transition: none; } }
+
+/* el documento ficticio */
+.page { width: 620px; background: var(--page); color: var(--page-ink); box-shadow: 0 2px 10px rgba(0, 0, 0, .18); padding: 46px 52px 56px; position: relative; font-family: Arial, "Liberation Sans", Helvetica, sans-serif; font-size: 12.5px; line-height: 1.55; }
+.page.drawing { cursor: crosshair; }
+.doc-h { display: flex; justify-content: space-between; border-bottom: 1.5px solid #2C3E66; padding-bottom: 6px; margin-bottom: 18px; }
+.doc-h b { color: #2C3E66; font-size: 13px; }
+.doc-h span { font-size: 11px; color: var(--page-muted); }
+.page h4 { font-size: 15px; margin: 0 0 12px; }
+.page h5 { font-size: 12.5px; margin: 16px 0 6px; }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 3px 10px; }
+.kv dt { font-weight: 700; }
+.kv dd { margin: 0; }
+.hit { position: relative; }
+.photo { margin-top: 14px; display: grid; grid-template-columns: 220px 1fr; gap: 14px; align-items: center; }
+.photo-img { height: 120px; border-radius: 3px; background: linear-gradient(#C9D6E3, #9DB2C6); position: relative; overflow: hidden; }
+.photo-img .head { position: absolute; border-radius: 50%; background: #E2B58F; }
+.photo-img .body { position: absolute; border-radius: 40% 40% 0 0; background: #48607A; }
+.photo p { font-size: 11px; color: var(--page-muted); }
+.sign { margin-top: 26px; display: grid; grid-template-columns: 1fr 1fr; gap: 30px; }
+.sign div { border-top: 1px solid #444; padding-top: 4px; font-size: 11px; color: var(--page-muted); }
+.sign .scribble { font-family: "Segoe Script", "Brush Script MT", cursive; font-size: 20px; color: #1D3A7A; height: 30px; display: block; }
+
+/* zonas de censura sobre el documento */
+.zone { position: absolute; border: 2px solid var(--zc); background: color-mix(in srgb, var(--zc) 16%, transparent); border-radius: 2px; cursor: pointer; }
+.zone::after { content: attr(data-label); position: absolute; left: -2px; top: -18px; font: 700 10px/16px var(--font-ui); background: var(--zc); color: #FFFFFF; padding: 0 5px; border-radius: 3px 3px 3px 0; white-space: nowrap; }
+.zone.sel { box-shadow: 0 0 0 3px #FFFFFF, 0 0 0 6px var(--zc); z-index: 3; }
+.zone.removed { border-style: dashed; background: transparent; }
+.zone.removed::after { content: attr(data-label) " · quitada"; background: #6B7280; }
+.zone.doubt { border-width: 3px; }
+.result .zone { background: #0B0B0B; border-color: #0B0B0B; }
+.result .zone::after { display: none; }
+.result .zone.removed { display: none; }
+.z-rut { --zc: var(--z-rut); } .z-correo { --zc: var(--z-correo); } .z-telefono { --zc: var(--z-telefono); }
+.z-nombre { --zc: var(--z-nombre); } .z-direccion { --zc: var(--z-direccion); } .z-rostro { --zc: var(--z-rostro); }
+.z-ocr { --zc: var(--z-ocr); } .z-manual { --zc: var(--z-manual); }
+
+.verify { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--surface); border-top: 1px solid var(--line); }
+.verify .msg { display: flex; gap: 10px; align-items: center; }
+.verify .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--ok); flex: none; }
+.keys { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px 0; }
+
+.col-find { border-left: 1px solid var(--line); background: var(--surface); display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; }
+.find-sum { padding: 14px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+.find-sum strong { font-size: 18px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px 2px 7px; background: var(--surface); cursor: pointer; }
+.chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--zc); display: block; }
+.chip[aria-pressed="false"] { opacity: .5; }
+.findlist { overflow: auto; padding-bottom: 10px; }
+.group { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 14px 14px 6px; display: flex; justify-content: space-between; }
+.group.doubt { color: var(--warn); }
+.item { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 4px 10px; padding: 9px 14px; border-left: 3px solid transparent; cursor: pointer; }
+.item:hover { background: var(--surface-2); }
+.item.sel { background: var(--accent-soft); border-left-color: var(--accent); }
+.item .sw { width: 12px; height: 12px; border-radius: 3px; background: var(--zc); margin-top: 4px; }
+.item .val { font-family: var(--font-data); font-size: 13px; overflow-wrap: anywhere; }
+.item .why { grid-column: 2 / 4; font-size: 12px; color: var(--muted); }
+.item .why b { color: var(--warn); font-weight: 700; }
+.item.removed .val { text-decoration: line-through; color: var(--muted); }
+.item .acts { display: flex; gap: 4px; }
+
+/* Pantalla 4: exportar */
+.exp { padding: 24px 28px; display: grid; gap: 18px; }
+.exp h2 { font-size: 20px; }
+.dest { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; }
+.path { font-family: var(--font-data); font-size: 13px; background: var(--surface-2); padding: 8px 10px; border-radius: var(--r-s); overflow-wrap: anywhere; }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.num { font-variant-numeric: tabular-nums; text-align: right; }
+.opts { display: grid; gap: 8px; padding: 14px; }
+.foot { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
+.foot p { color: var(--muted); font-size: 13px; max-width: 62ch; }
+
+/* notas de diseño */
+.notes { display: grid; gap: 14px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-m); padding: 16px; display: none; gap: 10px; }
+.note.on { display: grid; }
+.note h3 { font-size: 16px; }
+.note ul { margin: 0; padding-left: 18px; display: grid; gap: 7px; font-size: 14px; }
+.note .ask { border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; color: var(--muted); }
+.legend { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-m); padding: 16px; display: grid; gap: 8px; font-size: 13px; }
+.legend h3 { font-size: 14px; }
+.legend span { display: flex; align-items: center; gap: 8px; }
+.legend span i { width: 18px; height: 12px; border: 2px solid var(--zc); background: color-mix(in srgb, var(--zc) 16%, transparent); border-radius: 2px; display: block; }
+
+/* diálogo */
+dialog { border: 1px solid var(--line); border-radius: 12px; padding: 0; background: var(--surface); color: var(--ink); width: min(460px, calc(100vw - 32px)); box-shadow: var(--shadow); }
+dialog::backdrop { background: rgba(10, 15, 25, .45); }
+.dlg { padding: 20px; display: grid; gap: 14px; }
+.dlg h2 { font-size: 19px; }
+.dlg p { color: var(--muted); }
+.dlg .val { font-family: var(--font-data); background: var(--surface-2); padding: 6px 10px; border-radius: var(--r-s); color: var(--ink); }
+.dlg label { font-weight: 700; font-size: 14px; display: grid; gap: 6px; }
+.dlg select, .dlg textarea { border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-s); padding: 8px 10px; }
+.dlg textarea { min-height: 64px; resize: vertical; }
+.dlg .row { justify-content: flex-end; }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: 999px; font-size: 14px; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity .2s; }
+.toast.on { opacity: 1; }
+
+@media (max-width: 1180px) {
+  .stage { grid-template-columns: 1fr; }
+  .notes { position: static; }
+  .review { grid-template-columns: 180px minmax(0, 1fr); }
+  .col-find { grid-column: 1 / 3; border-left: 0; border-top: 1px solid var(--line); }
+}
+@media (max-width: 760px) {
+  body { padding-inline: 16px; }
+  .review { grid-template-columns: 1fr; }
+  .col-files { border-right: 0; border-bottom: 1px solid var(--line); }
+  .col-find { grid-column: auto; }
+  .thumbs { grid-template-columns: repeat(3, 1fr); }
+  .home, .proc, .exp { padding: 18px 16px; }
+  .viewport { padding: 14px; justify-items: start; }
+  .dest, .namelist { grid-template-columns: 1fr; }
+}
+</style>
+
+<div class="wrap">
+  <header class="intro">
+    <div>
+      <div class="eyebrow">Fase 2 · Propuesta de diseño para aprobar</div>
+      <h1>Mockup del Anonimizador</h1>
+      <p>Una maqueta navegable de la aplicación para funcionarios. Recorre los cuatro pasos con la barra superior; en Revisión puedes seleccionar hallazgos, quitar una censura, dibujar una zona, hacer zoom y ver cómo quedará el documento. Todos los datos son inventados.</p>
+    </div>
+    <div class="theme" role="group" aria-label="Tema de la maqueta">
+      <button type="button" id="t-light" aria-pressed="false">Claro</button>
+      <button type="button" id="t-system" aria-pressed="true">Sistema</button>
+      <button type="button" id="t-dark" aria-pressed="false">Oscuro</button>
+    </div>
+  </header>
+
+  <div class="stage">
+    <section class="win" aria-label="Ventana de la aplicación">
+      <div class="titlebar"><strong>Anonimizador</strong><span>· funciona sin conexión</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+      <nav class="steps" aria-label="Pasos">
+        <button type="button" class="step done" data-go="1"><span class="n">1</span>Elegir archivos</button>
+        <button type="button" class="step done" data-go="2"><span class="n">2</span>Procesar</button>
+        <button type="button" class="step" data-go="3" aria-current="step"><span class="n">3</span>Revisar</button>
+        <button type="button" class="step" data-go="4"><span class="n">4</span>Exportar</button>
+      </nav>
+
+      <!-- 1. INICIO -->
+      <div class="screen" data-screen="1">
+        <div class="home">
+          <div class="notice" role="note"><span aria-hidden="true">⚠</span><p><b>Prueba de ensayo:</b> usa solo documentos ficticios. No cargues informes reales hasta que la unidad de transparencia lo autorice.</p></div>
+          <div class="drop">
+            <h2>Arrastra aquí documentos o carpetas</h2>
+            <p>Puedes soltar varios archivos a la vez. Se procesan en este computador y nada se envía por internet.</p>
+            <div class="row"><button type="button" class="btn primary">Elegir archivos</button><button type="button" class="btn">Elegir una carpeta</button></div>
+            <div class="formats">PDF (con texto o escaneados), JPG, PNG, WEBP y TIFF</div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><h3>4 archivos listos para procesar</h3><button type="button" class="btn ghost small">Quitar todos</button></div>
+            <ul class="filelist">
+              <li><span class="ficon">PDF</span><div><div class="fname">informe_honorarios_agosto.pdf</div><div class="fmeta">3 páginas · 412 KB</div></div><button type="button" class="btn ghost small" aria-label="Quitar informe_honorarios_agosto.pdf">Quitar</button></li>
+              <li><span class="ficon">JPG</span><div><div class="fname">cedula_frente.jpg</div><div class="fmeta">Imagen · 1,8 MB</div><label class="toggle"><input type="checkbox" id="todo-cedula" checked> Censurar todo el texto de esta imagen</label></div><button type="button" class="btn ghost small" aria-label="Quitar cedula_frente.jpg">Quitar</button></li>
+              <li><span class="ficon">PDF</span><div><div class="fname">acta_reunion_escaneada.pdf</div><div class="fmeta">Escaneo · 2 páginas · 1,1 MB</div></div><button type="button" class="btn ghost small" aria-label="Quitar acta_reunion_escaneada.pdf">Quitar</button></li>
+              <li><span class="ficon">PDF</span><div><div class="fname">resolucion_firmada.pdf</div><div class="fmeta">1 página · 96 KB</div></div><button type="button" class="btn ghost small" aria-label="Quitar resolucion_firmada.pdf">Quitar</button></li>
+            </ul>
+          </div>
+          <div class="panel">
+            <div class="namelist">
+              <div><div class="fname">Lista de nombres y direcciones</div><div class="fmeta">12 nombres y 3 direcciones. Se censuran donde aparezcan, aunque estén sin tildes o en otro orden.</div></div>
+              <button type="button" class="btn">Editar lista</button>
+            </div>
+          </div>
+          <div class="row" style="justify-content:flex-end"><button type="button" class="btn primary" data-go="2">Procesar 4 archivos</button></div>
+        </div>
+      </div>
+
+      <!-- 2. PROCESAMIENTO -->
+      <div class="screen" data-screen="2">
+        <div class="proc">
+          <div class="proc-top">
+            <div><h2>Procesando 4 archivos</h2><p class="fmeta">Puedes empezar a revisar los archivos listos mientras el resto termina.</p></div>
+            <div class="row"><button type="button" class="btn">Cancelar todo</button><button type="button" class="btn primary" data-go="3">Revisar los listos</button></div>
+          </div>
+          <div class="panel">
+            <div class="job"><span class="ficon">PDF</span><div><div class="fname">informe_honorarios_agosto.pdf</div><div class="fmeta">13 zonas propuestas · verificación sin fugas</div></div><span class="state ok">Listo para revisar</span><div class="bar ok"><i style="width:100%"></i></div></div>
+            <div class="job"><span class="ficon">JPG</span><div><div class="fname">cedula_frente.jpg</div><div class="fmeta">Verificando la salida…</div></div><span class="state run">85 %</span><div class="bar"><i style="width:85%"></i></div></div>
+            <div class="job"><span class="ficon">PDF</span><div><div class="fname">acta_reunion_escaneada.pdf</div><div class="fmeta">Leyendo el texto de la página 2 de 2 (escaneo)</div></div><span class="state run">55 %</span><div class="bar"><i style="width:55%"></i></div></div>
+            <div class="job"><span class="ficon">PDF</span><div><div class="fname">resolucion_firmada.pdf</div><div class="fmeta">No se pudo abrir</div></div><span class="state bad">Necesita tu ayuda</span>
+              <div class="errbox"><p><b>Este archivo está protegido con contraseña.</b> Ingresa la contraseña o pide a quien lo envió una versión sin contraseña.</p><div class="row"><button type="button" class="btn small">Ingresar contraseña</button><button type="button" class="btn ghost small">Omitir este archivo</button></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. REVISIÓN -->
+      <div class="screen on" data-screen="3">
+        <div class="review">
+          <aside class="col col-files" aria-label="Archivos y páginas">
+            <h3>Archivos</h3>
+            <button type="button" class="fbtn" aria-current="true"><span class="fname">informe_honorarios_agosto.pdf</span><span class="state warn">3 por revisar</span></button>
+            <button type="button" class="fbtn"><span class="fname">cedula_frente.jpg</span><span class="state bad">1 fuga</span></button>
+            <button type="button" class="fbtn"><span class="fname">acta_reunion_escaneada.pdf</span><span class="state wait">Procesando</span></button>
+            <h3>Páginas</h3>
+            <div class="thumbs">
+              <button type="button" class="thumb" aria-current="true" aria-label="Página 1, 9 zonas"><i style="width:60%"></i><i class="z" style="width:40%"></i><i class="z" style="width:55%"></i><i class="z" style="width:48%"></i><i style="width:80%"></i><i style="width:70%"></i><b>9</b></button>
+              <button type="button" class="thumb" aria-label="Página 2, 3 zonas"><i style="width:75%"></i><i style="width:65%"></i><i class="z" style="width:35%"></i><i style="width:80%"></i><b>3</b></button>
+              <button type="button" class="thumb" aria-label="Página 3, 1 zona"><i style="width:70%"></i><i style="width:60%"></i><i class="z" style="width:30%"></i><b>1</b></button>
+            </div>
+          </aside>
+
+          <section class="col col-doc" aria-label="Documento">
+            <div class="tools" role="toolbar" aria-label="Herramientas del visor">
+              <button type="button" class="tool" id="b-prev" aria-label="Hallazgo anterior">↑ <kbd>K</kbd></button>
+              <button type="button" class="tool" id="b-next" aria-label="Hallazgo siguiente">↓ <kbd>J</kbd></button>
+              <span class="sep" aria-hidden="true"></span>
+              <button type="button" class="tool" id="b-zout" aria-label="Alejar">−</button>
+              <span class="zoomval mono" id="zoomval">100 %</span>
+              <button type="button" class="tool" id="b-zin" aria-label="Acercar">+</button>
+              <button type="button" class="tool" id="b-rot">Girar vista <kbd>R</kbd></button>
+              <span class="sep" aria-hidden="true"></span>
+              <button type="button" class="tool" id="b-draw" aria-pressed="false">Dibujar zona <kbd>D</kbd></button>
+              <button type="button" class="tool" id="b-view" aria-pressed="false">Ver como quedará <kbd>V</kbd></button>
+            </div>
+            <div class="viewport" id="viewport">
+              <div class="pagewrap" id="pagewrap">
+                <article class="page" id="page" aria-label="Página 1 de informe_honorarios_agosto.pdf">
+                  <div class="doc-h"><b>GOBIERNO REGIONAL FICTICIO</b><span>Folio N° 7814/2026</span></div>
+                  <h4>INFORME DE HONORARIOS · AGOSTO 2026</h4>
+                  <h5>1. Antecedentes del prestador</h5>
+                  <dl class="kv">
+                    <dt>Nombre:</dt><dd><span class="hit" id="h-nombre">Ana María Rojas Peña</span></dd>
+                    <dt>RUT:</dt><dd><span class="hit" id="h-rut1">15.782.334-9</span></dd>
+                    <dt>Correo:</dt><dd><span class="hit" id="h-correo1">ana.rojas@ejemplo.cl</span></dd>
+                    <dt>Teléfono:</dt><dd><span class="hit" id="h-tel1">+56 9 8123 4567</span></dd>
+                    <dt>Dirección:</dt><dd><span class="hit" id="h-dir">Pasaje Los Alerces 442, depto 31</span>, Concepción</dd>
+                  </dl>
+                  <h5>2. Productos del período</h5>
+                  <p>Producto 1: Informe de avance del programa de fomento productivo. Se realizaron tres reuniones de coordinación con los equipos municipales.</p>
+                  <dl class="kv" style="margin-top:8px"><dt>Monto bruto:</dt><dd>$ 1.450.000</dd><dt>Fecha de pago:</dt><dd>21 de septiembre de 2026</dd></dl>
+                  <h5>3. Contraparte técnica</h5>
+                  <dl class="kv">
+                    <dt>Nombre:</dt><dd><span class="hit" id="h-nombre2">Sofía Cárdenas Carrasco</span></dd>
+                    <dt>RUT:</dt><dd><span class="hit" id="h-rut2">9.876.543-3</span></dd>
+                    <dt>Correo:</dt><dd><span class="hit" id="h-correo2">scardenas@goreficticio.cl</span></dd>
+                    <dt>Teléfono:</dt><dd><span class="hit" id="h-tel2">(41) 221 3456</span>, anexo 4753</dd>
+                  </dl>
+                  <div class="photo">
+                    <div class="photo-img" id="h-foto" aria-label="Fotografía de la actividad">
+                      <span class="body" style="left:36px;top:70px;width:62px;height:60px"></span><span class="head" id="h-cara1" style="left:50px;top:30px;width:34px;height:40px"></span>
+                      <span class="body" style="left:126px;top:84px;width:44px;height:46px"></span><span class="head" id="h-cara2" style="left:136px;top:58px;width:24px;height:28px"></span>
+                    </div>
+                    <p>Fotografía del taller con organizaciones comunitarias. La imagen trae además el texto «ana.rojas@ejemp1o.cl» en un pendón.</p>
+                  </div>
+                  <div class="sign">
+                    <div><span class="scribble" id="h-firma">A. Rojas</span>Prestador(a) de servicios</div>
+                    <div><span class="scribble">S. Cárdenas</span>V°B° contraparte técnica</div>
+                  </div>
+                </article>
+              </div>
+            </div>
+            <div>
+              <div class="keys" aria-label="Atajos de teclado"><span><kbd>J</kbd> <kbd>K</kbd> siguiente y anterior</span><span><kbd>Supr</kbd> quitar censura</span><span><kbd>D</kbd> dibujar zona</span><span><kbd>+</kbd> <kbd>−</kbd> zoom</span><span><kbd>R</kbd> girar vista</span><span><kbd>V</kbd> ver como quedará</span></div>
+              <div class="verify">
+                <div class="msg"><span class="dot" aria-hidden="true"></span><div><strong>Revisión lista para confirmar</strong><div class="fmeta" id="vsum">13 zonas a censurar · verificación sin fugas · 3 hallazgos por revisar</div></div></div>
+                <button type="button" class="btn primary" id="b-confirm">Confirmar este archivo</button>
+              </div>
+            </div>
+          </section>
+
+          <aside class="col col-find" aria-label="Hallazgos">
+            <div class="find-sum">
+              <strong id="fcount">13 zonas en este archivo</strong>
+              <div class="chips" id="chips" aria-label="Filtrar por tipo">
+                <button type="button" class="chip z-rut" aria-pressed="true" data-t="rut"><i></i>RUT 2</button>
+                <button type="button" class="chip z-correo" aria-pressed="true" data-t="correo"><i></i>Correo 3</button>
+                <button type="button" class="chip z-telefono" aria-pressed="true" data-t="telefono"><i></i>Teléfono 2</button>
+                <button type="button" class="chip z-nombre" aria-pressed="true" data-t="nombre"><i></i>Nombre 2</button>
+                <button type="button" class="chip z-direccion" aria-pressed="true" data-t="direccion"><i></i>Dirección 1</button>
+                <button type="button" class="chip z-rostro" aria-pressed="true" data-t="rostro"><i></i>Rostro 2</button>
+                <button type="button" class="chip z-manual" aria-pressed="true" data-t="manual"><i></i>Agregada 1</button>
+              </div>
+            </div>
+            <div></div>
+            <div class="findlist" id="findlist"></div>
+          </aside>
+        </div>
+      </div>
+
+      <!-- 4. EXPORTAR -->
+      <div class="screen" data-screen="4">
+        <div class="exp">
+          <h2>Exportar los archivos anonimizados</h2>
+          <div class="panel">
+            <div class="dest"><div><div class="fname">Carpeta de destino</div><div class="path">C:\Usuarios\funcionario\Documentos\Transparencia\Agosto_2026_publicar</div></div><button type="button" class="btn">Cambiar carpeta</button></div>
+          </div>
+          <p class="fmeta">Los originales no se modifican. Cada archivo anonimizado se guarda con su mismo nombre en la carpeta de destino.</p>
+          <div class="panel tablewrap">
+            <table>
+              <thead><tr><th>Archivo</th><th style="text-align:right">Censuradas</th><th style="text-align:right">Quitadas por ti</th><th>Verificación</th><th>Estado</th></tr></thead>
+              <tbody>
+                <tr><td class="fname">informe_honorarios_agosto.pdf</td><td class="num">12</td><td class="num">1</td><td>Sin fugas</td><td><span class="state ok">Confirmado</span></td></tr>
+                <tr><td class="fname">acta_reunion_escaneada.pdf</td><td class="num">18</td><td class="num">0</td><td>Sin fugas</td><td><span class="state ok">Confirmado</span></td></tr>
+                <tr><td class="fname">cedula_frente.jpg</td><td class="num">9</td><td class="num">0</td><td><span style="color:var(--bad);font-weight:700">1 fuga sin resolver</span></td><td><span class="state bad">No se exporta</span><div class="fmeta">El RUN sigue legible en la esquina inferior. Vuelve a Revisar.</div></td></tr>
+                <tr><td class="fname">resolucion_firmada.pdf</td><td class="num">—</td><td class="num">—</td><td>—</td><td><span class="state wait">Omitido</span><div class="fmeta">Protegido con contraseña</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="panel opts">
+            <label class="toggle"><input type="checkbox" id="inf-pdf" checked> Informe de auditoría en PDF (qué se censuró, dónde, con qué detector y qué cambiaste)</label>
+            <label class="toggle"><input type="checkbox" id="inf-json" checked> Informe de auditoría en JSON (para sistemas)</label>
+          </div>
+          <div class="foot">
+            <p>El informe deja constancia de tu revisión. La herramienta no certifica que un documento esté libre de datos personales: la decisión de publicar es tuya.</p>
+            <div class="row"><button type="button" class="btn" data-go="3">Volver a Revisar</button><button type="button" class="btn primary" id="b-export">Exportar 2 archivos</button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="notes" aria-label="Notas de diseño">
+      <div class="note" data-note="1">
+        <h3>1 · Elegir archivos</h3>
+        <ul>
+          <li>Una sola acción grande: arrastrar o elegir. Acepta carpetas completas.</li>
+          <li>El recordatorio de usar documentos ficticios queda siempre a la vista durante la prueba de ensayo.</li>
+          <li>"Censurar todo el texto" se activa por archivo, pensado para cédulas y fotos de documentos.</li>
+          <li>La lista de nombres se edita aquí, antes de procesar.</li>
+        </ul>
+        <p class="ask">¿Falta algo que quieras configurar antes de procesar?</p>
+      </div>
+      <div class="note" data-note="2">
+        <h3>2 · Procesar</h3>
+        <ul>
+          <li>Una barra por archivo, con lo que está haciendo en palabras simples.</li>
+          <li>Se puede cancelar, y los archivos listos se pueden revisar sin esperar al resto.</li>
+          <li>Los errores dicen qué pasó y qué hacer, sin mensajes técnicos.</li>
+        </ul>
+        <p class="ask">¿Te sirve poder revisar mientras procesa, o prefieres esperar a que termine todo?</p>
+      </div>
+      <div class="note on" data-note="3">
+        <h3>3 · Revisar (pantalla central)</h3>
+        <ul>
+          <li>Lo dudoso va primero: RUT con dígito verificador que no coincide, OCR de baja confianza, rostros pequeños.</li>
+          <li>Cada zona lleva color y etiqueta de tipo, para no depender solo del color.</li>
+          <li>Quitar una censura pide confirmación y un motivo opcional, y queda en el informe.</li>
+          <li>"Dibujar zona" agrega una censura a mano, por ejemplo una firma.</li>
+          <li>"Ver como quedará" muestra el resultado con las barras negras.</li>
+          <li>Se opera entera con teclado.</li>
+          <li>Nunca dice "documento limpio": dice "revisión lista para confirmar".</li>
+        </ul>
+        <p class="ask">Prueba: haz clic en un hallazgo, presiona <span class="mono">Supr</span> o "Quitar", y luego "Dibujar zona" sobre la firma.</p>
+      </div>
+      <div class="note" data-note="4">
+        <h3>4 · Exportar</h3>
+        <ul>
+          <li>Nunca sobrescribe los originales.</li>
+          <li>Un archivo con una fuga sin resolver no se exporta y dice por qué.</li>
+          <li>Informe de auditoría en PDF y JSON.</li>
+          <li>El texto final deja claro que publicar es una decisión de quien revisa.</li>
+        </ul>
+        <p class="ask">¿El informe de auditoría debe incluir el nombre de quien revisó?</p>
+      </div>
+      <div class="legend">
+        <h3>Colores por tipo de dato</h3>
+        <span class="z-rut"><i></i>RUT</span><span class="z-correo"><i></i>Correo</span><span class="z-telefono"><i></i>Teléfono</span>
+        <span class="z-nombre"><i></i>Nombre</span><span class="z-direccion"><i></i>Dirección</span><span class="z-rostro"><i></i>Rostro</span>
+        <span class="z-ocr"><i></i>Texto en imagen</span><span class="z-manual"><i></i>Agregada por quien revisa</span>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<dialog id="dlg" aria-labelledby="dlg-t">
+  <form method="dialog" class="dlg" id="dlg-form">
+    <h2 id="dlg-t">¿Quitar esta censura?</h2>
+    <p>Este dato quedará visible en el documento publicado:</p>
+    <div class="val" id="dlg-val"></div>
+    <label for="dlg-motivo">Motivo
+      <select id="dlg-motivo">
+        <option>No es un dato personal</option>
+        <option>Es un dato de un funcionario en su cargo</option>
+        <option>La información ya es pública</option>
+        <option>Otro motivo</option>
+      </select>
+    </label>
+    <label for="dlg-nota">Comentario (opcional)
+      <textarea id="dlg-nota" placeholder="Queda registrado en el informe de auditoría"></textarea>
+    </label>
+    <div class="row"><button type="button" class="btn" id="dlg-no" autofocus>Cancelar</button><button type="button" class="btn danger" id="dlg-yes">Quitar censura</button></div>
+  </form>
+</dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const LABEL = { rut: "RUT", correo: "Correo", telefono: "Teléfono", nombre: "Nombre", direccion: "Dirección", rostro: "Rostro", ocr: "Texto en imagen", manual: "Agregada" };
+
+  // Hallazgos del archivo de ejemplo (datos inventados). target: id del elemento del documento a cubrir.
+  const findings = [
+    { id: "f1", t: "rut", val: "15.782.334-9", target: "h-rut1", doubt: "El dígito verificador no coincide: revisa el original", det: "patrones", page: 1 },
+    { id: "f2", t: "rostro", val: "Rostro pequeño", target: "h-cara2", doubt: "Rostro pequeño (24 px), confianza 0,58", det: "rostros", page: 1, pad: 6 },
+    { id: "f3", t: "ocr", val: "ana.rojas@ejemp1o.cl", target: "h-foto", doubt: "Texto leído en la imagen con confianza 0,61", det: "OCR", page: 1, box: [150, 6, 66, 16] },
+    { id: "f4", t: "nombre", val: "Ana María Rojas Peña", target: "h-nombre", det: "lista de nombres", page: 1 },
+    { id: "f5", t: "correo", val: "ana.rojas@ejemplo.cl", target: "h-correo1", det: "patrones", page: 1 },
+    { id: "f6", t: "telefono", val: "+56 9 8123 4567", target: "h-tel1", det: "patrones", page: 1 },
+    { id: "f7", t: "direccion", val: "Pasaje Los Alerces 442, depto 31", target: "h-dir", det: "lista de nombres", page: 1 },
+    { id: "f8", t: "nombre", val: "Sofía Cárdenas Carrasco", target: "h-nombre2", det: "lista de nombres", page: 1 },
+    { id: "f9", t: "rut", val: "9.876.543-3", target: "h-rut2", det: "patrones", page: 1 },
+    { id: "f10", t: "correo", val: "scardenas@goreficticio.cl", target: "h-correo2", det: "patrones", page: 1 },
+    { id: "f11", t: "telefono", val: "(41) 221 3456", target: "h-tel2", det: "patrones", page: 1 },
+    { id: "f12", t: "rostro", val: "Rostro", target: "h-cara1", det: "rostros", page: 1, pad: 8 },
+    { id: "f13", t: "manual", val: "Firma (zona dibujada)", target: "h-firma", det: "agregada por ti", page: 1, pad: 4 },
+  ];
+  const state = { sel: "f1", removed: {}, filter: new Set(Object.keys(LABEL)), zoom: 1, rot: 0, draw: false, result: false, extra: 0 };
+  const page = $("#page");
+
+  // --- pantallas ---
+  function go(n) {
+    $$(".screen").forEach(s => s.classList.toggle("on", s.dataset.screen === String(n)));
+    $$(".note").forEach(s => s.classList.toggle("on", s.dataset.note === String(n)));
+    $$(".step").forEach(b => {
+      const k = Number(b.dataset.go);
+      b.toggleAttribute("aria-current", k === n);
+      if (k === n) b.setAttribute("aria-current", "step");
+      b.classList.toggle("done", k < n);
+    });
+    if (n === 3) requestAnimationFrame(layoutZones);
+  }
+  $$("[data-go]").forEach(b => b.addEventListener("click", () => go(Number(b.dataset.go))));
+
+  // --- zonas sobre el documento ---
+  function rectOf(f) {
+    const el = document.getElementById(f.target);
+    if (!el) return null;
+    const pr = page.getBoundingClientRect(), r = el.getBoundingClientRect(), s = state.zoom;
+    let x = (r.left - pr.left) / s, y = (r.top - pr.top) / s, w = r.width / s, h = r.height / s;
+    if (state.rot % 180 !== 0) { return f._last || null; }
+    if (f.box) { [x, y, w, h] = [x + f.box[0], y + f.box[1], f.box[2], f.box[3]]; }
+    const p = f.pad ?? 3;
+    f._last = { x: x - p, y: y - p, w: w + 2 * p, h: h + 2 * p };
+    return f._last;
+  }
+  function layoutZones() {
+    $$(".zone", page).forEach(z => z.remove());
+    for (const f of findings) {
+      if (!state.filter.has(f.t)) continue;
+      const r = f.rect || rectOf(f);
+      if (!r) continue;
+      const z = document.createElement("div");
+      z.className = `zone z-${f.t}` + (f.doubt ? " doubt" : "") + (state.removed[f.id] ? " removed" : "") + (state.sel === f.id ? " sel" : "");
+      z.dataset.label = LABEL[f.t];
+      z.dataset.id = f.id;
+      Object.assign(z.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
+      z.addEventListener("click", e => { e.stopPropagation(); select(f.id); });
+      page.appendChild(z);
+    }
+  }
+
+  // --- lista de hallazgos ---
+  function renderList() {
+    const vis = findings.filter(f => state.filter.has(f.t));
+    const doubt = vis.filter(f => f.doubt), rest = vis.filter(f => !f.doubt);
+    const row = f => `
+      <div class="item z-${f.t}${state.sel === f.id ? " sel" : ""}${state.removed[f.id] ? " removed" : ""}" data-id="${f.id}" role="button" tabindex="0" aria-label="${LABEL[f.t]}: ${f.val}">
+        <span class="sw" aria-hidden="true"></span>
+        <span class="val">${f.val}</span>
+        <span class="acts">${state.removed[f.id]
+          ? `<button type="button" class="btn ghost small" data-undo="${f.id}">Restaurar</button>`
+          : `<button type="button" class="btn ghost small" data-rm="${f.id}">Quitar…</button>`}</span>
+        <span class="why">${LABEL[f.t]} · pág. ${f.page} · ${f.det}${f.doubt ? ` · <b>${f.doubt}</b>` : ""}${state.removed[f.id] ? ` · quitada: ${state.removed[f.id]}` : ""}</span>
+      </div>`;
+    $("#findlist").innerHTML =
+      `<div class="group doubt"><span>Para revisar primero</span><span>${doubt.length}</span></div>${doubt.map(row).join("")}` +
+      `<div class="group"><span>Detectados</span><span>${rest.length}</span></div>${rest.map(row).join("")}`;
+    const activos = findings.filter(f => !state.removed[f.id]).length;
+    const quitadas = Object.keys(state.removed).length;
+    $("#fcount").textContent = `${activos} zonas en este archivo`;
+    $("#vsum").textContent = `${activos} zonas a censurar · verificación sin fugas` + (quitadas ? ` · ${quitadas} quitada${quitadas > 1 ? "s" : ""} por ti` : " · 3 hallazgos por revisar");
+  }
+  $("#findlist").addEventListener("click", e => {
+    const rm = e.target.closest("[data-rm]"), undo = e.target.closest("[data-undo]"), it = e.target.closest(".item");
+    if (rm) { e.stopPropagation(); ask(rm.dataset.rm); return; }
+    if (undo) { e.stopPropagation(); delete state.removed[undo.dataset.undo]; refresh(); toast("Censura restaurada"); return; }
+    if (it) select(it.dataset.id);
+  });
+  $("#findlist").addEventListener("keydown", e => {
+    const it = e.target.closest(".item");
+    if (it && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(it.dataset.id); }
+  });
+
+  function select(id) {
+    state.sel = id; refresh();
+    const z = $(`.zone[data-id="${id}"]`, page);
+    if (z) z.scrollIntoView({ block: "center", inline: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
+  function move(d) {
+    const vis = findings.filter(f => state.filter.has(f.t));
+    const ordered = [...vis.filter(f => f.doubt), ...vis.filter(f => !f.doubt)];
+    let i = ordered.findIndex(f => f.id === state.sel);
+    i = (i + d + ordered.length) % ordered.length;
+    select(ordered[i].id);
+  }
+  function refresh() { renderList(); layoutZones(); }
+
+  // --- quitar con confirmación ---
+  const dlg = $("#dlg");
+  let pending = null;
+  function ask(id) {
+    if (state.removed[id]) return;
+    pending = id;
+    $("#dlg-val").textContent = findings.find(f => f.id === id).val;
+    $("#dlg-nota").value = "";
+    if (typeof dlg.showModal === "function") dlg.showModal(); else dlg.setAttribute("open", "");
+    $("#dlg-no").focus();
+  }
+  $("#dlg-no").addEventListener("click", () => dlg.close());
+  $("#dlg-yes").addEventListener("click", () => {
+    state.removed[pending] = $("#dlg-motivo").value.toLowerCase();
+    dlg.close(); refresh(); toast("Censura quitada. Queda registrada en el informe de auditoría.");
+  });
+
+  // --- herramientas del visor ---
+  function applyTransform() {
+    $("#pagewrap").style.transform = `scale(${state.zoom}) rotate(${state.rot}deg)`;
+    $("#zoomval").textContent = Math.round(state.zoom * 100) + " %";
+  }
+  const zoom = d => { state.zoom = Math.min(2, Math.max(0.5, +(state.zoom + d).toFixed(2))); applyTransform(); };
+  $("#b-zin").addEventListener("click", () => zoom(0.1));
+  $("#b-zout").addEventListener("click", () => zoom(-0.1));
+  $("#b-rot").addEventListener("click", () => { findings.forEach(f => f.rect = f.rect || rectOf(f)); state.rot = (state.rot + 90) % 360; applyTransform(); });
+  $("#b-next").addEventListener("click", () => move(1));
+  $("#b-prev").addEventListener("click", () => move(-1));
+  function setDraw(on) { state.draw = on; $("#b-draw").setAttribute("aria-pressed", on); page.classList.toggle("drawing", on); if (on) toast("Arrastra sobre el documento para agregar una zona"); }
+  function setView(on) { state.result = on; $("#b-view").setAttribute("aria-pressed", on); page.classList.toggle("result", on); }
+  $("#b-draw").addEventListener("click", () => setDraw(!state.draw));
+  $("#b-view").addEventListener("click", () => setView(!state.result));
+
+  // dibujar una zona con el mouse
+  let start = null, ghost = null;
+  page.addEventListener("pointerdown", e => {
+    if (!state.draw || state.rot) return;
+    const pr = page.getBoundingClientRect();
+    start = { x: (e.clientX - pr.left) / state.zoom, y: (e.clientY - pr.top) / state.zoom };
+    ghost = document.createElement("div"); ghost.className = "zone z-manual"; ghost.dataset.label = "Agregada";
+    page.appendChild(ghost); page.setPointerCapture(e.pointerId);
+  });
+  page.addEventListener("pointermove", e => {
+    if (!start) return;
+    const pr = page.getBoundingClientRect();
+    const x = (e.clientX - pr.left) / state.zoom, y = (e.clientY - pr.top) / state.zoom;
+    Object.assign(ghost.style, { left: Math.min(x, start.x) + "px", top: Math.min(y, start.y) + "px", width: Math.abs(x - start.x) + "px", height: Math.abs(y - start.y) + "px" });
+  });
+  page.addEventListener("pointerup", () => {
+    if (!start) return;
+    const r = { x: parseFloat(ghost.style.left), y: parseFloat(ghost.style.top), w: parseFloat(ghost.style.width) || 0, h: parseFloat(ghost.style.height) || 0 };
+    ghost.remove(); start = null;
+    if (r.w < 8 || r.h < 8) return;
+    state.extra += 1;
+    findings.push({ id: "m" + state.extra, t: "manual", val: `Zona dibujada ${state.extra}`, det: "agregada por ti", page: 1, rect: r });
+    setDraw(false); select("m" + state.extra); toast("Zona agregada");
+  });
+
+  // filtros por tipo
+  $("#chips").addEventListener("click", e => {
+    const c = e.target.closest(".chip"); if (!c) return;
+    const t = c.dataset.t, on = c.getAttribute("aria-pressed") !== "true";
+    c.setAttribute("aria-pressed", on);
+    on ? state.filter.add(t) : state.filter.delete(t);
+    if (t === "manual") on ? state.filter.add("ocr") : null;
+    refresh();
+  });
+
+  // atajos de teclado (solo en Revisión y fuera de campos de texto)
+  document.addEventListener("keydown", e => {
+    if (!$('[data-screen="3"]').classList.contains("on") || dlg.open) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    const k = e.key.toLowerCase();
+    if (k === "j") move(1);
+    else if (k === "k") move(-1);
+    else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); ask(state.sel); }
+    else if (k === "d") setDraw(!state.draw);
+    else if (k === "v") setView(!state.result);
+    else if (k === "r") $("#b-rot").click();
+    else if (e.key === "+" || e.key === "=") zoom(0.1);
+    else if (e.key === "-") zoom(-0.1);
+    else if (e.key === "Escape") setDraw(false);
+  });
+
+  $("#b-confirm").addEventListener("click", () => toast("Archivo confirmado. Puedes seguir con el siguiente o exportar."));
+  $("#b-export").addEventListener("click", () => toast("Exportado: 2 archivos y el informe de auditoría en la carpeta de destino."));
+
+  // tema de la maqueta
+  const themeBtns = { light: $("#t-light"), system: $("#t-system"), dark: $("#t-dark") };
+  Object.entries(themeBtns).forEach(([k, b]) => b.addEventListener("click", () => {
+    if (k === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", k);
+    Object.values(themeBtns).forEach(x => x.setAttribute("aria-pressed", x === b));
+  }));
+
+  let tid = null;
+  function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(tid); tid = setTimeout(() => t.classList.remove("on"), 2600); }
+
+  window.addEventListener("resize", () => { if (!state.rot) findings.forEach(f => { if (!f.rect) f._last = null; }); layoutZones(); });
+  document.fonts?.ready.then(layoutZones);
+  renderList(); applyTransform(); requestAnimationFrame(layoutZones);
+})();
+</script>

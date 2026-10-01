@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="es-CL">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Everything is local: no network, no CDN, no web fonts from the internet. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+<!-- The server replaces this tag with the token of this session (X-Session-Token). -->
+<meta name="session-token" content="__SESSION_TOKEN__">
+<title>Anonimizador</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <header class="titlebar">
+    <strong>Anonimizador</strong><span>· funciona sin conexión</span>
+    <span class="state warn" id="engine-chip" hidden>Motor de prueba: los hallazgos son simulados</span>
+    <div class="theme" role="group" aria-label="Tema de colores">
+      <button type="button" data-theme-choice="light" aria-pressed="false">Claro</button>
+      <button type="button" data-theme-choice="system" aria-pressed="true">Sistema</button>
+      <button type="button" data-theme-choice="dark" aria-pressed="false">Oscuro</button>
+    </div>
+  </header>
+
+  <nav class="steps" aria-label="Pasos">
+    <button type="button" class="step" data-go="1"><span class="n" aria-hidden="true">1</span>Elegir archivos</button>
+    <button type="button" class="step" data-go="2"><span class="n" aria-hidden="true">2</span>Procesar</button>
+    <button type="button" class="step" data-go="3"><span class="n" aria-hidden="true">3</span>Revisar</button>
+    <button type="button" class="step" data-go="4"><span class="n" aria-hidden="true">4</span>Exportar</button>
+  </nav>
+
+  <div class="fatal" id="fatal" role="alert" hidden></div>
+
+  <main class="main">
+    <!-- 1. Elegir archivos -->
+    <section class="screen" data-screen="1" aria-labelledby="s1-title">
+      <div class="home">
+        <h2 class="sr-only" id="s1-title" tabindex="-1">Elegir archivos</h2>
+        <div class="notice" role="note"><span aria-hidden="true">⚠</span><p><b>Prueba de ensayo:</b> usa solo documentos ficticios. No cargues informes reales hasta que la unidad de transparencia lo autorice.</p></div>
+        <div class="drop" id="drop">
+          <h3>Arrastra aquí documentos o carpetas</h3>
+          <p>Puedes soltar varios archivos a la vez. Se procesan en este computador y nada se envía por internet.</p>
+          <div class="row">
+            <button type="button" class="btn primary" id="b-choose">Elegir archivos</button>
+            <button type="button" class="btn" id="b-choose-dir">Elegir una carpeta</button>
+          </div>
+          <div class="formats">PDF (con texto o escaneados), JPG, PNG, WEBP y TIFF</div>
+          <input type="file" id="in-files" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff,application/pdf,image/jpeg,image/png,image/webp,image/tiff" hidden>
+          <input type="file" id="in-dir" multiple webkitdirectory hidden>
+        </div>
+        <div class="panel" id="files-panel" hidden>
+          <div class="panel-h"><h3 id="files-title">Archivos</h3><button type="button" class="btn ghost small" id="b-remove-all">Quitar todos</button></div>
+          <ul class="filelist" id="filelist" aria-labelledby="files-title"></ul>
+        </div>
+        <div class="panel">
+          <div class="namelist">
+            <div><div class="fname">Lista de nombres y direcciones</div><div class="fmeta" id="names-meta">Se censuran donde aparezcan, aunque estén sin tildes o en otro orden.</div></div>
+            <button type="button" class="btn" id="b-names">Editar lista</button>
+          </div>
+        </div>
+        <div class="actionbar"><p class="fmeta" id="process-hint"></p><button type="button" class="btn primary" id="b-process" disabled>Procesar</button></div>
+      </div>
+    </section>
+
+    <!-- 2. Procesar -->
+    <section class="screen" data-screen="2" aria-labelledby="s2-title">
+      <div class="proc">
+        <div class="proc-top">
+          <div><h2 id="s2-title" tabindex="-1">Procesar</h2><p class="fmeta" id="s2-sub">Puedes empezar a revisar los archivos listos mientras el resto termina.</p></div>
+          <div class="row"><button type="button" class="btn" id="b-cancel-all">Cancelar todo</button><button type="button" class="btn primary" id="b-review-ready">Revisar los listos</button></div>
+        </div>
+        <div class="panel" id="jobs"></div>
+      </div>
+    </section>
+
+    <!-- 3. Revisar -->
+    <section class="screen screen-review" data-screen="3" aria-labelledby="s3-title">
+      <h2 class="sr-only" id="s3-title" tabindex="-1">Revisar</h2>
+      <div class="review-empty" id="review-empty" hidden>
+        <h3>Todavía no hay archivos listos para revisar</h3>
+        <p class="fmeta">Cuando un archivo termine de procesarse aparecerá aquí.</p>
+        <div class="row"><button type="button" class="btn" data-go="1">Elegir archivos</button><button type="button" class="btn primary" data-go="2">Ver el procesamiento</button></div>
+      </div>
+      <div class="review" id="review">
+        <aside class="col col-files" aria-label="Archivos y páginas">
+          <h3>Archivos</h3>
+          <div id="rfiles"></div>
+          <h3>Páginas <span class="pageno" id="pageno"></span></h3>
+          <div class="thumbs" id="thumbs"></div>
+        </aside>
+
+        <section class="col col-doc" aria-label="Documento">
+          <div class="tools" role="toolbar" aria-label="Herramientas del visor">
+            <button type="button" class="tool" id="b-prev" aria-label="Hallazgo anterior (K)">↑ <kbd>K</kbd></button>
+            <button type="button" class="tool" id="b-next" aria-label="Hallazgo siguiente (J)">↓ <kbd>J</kbd></button>
+            <span class="sep" aria-hidden="true"></span>
+            <button type="button" class="tool" id="b-zout" aria-label="Alejar (−)">−</button>
+            <button type="button" class="tool zoomval mono" id="b-zfit" title="Ajustar al ancho">100 %</button>
+            <button type="button" class="tool" id="b-zin" aria-label="Acercar (+)">+</button>
+            <button type="button" class="tool" id="b-rot">Girar vista <kbd>R</kbd></button>
+            <span class="sep" aria-hidden="true"></span>
+            <button type="button" class="tool" id="b-draw" aria-pressed="false">Dibujar zona <kbd>D</kbd></button>
+            <button type="button" class="tool" id="b-view" aria-pressed="false">Ver como quedará <kbd>V</kbd></button>
+          </div>
+          <div class="viewport" id="viewport">
+            <div class="pagebox" id="pagebox">
+              <div class="pageinner" id="pageinner">
+                <img class="pageimg" id="pageimg" alt="">
+                <div class="zones" id="zones" aria-hidden="true"></div>
+              </div>
+            </div>
+            <p class="loading fmeta" id="page-loading" hidden>Cargando la página…</p>
+          </div>
+          <div>
+            <div class="keys" aria-label="Atajos de teclado"><span><kbd>J</kbd> <kbd>K</kbd> siguiente y anterior</span><span><kbd>Supr</kbd> quitar censura</span><span><kbd>D</kbd> dibujar zona</span><span><kbd>+</kbd> <kbd>−</kbd> zoom</span><span><kbd>R</kbd> girar vista</span><span><kbd>V</kbd> ver como quedará</span></div>
+            <div class="verify">
+              <div class="msg"><span class="dot" id="vdot" aria-hidden="true"></span><div><strong id="vtitle">Revisión lista para confirmar</strong><div class="fmeta" id="vsum"></div></div></div>
+              <div class="row" id="vactions"><button type="button" class="btn primary" id="b-confirm">Confirmar este archivo</button></div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="col col-find" aria-label="Hallazgos">
+          <div class="find-sum">
+            <strong id="fcount">0 zonas en este archivo</strong>
+            <div class="chips" id="chips" role="group" aria-label="Filtrar por tipo de dato"></div>
+          </div>
+          <div class="leaks" id="leaks" hidden></div>
+          <div class="findlist" id="findlist"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- 4. Exportar -->
+    <section class="screen" data-screen="4" aria-labelledby="s4-title">
+      <div class="exp">
+        <h2 id="s4-title" tabindex="-1">Exportar los archivos anonimizados</h2>
+        <div class="panel">
+          <div class="dest">
+            <div>
+              <label class="fname" for="dest-path">Carpeta de destino</label>
+              <input type="text" class="path" id="dest-path" spellcheck="false" autocomplete="off">
+            </div>
+            <button type="button" class="btn" id="b-dest" hidden>Cambiar carpeta</button>
+          </div>
+        </div>
+        <p class="fmeta">Los originales no se modifican. Cada archivo anonimizado se guarda con su mismo nombre en la carpeta de destino; si ya existe uno con ese nombre, se agrega un número y nunca se reemplaza.</p>
+        <div class="panel tablewrap">
+          <table>
+            <caption class="sr-only">Archivos para exportar</caption>
+            <thead><tr><th scope="col">Archivo</th><th scope="col" class="num">Censuradas</th><th scope="col" class="num">Quitadas por ti</th><th scope="col">Verificación</th><th scope="col">Estado</th></tr></thead>
+            <tbody id="exp-rows"></tbody>
+          </table>
+        </div>
+        <div class="panel opts">
+          <label class="toggle"><input type="checkbox" id="audit-pdf" checked> Informe de auditoría en PDF (qué se censuró, dónde, con qué detector y qué cambiaste)</label>
+          <label class="toggle"><input type="checkbox" id="audit-json" checked> Informe de auditoría en JSON (para sistemas)</label>
+        </div>
+        <div class="result" id="exp-result" role="status" aria-live="polite" hidden></div>
+        <div class="foot">
+          <p>El informe deja constancia de tu revisión. La herramienta no certifica que un documento esté libre de datos personales: la decisión de publicar es tuya.</p>
+          <div class="row"><button type="button" class="btn" data-go="3">Volver a Revisar</button><button type="button" class="btn primary" id="b-export" disabled>Exportar</button></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="dropveil" id="dropveil" hidden><div>Suelta los archivos o carpetas para agregarlos</div></div>
+
+<!-- Remove a redaction -->
+<dialog id="dlg-remove" aria-labelledby="dlg-remove-t">
+  <form method="dialog" class="dlg" id="dlg-remove-form">
+    <h2 id="dlg-remove-t">¿Quitar esta censura?</h2>
+    <p>Este dato quedará visible en el documento publicado:</p>
+    <div class="val" id="dlg-remove-val"></div>
+    <label for="dlg-reason">Motivo
+      <select id="dlg-reason">
+        <option>No es un dato personal</option>
+        <option>Es un dato de un funcionario en su cargo</option>
+        <option>La información ya es pública</option>
+        <option>Otro motivo</option>
+      </select>
+    </label>
+    <label for="dlg-note">Comentario (opcional)
+      <textarea id="dlg-note" placeholder="Queda registrado en el informe de auditoría"></textarea>
+    </label>
+    <div class="row"><button type="button" class="btn" id="dlg-remove-no">Cancelar</button><button type="submit" class="btn danger" id="dlg-remove-yes">Quitar censura</button></div>
+  </form>
+</dialog>
+
+<!-- Name list editor -->
+<dialog id="dlg-names" aria-labelledby="dlg-names-t">
+  <form method="dialog" class="dlg" id="dlg-names-form">
+    <h2 id="dlg-names-t">Lista de nombres y direcciones</h2>
+    <p>Escribe un nombre o una dirección por línea. Se censuran donde aparezcan, aunque estén sin tildes, en mayúsculas o en otro orden.</p>
+    <label for="names-text">Nombres y direcciones
+      <textarea id="names-text" class="names-text" spellcheck="false" placeholder="Ana María Rojas Peña&#10;Pasaje Los Alerces 442, Concepción"></textarea>
+    </label>
+    <p class="fmeta" id="names-count" aria-live="polite"></p>
+    <div class="row"><button type="button" class="btn" id="dlg-names-no">Cancelar</button><button type="submit" class="btn primary" id="dlg-names-yes">Guardar lista</button></div>
+  </form>
+</dialog>
+
+<!-- Generic confirmation -->
+<dialog id="dlg-ask" aria-labelledby="dlg-ask-t">
+  <form method="dialog" class="dlg" id="dlg-ask-form">
+    <h2 id="dlg-ask-t"></h2>
+    <p id="dlg-ask-p"></p>
+    <div class="row"><button type="button" class="btn" id="dlg-ask-no">Cancelar</button><button type="submit" class="btn primary" id="dlg-ask-yes">Aceptar</button></div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

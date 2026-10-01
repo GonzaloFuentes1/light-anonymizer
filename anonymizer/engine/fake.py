@@ -1,0 +1,477 @@
+"""Development engine: follows the engine contract with simple, fast detection.
+
+It only reads the text layer of PDFs (RUT, e-mail and Chilean phone patterns, plus the name
+list) and does no OCR and no face detection: images are opened and shown, but they get no
+findings. Export applies real redaction and removes metadata, so the whole flow of the app can
+be tried end to end with invented documents.
+
+Set ``ANONYMIZER_FAKE_DELAY`` (seconds per page) to slow analysis down and see progress bars.
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import re
+import shutil
+import tempfile
+import time
+import unicodedata
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pymupdf
+from PIL import Image, ImageDraw, ImageOps, ImageSequence, UnidentifiedImageError
+
+from anonymizer.engine.locks import PDF_LOCK
+from anonymizer.engine.model import (
+    ERROR_MESSAGES,
+    TYPE_LABELS,
+    AnalyzedFile,
+    ExportResult,
+    Finding,
+    HistoryEntry,
+    Leak,
+    PageInfo,
+)
+
+RUT = re.compile(r"(?<![\d.])\d{1,2}\.?\d{3}\.?\d{3}\s*-\s*[\dkK](?![\w])")
+EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b")
+# Digits with spaces, parentheses, dashes or a leading +: validated as a Chilean number below.
+PHONE_CANDIDATE = re.compile(r"(?<![\w.])\+?\(?\d[\d \t()-]{6,18}\d(?![\w])")
+DOUBTFUL_RUT = "El dígito verificador no coincide: revisa el original"
+
+IMAGE_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "TIFF": ".tif"}
+IMAGE_SAVE_OPTIONS = {
+    "JPEG": {"quality": 92},
+    "WEBP": {"quality": 92},
+    "PNG": {},
+    "TIFF": {"compression": "tiff_deflate"},
+}
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def rut_check_digit(body: str) -> str:
+    total, factor = 0, 2
+    for digit in reversed(body):
+        total += int(digit) * factor
+        factor = 2 if factor == 7 else factor + 1
+    rest = 11 - total % 11
+    return {11: "0", 10: "K"}.get(rest, str(rest))
+
+
+def rut_is_valid(text: str) -> bool:
+    clean = re.sub(r"[^\dkK]", "", text).upper()
+    return len(clean) >= 2 and rut_check_digit(clean[:-1]) == clean[-1]
+
+
+def is_chilean_phone(text: str) -> bool:
+    digits = re.sub(r"\D", "", text)
+    if digits.startswith("0056"):
+        digits = digits[4:]
+    elif digits.startswith("56") and len(digits) == 11:
+        digits = digits[2:]
+    return len(digits) == 9 and digits[0] in "23456789"
+
+
+def fold(text: str) -> str:
+    """Lowercase without accents, one character per character (keeps offsets)."""
+    out = []
+    for c in text:
+        base = unicodedata.normalize("NFD", c)[0]
+        out.append(base.lower() if len(base.lower()) == 1 else c)
+    return "".join(out)
+
+
+def find_spans(text: str, name_list: list[str]) -> list[tuple[str, int, int, str]]:
+    """(type, start, end, detector) of every piece of data found in ``text``."""
+    spans: list[tuple[str, int, int, str]] = []
+    for m in RUT.finditer(text):
+        spans.append(("rut", m.start(), m.end(), "regex"))
+    for m in EMAIL.finditer(text):
+        spans.append(("email", m.start(), m.end(), "regex"))
+    taken = [(a, b) for _, a, b, _ in spans]
+    for m in PHONE_CANDIDATE.finditer(text):
+        a, b = m.start(), m.end()
+        if any(a < tb and ta < b for ta, tb in taken) or not is_chilean_phone(m.group(0)):
+            continue
+        spans.append(("phone", a, b, "regex"))
+    folded = fold(text)
+    for entry in name_list:
+        words = fold(entry).split()
+        if not words:
+            continue
+        pattern = re.compile(r"(?<!\w)" + r"[\s,.-]+".join(re.escape(w) for w in words) + r"(?!\w)")
+        for m in pattern.finditer(folded):
+            spans.append(("name", m.start(), m.end(), "name_list"))
+    return sorted(spans, key=lambda s: (s[1], s[2]))
+
+
+def sniff(path: str) -> str:
+    """Real type of a file by its content: pdf | image | empty | format."""
+    with open(path, "rb") as fh:
+        head = fh.read(12)
+    if not head:
+        return "empty"
+    if head.startswith(b"%PDF"):
+        return "pdf"
+    if head.startswith((b"\xff\xd8\xff", b"\x89PNG", b"II*\x00", b"MM\x00*")) or (
+        head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    ):
+        return "image"
+    return "format"
+
+
+def unique_path(folder: Path, name: str) -> Path:
+    """``folder/name``, or ``name (2)``, ``name (3)``... when it already exists: never overwrite."""
+    stem, suffix = Path(name).stem, Path(name).suffix
+    candidate = folder / name
+    n = 2
+    while candidate.exists():
+        candidate = folder / f"{stem} ({n}){suffix}"
+        n += 1
+    return candidate
+
+
+def polygon_of(rect: pymupdf.Rect) -> list[list[float]]:
+    r = rect.normalize()
+    return [[round(x, 2), round(y, 2)] for x, y in ((r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1))]
+
+
+def bbox_of(polygon: list[list[float]]) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def squash(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+class Cancelled(Exception):
+    pass
+
+
+class FileError(Exception):
+    def __init__(self, code: str, detail: str = ""):
+        super().__init__(detail or code)
+        self.code = code
+
+
+class FakeEngine:
+    name = "fake"
+
+    def __init__(self, delay: float | None = None):
+        self.delay = float(os.environ.get("ANONYMIZER_FAKE_DELAY", "0")) if delay is None else delay
+
+    # ------------------------------------------------------------------
+    # analyze
+    # ------------------------------------------------------------------
+
+    def analyze(self, file: AnalyzedFile, name_list: list[str], *, progress=None, cancel=None) -> AnalyzedFile:
+        started = time.perf_counter()
+
+        def report(fraction: float, step: str) -> None:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled
+            file.progress = max(0.0, min(1.0, fraction))
+            file.step = step
+            if progress is not None:
+                progress(file.progress, step)
+
+        file.status = "processing"
+        file.error = file.error_message = None
+        try:
+            report(0.02, "Revisando el archivo")
+            kind = sniff(file.path)
+            if kind in ("empty", "format"):
+                raise FileError(kind)
+            file.kind = kind
+            if kind == "pdf":
+                pages, findings = self._analyze_pdf(file, name_list, report)
+            else:
+                pages, findings = self._analyze_image(file, report)
+            report(0.98, "Preparando la revisión")
+            file.pages = pages
+            file.findings = findings
+            file.status = "ready"
+            file.progress = 1.0
+            file.step = "Listo para revisar"
+        except Cancelled:
+            file.status = "cancelled"
+            file.step = "Cancelado"
+        except FileError as exc:
+            file.status = "error"
+            file.error = exc.code
+            file.error_message = ERROR_MESSAGES[exc.code]
+            file.step = "No se pudo abrir"
+        file.timings["analyze"] = round(time.perf_counter() - started, 3)
+        return file
+
+    def _analyze_pdf(self, file: AnalyzedFile, name_list: list[str], report):
+        with PDF_LOCK:
+            try:
+                doc = pymupdf.open(file.path, filetype="pdf")
+            except Exception as exc:
+                raise FileError("corrupt", repr(exc)) from exc
+            if doc.needs_pass:
+                doc.close()
+                raise FileError("password")
+            count = doc.page_count
+        if count == 0:
+            doc.close()
+            raise FileError("empty")
+        pages: list[PageInfo] = []
+        findings: list[Finding] = []
+        try:
+            for n in range(count):
+                report(0.05 + 0.9 * n / count, f"Leyendo el documento: página {n + 1} de {count}")
+                if self.delay:
+                    time.sleep(self.delay)
+                with PDF_LOCK:
+                    try:
+                        page = doc[n]
+                        view = page.rect
+                        pages.append(
+                            PageInfo(index=n, width=round(view.width, 2), height=round(view.height, 2), unit="pt")
+                        )
+                        text, boxes = self._chars(page)
+                        to_view = page.rotation_matrix
+                    except Exception as exc:
+                        raise FileError("corrupt", repr(exc)) from exc
+                report(0.05 + 0.9 * (n + 0.5) / count, f"Buscando datos personales: página {n + 1} de {count}")
+                for type_, a, b, detector in find_spans(text, name_list):
+                    found = text[a:b]
+                    doubtful = type_ == "rut" and not rut_is_valid(found)
+                    for rect in self._span_rects(boxes, a, b):
+                        view_rect = (rect * to_view).normalize() + (-1, -1, 1, 1)
+                        findings.append(
+                            Finding(
+                                id=uuid.uuid4().hex[:12],
+                                file_id=file.id,
+                                page=n,
+                                type=type_,
+                                polygon=polygon_of(view_rect),
+                                text=found,
+                                detector=detector,
+                                score=0.6 if doubtful else 1.0,
+                                doubtful=doubtful,
+                                doubt_reason=DOUBTFUL_RUT if doubtful else None,
+                                history=[HistoryEntry(at=now_iso(), action="proposed")],
+                            )
+                        )
+        finally:
+            with PDF_LOCK:
+                doc.close()
+        return pages, findings
+
+    @staticmethod
+    def _chars(page: pymupdf.Page) -> tuple[str, list[pymupdf.Rect | None]]:
+        """Text of the page (one line per text line) and the box of each character (page space)."""
+        text: list[str] = []
+        boxes: list[pymupdf.Rect | None] = []
+        for block in page.get_text("rawdict").get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    for ch in span.get("chars", []):
+                        text.append(ch["c"])
+                        boxes.append(pymupdf.Rect(ch["bbox"]))
+                text.append("\n")
+                boxes.append(None)
+        return "".join(text), boxes
+
+    @staticmethod
+    def _span_rects(boxes: list[pymupdf.Rect | None], a: int, b: int) -> list[pymupdf.Rect]:
+        """One rectangle per text line covered by characters ``a..b``."""
+        rects: list[pymupdf.Rect] = []
+        current: pymupdf.Rect | None = None
+        for box in boxes[a:b]:
+            if box is None:
+                if current is not None:
+                    rects.append(current)
+                current = None
+            elif not box.is_empty:
+                current = pymupdf.Rect(box) if current is None else current | box
+        if current is not None:
+            rects.append(current)
+        return rects
+
+    def _analyze_image(self, file: AnalyzedFile, report):
+        report(0.2, "Leyendo la imagen")
+        try:
+            with Image.open(file.path) as img:
+                img.load()
+                pages = []
+                for n, frame in enumerate(ImageSequence.Iterator(img)):
+                    width, height = ImageOps.exif_transpose(frame.copy()).size
+                    pages.append(PageInfo(index=n, width=float(width), height=float(height), unit="px"))
+        except UnidentifiedImageError as exc:
+            raise FileError("format", repr(exc)) from exc
+        except (OSError, SyntaxError, ValueError) as exc:
+            raise FileError("corrupt", repr(exc)) from exc
+        if self.delay:
+            time.sleep(self.delay)
+        # No OCR or face detection in the development engine.
+        report(0.7, "Buscando datos personales")
+        return pages, []
+
+    # ------------------------------------------------------------------
+    # render_page
+    # ------------------------------------------------------------------
+
+    def render_page(self, file: AnalyzedFile, page: int, zoom: float = 1.0) -> bytes:
+        zoom = max(0.05, min(8.0, float(zoom)))
+        kind = file.kind or sniff(file.path)
+        if kind == "pdf":
+            with PDF_LOCK:
+                with pymupdf.open(file.path, filetype="pdf") as doc:
+                    pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+                    return pix.tobytes("png")
+        with Image.open(file.path) as img:
+            img.seek(page)
+            frame = ImageOps.exif_transpose(img.copy())
+            if frame.mode not in ("RGB", "RGBA", "L"):
+                frame = frame.convert("RGB")
+            if zoom != 1.0:
+                size = (max(1, round(frame.width * zoom)), max(1, round(frame.height * zoom)))
+                frame = frame.resize(size, Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            frame.save(buf, "PNG")
+            return buf.getvalue()
+
+    # ------------------------------------------------------------------
+    # export
+    # ------------------------------------------------------------------
+
+    def export(self, file: AnalyzedFile, dest_dir: str) -> ExportResult:
+        started = time.perf_counter()
+        dest = Path(dest_dir)
+        dest.mkdir(parents=True, exist_ok=True)
+        active = [f for f in file.findings if f.active]
+        removed = [f for f in file.findings if not f.active]
+        kind = file.kind or sniff(file.path)
+        name = Path(file.name).name or "archivo"
+        with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
+            if kind == "pdf":
+                if Path(name).suffix.lower() != ".pdf":
+                    name = Path(name).stem + ".pdf"
+                staged = Path(tmp) / "output.pdf"
+                self._export_pdf(file, active, staged)
+                leaks = self._leaks_pdf(staged, active, removed)
+            else:
+                staged, fmt = self._export_image(file, active, Path(tmp))
+                if Path(name).suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}:
+                    name = Path(name).stem + IMAGE_FORMATS[fmt]
+                leaks = self._leaks_image(staged)
+            file.leaks = leaks
+            output: Path | None = None
+            if not leaks:
+                output = unique_path(dest, name)
+                shutil.copyfile(staged, output)
+        file.output_path = str(output) if output else None
+        file.timings["export"] = round(time.perf_counter() - started, 3)
+        if leaks:
+            n = len(leaks)
+            message = (
+                f"No se exportó: la verificación encontró {n} {'dato' if n == 1 else 'datos'} "
+                "que siguen legibles. Vuelve a Revisar."
+            )
+        else:
+            message = "Archivo exportado. La verificación automática no encontró datos censurados legibles."
+        return ExportResult(
+            file_id=file.id,
+            output_path=file.output_path,
+            leaks=leaks,
+            redactions_applied=len(active) if not leaks else 0,
+            removed_by_reviewer=len(removed),
+            exported=not leaks,
+            message=message,
+        )
+
+    def _export_pdf(self, file: AnalyzedFile, active: list[Finding], staged: Path) -> None:
+        with PDF_LOCK:
+            doc = pymupdf.open(file.path, filetype="pdf")
+            try:
+                by_page: dict[int, list[Finding]] = {}
+                for f in active:
+                    by_page.setdefault(f.page, []).append(f)
+                for n in range(doc.page_count):
+                    page = doc[n]
+                    for f in by_page.get(n, []):
+                        x0, y0, x1, y1 = bbox_of(f.polygon)
+                        rect = (pymupdf.Rect(x0, y0, x1, y1) * page.derotation_matrix).normalize()
+                        page.add_redact_annot(rect, fill=(0, 0, 0))
+                    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+                    for annot in list(page.annots() or []):
+                        page.delete_annot(annot)
+                    for widget in list(page.widgets() or []):
+                        page.delete_widget(widget)
+                for embedded in list(doc.embfile_names()):
+                    doc.embfile_del(embedded)
+                doc.set_toc([])
+                doc.set_metadata({})
+                doc.del_xml_metadata()
+                doc.save(staged, garbage=4, deflate=True, clean=True)
+            finally:
+                doc.close()
+
+    def _export_image(self, file: AnalyzedFile, active: list[Finding], folder: Path) -> tuple[Path, str]:
+        with Image.open(file.path) as img:
+            img.load()
+            fmt = img.format if img.format in IMAGE_FORMATS else "PNG"
+            frames = []
+            for n, frame in enumerate(ImageSequence.Iterator(img)):
+                out = ImageOps.exif_transpose(frame.copy()).convert("RGB")
+                draw = ImageDraw.Draw(out)
+                for f in active:
+                    if f.page == n:
+                        draw.polygon([(x, y) for x, y in f.polygon], fill=(0, 0, 0))
+                # A new image from raw pixels: no EXIF, XMP, ICC or text chunks are carried over.
+                frames.append(Image.frombytes("RGB", out.size, out.tobytes()))
+        staged = folder / ("output" + IMAGE_FORMATS[fmt])
+        options = IMAGE_SAVE_OPTIONS[fmt]
+        if len(frames) > 1 and fmt in ("TIFF", "WEBP", "PNG"):
+            frames[0].save(staged, fmt, save_all=True, append_images=frames[1:], **options)
+        else:
+            frames[0].save(staged, fmt, **options)
+        return staged, fmt
+
+    @staticmethod
+    def _leaks_pdf(path: Path, active: list[Finding], removed: list[Finding]) -> list[Leak]:
+        leaks: list[Leak] = []
+        with PDF_LOCK:
+            with pymupdf.open(path) as doc:
+                texts = [squash(page.get_text("text")) for page in doc]
+                metadata = {k: v for k, v in (doc.metadata or {}).items() if v and k not in ("format", "encryption")}
+                if metadata or doc.get_xml_metadata():
+                    leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene metadatos."))
+        kept = {(f.page, squash(f.text or "")) for f in removed}
+        seen: set[tuple[int, str]] = set()
+        for f in active:
+            needle = squash(f.text or "")
+            key = (f.page, needle)
+            if not needle or key in kept or key in seen or f.page >= len(texts):
+                continue
+            seen.add(key)
+            if needle in texts[f.page]:
+                label = TYPE_LABELS.get(f.type, f.type)
+                leaks.append(
+                    Leak(
+                        page=f.page,
+                        type=f.type,
+                        message=f"{label} sigue legible en la página {f.page + 1}.",
+                        finding_id=f.id,
+                    )
+                )
+        return leaks
+
+    @staticmethod
+    def _leaks_image(path: Path) -> list[Leak]:
+        with Image.open(path) as img:
+            if len(img.getexif()) or any(k in img.info for k in ("exif", "xmp", "XML:com.adobe.xmp", "comment")):
+                return [Leak(page=None, type="metadata", message="La imagen todavía tiene metadatos.")]
+        return []
