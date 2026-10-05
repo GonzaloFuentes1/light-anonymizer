@@ -186,8 +186,9 @@ report mentions it.
 
 **Scanned PDF (no text layer) or mixed page.** The page is rendered at 300 dpi (200 dpi if the
 page is very large), OCR and faces run with rotations, and the page is rebuilt as a redacted
-image. If it carries an invisible OCR text layer (a scanner's "sandwich" PDF), that layer also
-contains the data and is removed along with the pixels.
+image, without adding any text layer (D9). If it carries an invisible OCR text layer (a scanner's
+"sandwich" PDF), that layer also contains the data: the redacted spans are removed from it along
+with the pixels, and the rest of the layer stays as the original had it.
 
 **Image (JPG, PNG, WEBP, multi-page TIFF).** The EXIF orientation is applied and detection runs
 with rotations. The output is written from the pixels, in the same format and **with no
@@ -630,6 +631,21 @@ you prefer to fix it now.
 **D9. Output of scans.** I propose rebuilding the page only as an image, without a text layer.
 Adding an invisible OCR layer would make the PDF searchable, but it reintroduces text (and OCR
 errors) into the published file.
+
+> **Decided (2026-10-05): yes.** Scans are exported as images, without any added text layer.
+>
+> **Verified (2026-10-05): the export already does this; no code changed.** A scanned page is
+> redacted in place (`pdf.redact`: `apply_redactions` with `PDF_REDACT_IMAGE_PIXELS` blacks out
+> the pixels under each zone) and the file is rewritten; nothing writes text into it, so the
+> page goes out as its image, with no text at all
+> (`test_scan_is_exported_as_an_image_without_a_text_layer`). A scan that already carries an
+> invisible OCR layer (a scanner's "sandwich" PDF) has more than 50 characters of text, so it is
+> treated as a text page: that layer is searched like any text layer and its image is read by OCR.
+> On export, the characters under each zone are removed from the layer along with the pixels; the
+> rest of the layer is the original's own text, still invisible (render mode 3), not a new OCR
+> (`test_sandwich_ocr_layer_keeps_only_the_original_text_that_was_not_redacted`). That leftover
+> layer is kept because removing it would also remove the searchability the original had; the
+> leak check runs the patterns over it like over any text layer.
 
 **D10. Institutional data.** 600/800 numbers and the RUTs of institutions (for example a GORE's
 72.xxx.xxx-x) are not personal data. I propose redacting them anyway by default (recall) and
