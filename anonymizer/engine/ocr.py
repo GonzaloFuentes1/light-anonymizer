@@ -1,8 +1,10 @@
 """Text in images with RapidOCR (PP-OCR models on onnxruntime), at 0°, 90° and 270°.
 
-The line classifier of RapidOCR already covers 180°. One OCR engine is shared by the whole
-process and its calls are serialized (``OCR_LOCK``): two analyses at once never run two OCRs
-at the same time, which keeps memory bounded.
+The line classifier of RapidOCR already covers 180°. An image whose text only reads mirrored (a
+photo taken with a front camera) is read again mirrored, but only when the normal pass found no
+legible text (D6). One OCR engine is shared by the whole process and its calls are serialized
+(``OCR_LOCK``): two analyses at once never run two OCRs at the same time, which keeps memory
+bounded.
 """
 
 from __future__ import annotations
@@ -25,6 +27,9 @@ os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 OCR_LOCK = threading.Lock()
 ROTATIONS = (0, 1, 3)  # np.rot90 turns: 0°, 90° and 270°
 OCR_THREADS = 4
+# A line is legible text with this score and at least this many letters or digits (D6, ``legible``).
+LEGIBLE_SCORE = 0.9
+LEGIBLE_LETTERS = 4
 # The PP-OCR models that ship inside the ``rapidocr`` wheel. They are passed by path: without a
 # path, RapidOCR downloads any model that is missing or does not match its checksum, and the app
 # must never use the network.
@@ -87,19 +92,51 @@ def rotate_points(pts: np.ndarray, k: int, w: int, h: int) -> np.ndarray:
     return np.stack([y, h - x], axis=1)
 
 
-def read_lines(bgr: np.ndarray, min_side: int = 0, check: Callable[[], None] | None = None) -> list[OcrLine]:
+def _letters(text: str) -> int:
+    return sum(c.isalnum() for c in text)
+
+
+def legible(lines: list[OcrLine]) -> bool:
+    """Some line reads as text: at least ``LEGIBLE_LETTERS`` letters or digits read with a score of
+    ``LEGIBLE_SCORE`` or more. On the test set, every image with text had lines at 0.999 or more,
+    and the two mirrored ones none above 0.83."""
+    return any(ln.score >= LEGIBLE_SCORE and _letters(ln.text) >= LEGIBLE_LETTERS for ln in lines)
+
+
+def needs_mirror(lines: list[OcrLine]) -> bool:
+    """D6: the detector found what looks like text (lines of a few letters or more) but none of it is
+    legible: it may be mirrored (a photo taken with a front camera). A photo without text, whose
+    lines are a few stray characters at most, is not read again."""
+    return not legible(lines) and any(_letters(ln.text) >= LEGIBLE_LETTERS for ln in lines)
+
+
+def read_lines(
+    bgr: np.ndarray, min_side: int = 0, check: Callable[[], None] | None = None, mirror: bool = True
+) -> list[OcrLine]:
     """Every text line of a BGR image, read in the three orientations.
 
     ``min_side``: small crops are padded with white up to this side before reading (the boxes
     are clipped back to the image). The text detector scales the image so that its shorter side
     reaches 736 px: without padding, a thin crop of 800x120 px was enlarged six times and took
     tens of seconds. ``check`` is called before each pass (it raises to cancel).
+
+    ``mirror`` (D6): when none of the lines is legible but some look like text, the mirrored
+    image is read too, in the same three orientations, and its lines are mapped back to the
+    image. That doubles the OCR time, but only of images without legible text.
     """
+    lines = _read(bgr, min_side, check, mirrored=False)
+    if mirror and needs_mirror(lines):
+        lines += _read(bgr, min_side, check, mirrored=True)
+    return lines
+
+
+def _read(bgr: np.ndarray, min_side: int, check: Callable[[], None] | None, mirrored: bool) -> list[OcrLine]:
     h, w = bgr.shape[:2]
-    img = bgr
+    img = np.ascontiguousarray(bgr[:, ::-1]) if mirrored else bgr
     if h < min_side or w < min_side:
-        img = np.full((max(h, min_side), max(w, min_side), 3), 255, np.uint8)
-        img[:h, :w] = bgr
+        padded = np.full((max(h, min_side), max(w, min_side), 3), 255, np.uint8)
+        padded[:h, :w] = img
+        img = padded
     ph, pw = img.shape[:2]
     lines: list[OcrLine] = []
     reader = engine()
@@ -114,5 +151,7 @@ def read_lines(bgr: np.ndarray, min_side: int = 0, check: Callable[[], None] | N
         for box, txt, score in zip(r.boxes, r.txts, r.scores, strict=False):
             pol = rotate_points(np.asarray(box, np.float64), k, pw, ph)
             pol = np.stack([pol[:, 0].clip(0, w), pol[:, 1].clip(0, h)], axis=1)
+            if mirrored:  # back from the mirrored image to the image
+                pol = np.stack([w - pol[:, 0], pol[:, 1]], axis=1)
             lines.append(OcrLine(pol, txt, float(score), k))
     return lines

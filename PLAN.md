@@ -269,8 +269,8 @@ detected**: this is a documented limit, and the test set measures it on purpose.
   (rotated quadrilaterals) go back to the original coordinates and are merged.
 - Redaction uses the detector's **rotated polygon**, not its bounding rectangle.
 - A "redact all text in this image" mode, which can be enabled per file.
-- Mirrored text (photo taken with a front camera): the 4 rotations do not read it. Adding the
-  mirrored version doubles the OCR time (D6).
+- Mirrored text (photo taken with a front camera): the 4 rotations do not read it. The mirrored
+  image is read too, only when the normal pass finds no legible text (D6).
 
 ### 5.5 QR and MRZ (proposed)
 
@@ -621,6 +621,19 @@ recommendation), or use pi-heif (LGPL-3.0, read-only).
 (photo taken with a front camera). For mirroring, OCR must also run on the mirrored image,
 which doubles its time. I propose enabling it only when the normal pass finds no legible text,
 or as a per-file option. What does "volteadas" mean to you?
+
+> **Decided (2026-10-05): read the mirrored image only when the normal pass (every orientation)
+> finds no legible text in that image or page,** and map what it reads back to the image.
+>
+> **Implemented (2026-10-05).** `ocr.read_lines`: after the 0/90/270° pass, `ocr.needs_mirror`
+> asks for a second pass over the mirrored image (the same three orientations) when some lines
+> look like text (4 or more letters or digits) and none is legible (`ocr.legible`: score 0.9 or
+> more with 4 or more letters or digits). Its lines are mapped back (x → width − x) and added to
+> the normal ones, so the rest of the pipeline (patterns, names, context, dedup, redaction of the
+> polygon) is unchanged. The thresholds come from the test set: every image with text had lines
+> at 0.999 or more; the two mirrored ones none above 0.83; 28 of the 30 face photos had no line of
+> 4 letters at all, so a photo without text is not read twice. It applies to images, scanned
+> pages and the images inside PDF pages alike.
 
 **D7. QR, MRZ and cédulas.** I propose adding QR and MRZ detectors and, when an image looks
 like a cédula (an MRZ or labels such as "NÚMERO DOCUMENTO"), suggesting the "redact all text"
