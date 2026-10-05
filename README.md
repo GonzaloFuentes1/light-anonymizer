@@ -6,6 +6,8 @@ A desktop tool that anonymizes PDFs and images **locally**, built for Chilean pu
 
 > **Status: phase 0 finished, phases 1–2 in progress, phase 3 pending.** The repository contains the test bench (a fictitious test set with exact ground truth, the evaluator and baselines), the engine and a preliminary desktop app that runs it. There is no installer yet. Human review of every document before publishing is mandatory, always.
 
+**Platform:** version 1 targets Windows 10 and 11 (64-bit) only; macOS is not supported (decision D4 in [PLAN.md](PLAN.md)).
+
 ## Principles
 
 1. **Recall over precision.** When in doubt, redact. Validations (RUT check digit, OCR confidence, face score) only order the review; they never discard a finding.

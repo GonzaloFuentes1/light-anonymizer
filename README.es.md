@@ -6,6 +6,8 @@ Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computado
 
 > **Estado: fase 0 terminada, fases 1 y 2 en curso, fase 3 pendiente.** El repositorio contiene el banco de pruebas (un conjunto de prueba ficticio con verdad de terreno exacta, el evaluador y las líneas base), el motor y una aplicación de escritorio preliminar que lo usa. Todavía no hay instalador. La revisión humana de cada documento antes de publicarlo es obligatoria, siempre.
 
+**Plataforma:** la versión 1 es solo para Windows 10 y 11 (64 bits); macOS no está soportado (decisión D4 en [PLAN.md](PLAN.md)).
+
 ## Principios
 
 1. **Recall sobre precisión.** Ante la duda, se censura. Las validaciones (dígito verificador del RUT, confianza del OCR, puntaje del detector de rostros) solo ordenan la revisión; nunca descartan un hallazgo.

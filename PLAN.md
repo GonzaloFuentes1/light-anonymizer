@@ -51,7 +51,8 @@ phase 0 only built the test set and the metric.
    at full resolution and on small faces if the image is downscaled. Detection has to run at
    several scales. It also misses 2 of 3 pure profiles.
 4. **OpenCV from PyPI on macOS ships GPL-3.0 FFmpeg**, linked in a way that cannot be removed.
-   On Windows it can be removed. This affects the viability of macOS (D4).
+   On Windows it can be removed. This affects the viability of macOS (D4: version 1 is Windows
+   only).
 5. **RapidOCR pulls in copyleft dependencies and code that uses the network** (model downloads,
    reading URLs). I propose using its models and porting only the inference (section 5.4).
 6. **The Chilean cédula encodes the RUN (Rol Único Nacional, the personal ID number), the
@@ -452,7 +453,8 @@ development-only, and a test fails if they show up. The bundle must include `LIC
 root (next to the `anonymizer` package also works): the "Acerca de" dialog shows it
 (`anonymizer/about.py`, `GET /api/about`) and only points to the source when it is missing.
 Also: `LICENSES.md` generated from the actual license files, a test that there is no network
-traffic, the final size, `README.md` with screenshots and `DEVELOPMENT.md`. macOS per D4.
+traffic, the final size, `README.md` with screenshots and `DEVELOPMENT.md`. Windows only (D4:
+macOS is not a version-1 target).
 
 ---
 
@@ -589,6 +591,11 @@ acceptable? If the answer is "strictly MIT/Apache/BSD", we build OpenCV without 
 **D4. macOS.** With the PyPI wheels it is not viable (GPL FFmpeg inside OpenCV). It is viable
 by building OpenCV without FFmpeg, or by running YuNet directly with onnxruntime. It requires a
 Mac with macOS 14 or later to build and test. Is it a requirement for version 1?
+
+> **Decided (2026-10-05): no. Version 1 targets Windows only** (Windows 10 and 11, 64-bit, with
+> the WebView2 runtime they include). Nothing is built or tested on macOS; the GPL FFmpeg of the
+> macOS OpenCV wheels and onnxruntime's HTTPS telemetry there stay documented for a later
+> version, which would need an OpenCV without FFmpeg (or YuNet on onnxruntime) and a Mac to test.
 
 **D5. HEIC.** Options: do not support it in version 1 and ask users to convert to JPG (my
 recommendation), or use pi-heif (LGPL-3.0, read-only).
