@@ -15,8 +15,8 @@ the working copy had changes, SHA-256 of the executable), after checking that th
 build and carries LEEME.txt and the license texts. The installer gets the build's version.
 
 The AGPL rules of build_exe.py apply: a build of uncommitted changes gives an installer marked
-"compilación de prueba: no distribuir" (welcome page, window title, file properties, installed
-apps list). The installer's own sources (``INSTALLER_SOURCES``: the script, the LICENSE it shows,
+"compilación de prueba: no distribuir" (a warning on the welcome page, the installed-apps entry,
+the file properties). The installer's own sources (``INSTALLER_SOURCES``: the script, the LICENSE it shows,
 this file) are source code too: if they differ from those of the build's commit, committed or not,
 this refuses, unless ``--allow-dirty`` is given (a test installer, marked the same way). Other
 changes, such as documentation committed after the build, do not matter.
