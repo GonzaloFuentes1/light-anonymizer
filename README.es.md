@@ -76,6 +76,21 @@ Se usa una carpeta y no un archivo único porque así la aplicación abre en uno
 
 El ejecutable acepta las mismas opciones que `python -m anonymizer.app` (`--browser`, `--no-open`, `--engine`), salvo que siempre usa el motor definitivo: rechaza `--engine fake`, ignora `ANONYMIZER_ENGINE` y, si faltan componentes del motor (un antivirus puede poner uno en cuarentena), muestra un error en vez de pasar al motor de prueba, que exportaría páginas escaneadas y fotos sin censurar. Los errores al abrir aparecen en un mensaje en español, y cerrar la ventana con archivos en proceso o revisados sin exportar pide confirmación. Como no tiene consola, `--url-file RUTA` escribe la URL y el token de sesión en un archivo JSON para las pruebas automáticas; no se escribe nada si no se usa la opción, y el archivo se borra al cerrar la aplicación. Con `--browser`, borrar ese archivo cierra la aplicación de forma ordenada (también se borra su carpeta de trabajo), ya que el ejecutable no recibe Ctrl+C.
 
+## Tráfico de red
+
+La aplicación misma no se conecta a la red: el servidor local escucha solo en 127.0.0.1, los modelos vienen incluidos y se cargan por ruta (no se descarga nada), la interfaz no carga nada desde fuera (su Content-Security-Policy solo permite el servidor local) y la telemetría de onnxruntime y el OpenTelemetry de FastAPI se apagan al iniciar.
+
+La ventana es WebView2 de Microsoft, un componente de Windows, y parte de su propio tráfico no se puede descartar desde dentro de la aplicación (decisión D11). Lo que hace la aplicación (`WEBVIEW2_ARGS` en `anonymizer/app.py`): apaga los servicios en segundo plano de WebView2 (actualizaciones de componentes, pings, informes de confiabilidad), SmartScreen y el inicio de sesión con la cuenta de Windows (con ese inicio de sesión activo, WebView2 abría una conexión a Microsoft 365 cada vez que se abría), pasa la opción de Chromium que apaga los informes de fallos, no usa proxy y hace fallar toda búsqueda de nombres de la red de WebView2, salvo 127.0.0.1. Los documentos nunca viajan por ninguno de estos canales.
+
+Lo que todavía puede comunicarse con Microsoft, y por qué:
+
+- **Actualizaciones de WebView2.** El componente WebView2 es parte de Windows y lo actualiza el servicio Microsoft Edge Update, según su propio calendario, esté o no abierta la aplicación. La aplicación no puede ni debe apagarlo.
+- **Informes de fallos de WebView2.** Si WebView2 falla, su gestor de fallos puede enviar un informe según la configuración de datos de diagnóstico de Windows; usa su propio cliente HTTP, que la regla de búsqueda de nombres no cubre. Se pasa la opción que apaga los informes de fallos, pero no se ha medido si WebView2 la respeta (eso requiere un fallo durante una captura de tráfico).
+- **Windows mismo, fuera de la aplicación.** La primera vez que se abre, SmartScreen revisa la reputación del `.exe` sin firma ("Windows protegió tu PC") y Microsoft Defender puede consultar o enviar archivos a su servicio en la nube, según la configuración del equipo. Esas revisiones son del sistema operativo, no de la aplicación.
+- **Los eventos ETW de onnxruntime** se apagan al iniciar; en Windows son eventos locales que solo podría recoger el sistema de diagnóstico de Windows, y solo si el equipo está configurado para eso.
+
+Un equipo que deba tener cero tráfico necesita que informática lo imponga fuera de la aplicación: una regla de salida del firewall para `LightAnonymizer.exe` y políticas de Windows y Edge para los datos de diagnóstico y las actualizaciones de WebView2. Una regla de firewall sobre `msedgewebview2.exe` afectaría también a todos los demás programas que usan WebView2 (Teams, Outlook…), porque ese ejecutable es compartido.
+
 ## El banco de pruebas
 
 - **102 archivos ficticios** en 10 familias, con **971 datos personales** de ubicación exacta conocida, **44 metadatos sensibles escondidos** y 7 archivos que deben rechazarse (con contraseña, corruptos, vacíos o con formato falso).

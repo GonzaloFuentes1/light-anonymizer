@@ -294,9 +294,11 @@ is recognized by its shape in the OCR text. I propose always redacting the whole
 - **WebView2 (pywebview's window on Windows) connects on its own**: in the test it requested
   Edge's experiment configuration and looked for a proxy (WPAD), while showing only
   `http://127.0.0.1`. With hardened startup arguments those two connections go away, but one
-  TLS connection from the WebView2 process to Microsoft servers remained (probably from the
-  Windows sign-in), which no argument suppresses. Documents never travel through it, but "zero
-  traffic" cannot be claimed for the Windows component (D11).
+  TLS connection from the WebView2 process to Microsoft servers remained. It came from the
+  Windows-account sign-in, and turning that feature off (`msOneAuthWAM`) removed it. Documents
+  never travel through WebView2's channels, but "zero traffic" cannot be claimed for the Windows
+  component: its updates, its crash reports and Windows' own checks are outside the app (D11;
+  README, "Network traffic").
 - Short install paths: with long paths (such as OneDrive's) Windows fails to load native
   libraries.
 
@@ -689,6 +691,26 @@ arguments, SmartScreen and crash reports disabled, and say so clearly in the doc
 (c) switch to an interface without a web engine, which means Qt (LGPL) or a much poorer
 interface. Is (a) acceptable, or is the requirement zero traffic measured with a firewall for
 the system components as well?
+
+> **Decided (2026-10-05): (a).** Keep pywebview and WebView2 with its Microsoft connections turned
+> off as far as the app can, and say clearly what may still talk to Microsoft.
+>
+> **Implemented (2026-10-05).** What `anonymizer/app.py` already set (`WEBVIEW2_ARGS`, through
+> `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`): no background networking, component updates, pings or
+> domain-reliability reports; SmartScreen off (`msSmartScreenProtection`); the Windows-account
+> sign-in off (`msOneAuthWAM`, `msLoadOneAuthInBackground`, `msImplicitSignin`,
+> `msEdgeOSAccountInfoSubstrate`: it was the source of the TLS connection to Microsoft 365 left in
+> 5.6); no proxy (no WPAD lookup); every name lookup of Chromium's network stack fails except
+> 127.0.0.1; no file URLs; and a fresh profile per instance, deleted on close. Added:
+> `--disable-breakpad`, Chromium's switch that turns crash reporting off (the crash handler has
+> its own HTTP client, which the host rules do not cover); whether WebView2 honors it was not
+> measured, since that needs a crash during a capture. A test keeps these flags in place. README
+> and README.es now have a "Network traffic" section that lists what may still talk to Microsoft
+> and why: WebView2 runtime updates (Edge Update, a Windows service), WebView2 crash reports
+> (Windows diagnostic-data settings), Windows' own checks of the executable (SmartScreen
+> reputation, Defender cloud lookups) and onnxruntime's ETW events (off at startup, local), and
+> that zero traffic needs IT to enforce it outside the app (a firewall rule for
+> `LightAnonymizer.exe`; one for `msedgewebview2.exe` would affect every program that uses it).
 
 **D12. URLs.** The notebook's pattern redacted every URL. In a real report that covered 36
 links to institutional news (and only halfway, because the URL continued on the next line).
