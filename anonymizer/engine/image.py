@@ -47,14 +47,45 @@ def frame_count(path: str) -> int:
         return 1 if img.format == "MPO" else getattr(img, "n_frames", 1)
 
 
+def view_frame(frame: Image.Image) -> Image.Image:
+    """A frame as the user sees it: EXIF orientation applied, RGB."""
+    return ImageOps.exif_transpose(frame.copy()).convert("RGB")
+
+
 def frames(path: str) -> Iterator[Image.Image]:
     """RGB frames in view space (EXIF orientation applied). Raises ``FileError`` if damaged."""
     with _open(path) as img:
         try:
             for frame in _frames(img):
-                yield ImageOps.exif_transpose(frame.copy()).convert("RGB")
+                yield view_frame(frame)
         except (OSError, SyntaxError, ValueError) as exc:
             raise FileError("corrupt", repr(exc)) from exc
+
+
+def frame(path: str, n: int) -> Image.Image:
+    """Frame ``n`` in view space: the pixels ``frames`` yields for it, without decoding the frames
+    before it. Raises ``IndexError`` when there is no such frame (an MPO has only frame 0)."""
+    with _open(path) as img:
+        if n < 0 or (img.format == "MPO" and n > 0):
+            raise IndexError(n)
+        try:
+            if n:
+                img.seek(n)
+            return view_frame(img)
+        except EOFError as exc:
+            raise IndexError(n) from exc
+        except (OSError, SyntaxError, ValueError) as exc:
+            raise FileError("corrupt", repr(exc)) from exc
+
+
+def redact_frame(arr: np.ndarray, polygons) -> np.ndarray:
+    """Fills each polygon, enlarged by ``FILL_GROWTH`` around its center, with black (in place)."""
+    for polygon in polygons:
+        pol = np.asarray(polygon, np.float64)
+        center = pol.mean(axis=0)
+        grown = (pol - center) * FILL_GROWTH + center
+        cv2.fillPoly(arr, [np.round(grown).astype(np.int32)], (0, 0, 0))
+    return arr
 
 
 def redact(source: str, polygons_by_page: dict[int, list[list[list[float]]]], folder: Path) -> tuple[Path, str]:
@@ -63,12 +94,7 @@ def redact(source: str, polygons_by_page: dict[int, list[list[list[float]]]], fo
         fmt = output_format(img)
     outputs: list[Image.Image] = []
     for n, frame in enumerate(frames(source)):
-        arr = np.array(frame)
-        for polygon in polygons_by_page.get(n, []):
-            pol = np.asarray(polygon, np.float64)
-            center = pol.mean(axis=0)
-            grown = (pol - center) * FILL_GROWTH + center
-            cv2.fillPoly(arr, [np.round(grown).astype(np.int32)], (0, 0, 0))
+        arr = redact_frame(np.array(frame), polygons_by_page.get(n, []))
         # A new image from raw pixels: no metadata is carried over.
         outputs.append(Image.fromarray(arr))
     staged = folder / ("output" + IMAGE_FORMATS[fmt])

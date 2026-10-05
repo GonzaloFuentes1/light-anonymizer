@@ -566,3 +566,52 @@ def test_ocr_starts_without_network(monkeypatch):
     img = np.array(_text_image([EMAIL], size=(700, 120)))[:, :, ::-1].copy()
     assert any(EMAIL in txt for txt in reader(img).txts or ())
     assert not attempts
+
+
+# ---------------------------------------------------------------------------
+# after: image helpers (spec 4.1)
+# ---------------------------------------------------------------------------
+
+
+def _tiff(path: Path, sizes) -> Path:
+    frames = []
+    for i, (w, h) in enumerate(sizes):
+        img = Image.new("RGB", (w, h), (255, 255, 255))
+        ImageDraw.Draw(img).rectangle((10, 10, 60 + 10 * i, 40), fill=(200, 30 * i, 0))
+        frames.append(img)
+    frames[0].save(path, "TIFF", save_all=True, append_images=frames[1:], compression="tiff_deflate")
+    return path
+
+
+def test_image_frame_equals_the_frames_generator(tmp_path):
+    import numpy as np
+
+    from anonymizer.engine import image
+
+    path = _tiff(tmp_path / "multi.tif", [(300, 200), (240, 320), (500, 260)])
+    every = list(image.frames(str(path)))
+    for n in range(3):
+        assert np.array_equal(np.array(image.frame(str(path), n)), np.array(every[n]))
+    with pytest.raises(IndexError):
+        image.frame(str(path), 3)
+
+
+def test_image_frame_applies_exif_orientation(tmp_path):
+    from anonymizer.engine import image
+
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    Image.new("RGB", (300, 200), "white").save(tmp_path / "o6.png", exif=exif.tobytes())
+    assert image.frame(str(tmp_path / "o6.png"), 0).size == (200, 300)
+
+
+def test_redact_frame_fills_the_grown_polygon_only():
+    import numpy as np
+
+    from anonymizer.engine import image
+
+    arr = np.full((100, 200, 3), 255, np.uint8)
+    out = image.redact_frame(arr, [[[50, 40], [150, 40], [150, 60], [50, 60]]])
+    assert out is arr
+    assert arr[45:56, 55:146].max() == 0
+    assert arr[5:20, 5:40].min() == 255
