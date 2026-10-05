@@ -77,7 +77,7 @@ def test_installs_per_user_without_administrator_in_a_short_path():
     assert setup["PrivilegesRequired"] == "lowest"
     assert "PrivilegesRequiredOverridesAllowed" not in setup  # no "install for all users" option
     assert setup["DefaultDirName"] == r"{localappdata}\Programs\LightAnonymizer"
-    assert setup["DisableDirPage"] == "yes"
+    assert setup["DisableDirPage"] == "yes" and setup["AlwaysShowDirOnReadyPage"] == "yes"
     assert setup["ArchitecturesInstallIn64BitMode"] == "x64compatible"
 
 
