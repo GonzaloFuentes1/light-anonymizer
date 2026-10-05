@@ -45,6 +45,9 @@
   // Stages of an analysis (summary "timings"), shown when a file is done.
   const STAGE_LABELS = { text: "texto", ocr: "texto en imágenes", faces: "rostros", qr: "QR" };
   const SUPPORTED_EXT = ["pdf", "jpg", "jpeg", "png", "webp", "tif", "tiff"];
+  // iPhone photos: not supported in version 1 (D5). Said plainly instead of "not PDF nor image".
+  const HEIC_EXT = ["heic", "heif", "hif"];
+  const HEIC_MSG = "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir. Conviértelas a JPG y vuelve a agregarlas.";
   const REVIEWABLE = new Set(["ready", "confirmed", "exported"]);
   const MSG = {
     network: "No se pudo conectar con el motor de la aplicación. Cierra el programa y vuelve a abrirlo.",
@@ -132,6 +135,7 @@
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const ext = (name) => (String(name).split(".").pop() || "").toLowerCase();
   const isSupported = (name) => SUPPORTED_EXT.includes(ext(name));
+  const isHeic = (f) => HEIC_EXT.includes(ext(f.name)) || /^image\/hei[cf]/i.test(f.type || "");
 
   function fmtSize(bytes) {
     if (bytes == null) return null;
@@ -675,12 +679,12 @@
   async function uploadFiles(fileArray) {
     const all = [...fileArray].filter((f) => f && f.name);
     const files = all.filter((f) => isSupported(f.name));
-    const skipped = all.length - files.length;
+    const heic = all.filter((f) => !isSupported(f.name) && isHeic(f)).length;
+    const skipped = all.length - files.length - heic;
     if (!files.length) {
-      toast(
-        all.length ? "Ninguno de esos archivos es PDF, JPG, PNG, WEBP o TIFF." : "No se encontraron archivos para agregar.",
-        { bad: all.length > 0 },
-      );
+      let msg = all.length ? "Ninguno de esos archivos es PDF, JPG, PNG, WEBP o TIFF." : "No se encontraron archivos para agregar.";
+      if (heic) msg = skipped ? `${HEIC_MSG} Los demás no son PDF ni imágenes.` : HEIC_MSG;
+      toast(msg, { bad: all.length > 0 });
       return;
     }
     const form = new FormData();
@@ -693,7 +697,7 @@
         const src = files[i];
         if (src && src.name === a.name) S.sizes.set(a.id, src.size);
       });
-      toast(addedMessage(added.length, skipped));
+      toast(addedMessage(added.length, skipped, heic));
     } catch (err) {
       showError(err);
     }
@@ -701,11 +705,16 @@
     if (S.screen !== 1) go(1);
   }
 
-  function addedMessage(added, skipped) {
+  function addedMessage(added, skipped, heic = 0) {
     let msg = added
       ? `Se ${added === 1 ? "agregó" : "agregaron"} ${plural(added, "archivo", "archivos")}.`
       : "No se agregó ningún archivo.";
     if (skipped) msg += ` Se ${skipped === 1 ? "omitió" : "omitieron"} ${plural(skipped, "archivo", "archivos")} que no son PDF ni imágenes.`;
+    if (heic) {
+      msg += heic === 1
+        ? " Se omitió 1 foto HEIC (por ejemplo de iPhone), que todavía no se puede abrir: conviértela a JPG y vuelve a agregarla."
+        : ` Se omitieron ${heic} fotos HEIC (por ejemplo de iPhone), que todavía no se pueden abrir: conviértelas a JPG y vuelve a agregarlas.`;
+    }
     return msg;
   }
 

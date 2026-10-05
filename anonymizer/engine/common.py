@@ -48,7 +48,7 @@ def now_iso() -> str:
 
 
 def sniff(path: str | Path) -> str:
-    """Real type of a file by its content: pdf | image | empty | format."""
+    """Real type of a file by its content: pdf | image | empty | heic | format."""
     with open(path, "rb") as fh:
         head = fh.read(12)
     if not head:
@@ -59,7 +59,20 @@ def sniff(path: str | Path) -> str:
         head[:4] == b"RIFF" and head[8:12] == b"WEBP"
     ):
         return "image"
+    if is_heic(head):
+        return "heic"
     return "format"
+
+
+# Major brands of HEIC/HEIF photos (iPhones and many Android phones). They are not supported (D5):
+# the only reader without GPL code is LGPL, and phones and Windows convert them to JPG.
+HEIC_BRANDS = frozenset({b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs", b"mif1", b"msf1"})
+HEIC_SUFFIXES = frozenset({".heic", ".heif", ".hif"})
+
+
+def is_heic(head: bytes) -> bool:
+    """The first 12 bytes of a file are those of a HEIC/HEIF image (an ISO-BMFF "ftyp" box)."""
+    return head[4:8] == b"ftyp" and head[8:12] in HEIC_BRANDS
 
 
 def unique_path(folder: Path, name: str) -> Path:

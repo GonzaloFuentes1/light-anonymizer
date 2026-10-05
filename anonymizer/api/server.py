@@ -69,6 +69,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from anonymizer import about
 from anonymizer.engine import audit, estimate
+from anonymizer.engine.common import HEIC_SUFFIXES, is_heic
 from anonymizer.engine.model import (
     DETECTION_GROUPS,
     ERROR_MESSAGES,
@@ -200,6 +201,30 @@ def sniff_kind(path: Path) -> str | None:
     ):
         return "image"
     return None
+
+
+def is_heic_file(path: Path) -> bool:
+    """A HEIC/HEIF photo, by its extension or by its first bytes (D5: not supported)."""
+    if path.suffix.lower() in HEIC_SUFFIXES:
+        return True
+    try:
+        with open(path, "rb") as fh:
+            return is_heic(fh.read(12))
+    except OSError:
+        return False
+
+
+def heic_folder_message(count: int) -> str:
+    """Spanish: the HEIC photos of a chosen folder were not added (D5)."""
+    if count == 1:
+        return (
+            "Esta carpeta tiene 1 foto HEIC (por ejemplo de iPhone), que todavía no se puede abrir. "
+            "Conviértela a JPG y vuelve a agregarla."
+        )
+    return (
+        f"Esta carpeta tiene {count} fotos HEIC (por ejemplo de iPhone), que todavía no se pueden abrir. "
+        "Conviértelas a JPG y vuelve a agregarlas."
+    )
 
 
 def display_name(raw: str | None) -> str:
@@ -739,12 +764,17 @@ def create_app(
         for raw in body.paths:
             path = Path(raw)
             if path.is_dir():
-                found = sorted(
-                    p
-                    for p in path.rglob("*")
-                    if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES and not p.name.startswith((".", "~$"))
-                )
-                if not found:
+                found, heic = [], 0
+                for p in sorted(path.rglob("*")):
+                    if not p.is_file() or p.name.startswith((".", "~$")):
+                        continue
+                    if p.suffix.lower() in SUPPORTED_SUFFIXES:
+                        found.append(p)
+                    elif p.suffix.lower() in HEIC_SUFFIXES:
+                        heic += 1
+                if heic:  # D5: say why the iPhone photos were left out, instead of ignoring them
+                    skipped.append({"name": path.name, "message": heic_folder_message(heic)})
+                elif not found:
                     skipped.append({"name": path.name, "message": "Esta carpeta no tiene PDF ni imágenes."})
                 candidates.extend(found)
             elif path.is_file():
@@ -752,6 +782,9 @@ def create_app(
             else:
                 skipped.append({"name": display_name(raw), "message": "No se encontró este archivo."})
         for path in candidates[:MAX_FILES_FROM_PATHS]:
+            if is_heic_file(path):  # by its extension or, with another extension, by its content
+                skipped.append({"name": display_name(path.name), "message": ERROR_MESSAGES["heic"]})
+                continue
             file = session.new_file(path.name)
             try:
                 size = path.stat().st_size

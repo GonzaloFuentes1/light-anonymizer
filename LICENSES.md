@@ -42,7 +42,7 @@ Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
 | numpy | 2.5.3 | BSD-3-Clause and other permissive licenses | ✅ | OpenBLAS (BSD-3); GCC runtime with the GCC exception. |
 | Pillow | 12.3.0 | MIT-CMU | ✅ | Bundles freetype (FTL), harfbuzz, lcms2, libjpeg-turbo, libpng, libwebp, openjpeg, libtiff, zlib-ng, xz, all permissive. Does not read HEIC. |
 | pillow-heif | 1.8.0 | BSD-3 (source) / **GPL-2.0 (wheels, because of x265)** | ⛔ | Will not be used. |
-| pi-heif | 1.4.0 | BSD-3 (source) / LGPL-3.0 (libheif, libde265) | ⚠️ | Decode only. Acceptable only if LGPL is approved, with folder-mode packaging (not a single file). **Decision pending** (D5). |
+| pi-heif | 1.4.0 | BSD-3 (source) / LGPL-3.0 (libheif, libde265) | ⛔ | Decode only. Not used: HEIC is not supported in version 1 (D5); the app asks for a JPG instead. |
 | rapidfuzz | 3.14.6 | MIT | ✅ | Fuzzy name matching. |
 | pyclipper | 1.4.0 | MIT | ✅ | Polygon expansion for the text detector (replaces shapely). |
 | FastAPI | 0.142.2 | MIT | ✅ | Now requires `opentelemetry-api` (Apache-2.0), which sends nothing without the SDK. The app turns FastAPI's telemetry off anyway (`telemetry=` all off, `OTEL_SDK_DISABLED`), so no exporter can be set up from the environment. |

@@ -267,6 +267,8 @@ ERROR_MESSAGES: dict[str, str] = {
     "password": "Este archivo está protegido con contraseña. Ingresa la contraseña o pide una versión sin contraseña.",
     "corrupt": "Este archivo está dañado y no se puede abrir. Pide una copia nueva a quien lo envió.",
     "empty": "Este archivo está vacío.",
+    # D5: HEIC/HEIF photos are not supported in version 1.
+    "heic": "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir. Conviértelas a JPG y vuelve a agregarlas.",
     "format": "Este tipo de archivo no se puede procesar. Usa PDF, JPG, PNG, WEBP o TIFF.",
     "unsupported": "Este archivo no se puede procesar todavía.",
     "internal": "Ocurrió un problema al procesar este archivo. El detalle quedó en el registro técnico.",

@@ -92,6 +92,7 @@ def test_app_js_syntax():
                 "Censurar todos los otros enlaces",
                 "No censurar",
                 "sin censurar",
+                "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir.",
             ],
         ),
         ("app.css", [".zone.suggested", ".result .zone.suggested", ".detect", ".license", "td .warntxt"]),

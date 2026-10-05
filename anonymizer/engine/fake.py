@@ -173,7 +173,7 @@ class FakeEngine:
         try:
             report(0.02, "Revisando el archivo")
             kind = sniff(file.path)
-            if kind in ("empty", "format"):
+            if kind in ("empty", "format", "heic"):
                 raise FileError(kind)
             file.kind = kind
             with clock.running():

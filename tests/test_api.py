@@ -361,6 +361,48 @@ def test_from_paths_folder(client, tmp_path):
     assert (folder / "a.pdf").read_bytes() == original  # originals untouched
 
 
+# The start of an iPhone photo: an ISO-BMFF "ftyp" box with the HEIC brands (D5).
+HEIC_BYTES = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 64
+HEIC_MESSAGE = (
+    "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir. Conviértelas a JPG y vuelve a agregarlas."
+)
+
+
+def test_from_paths_says_heic_is_not_supported(client, tmp_path):
+    folder = tmp_path / "fotos"
+    folder.mkdir()
+    (folder / "IMG_0001.HEIC").write_bytes(HEIC_BYTES)
+    (folder / "IMG_0002.heif").write_bytes(HEIC_BYTES)
+    (folder / "a.pdf").write_bytes(make_pdf())
+    only_heic = tmp_path / "solo_heic"
+    only_heic.mkdir()
+    (only_heic / "IMG_0003.heic").write_bytes(HEIC_BYTES)
+    loose = tmp_path / "IMG_0004.heic"
+    loose.write_bytes(HEIC_BYTES)
+    renamed = tmp_path / "foto.jpg"  # a HEIC photo with the wrong extension: found by its content
+    renamed.write_bytes(HEIC_BYTES)
+    paths = [str(folder), str(only_heic), str(loose), str(renamed)]
+    body = client.post("/api/files/from-paths", json={"paths": paths}).json()
+    assert [f["name"] for f in body["files"]] == ["a.pdf"]
+    skipped = {s["name"]: s["message"] for s in body["skipped"]}
+    assert skipped == {
+        "fotos": "Esta carpeta tiene 2 fotos HEIC (por ejemplo de iPhone), que todavía no se pueden abrir. "
+        "Conviértelas a JPG y vuelve a agregarlas.",
+        "solo_heic": "Esta carpeta tiene 1 foto HEIC (por ejemplo de iPhone), que todavía no se puede abrir. "
+        "Conviértela a JPG y vuelve a agregarla.",
+        "IMG_0004.heic": HEIC_MESSAGE,
+        "foto.jpg": HEIC_MESSAGE,
+    }
+    assert len(client.get("/api/state").json()["files"]) == 1
+
+
+def test_uploaded_heic_fails_with_its_own_message(client):
+    file_id = upload(client, "foto.jpg", HEIC_BYTES, "image/jpeg")
+    client.post("/api/process", json={})
+    summary = wait_status(client, file_id)
+    assert (summary["status"], summary["error"], summary["error_message"]) == ("error", "heic", HEIC_MESSAGE)
+
+
 def test_leak_blocks_export(tmp_path):
     """A finding whose zone does not cover its text is caught by the leak check: nothing is written."""
     source = tmp_path / "work.pdf"

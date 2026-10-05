@@ -194,8 +194,9 @@ with rotations. The output is written from the pixels, in the same format and **
 metadata at all**: no EXIF or GPS, nor the EXIF thumbnail (which keeps the original unredacted
 image), XMP, IPTC or PNG text chunks. TIFF pages are processed one by one.
 
-**HEIC.** Not viable without copyleft: the only non-GPL reading library (pi-heif) is LGPL-3.0
-(D5).
+**HEIC.** Not supported in version 1 (D5): the only non-GPL reading library (pi-heif) is
+LGPL-3.0, and phones and Windows convert HEIC photos to JPG. The app recognizes them (by
+extension and by content) and asks for a JPG instead of calling them an unknown format.
 
 ---
 
@@ -600,6 +601,18 @@ Mac with macOS 14 or later to build and test. Is it a requirement for version 1?
 **D5. HEIC.** Options: do not support it in version 1 and ask users to convert to JPG (my
 recommendation), or use pi-heif (LGPL-3.0, read-only).
 
+> **Decided (2026-10-05): HEIC is not supported in version 1**, and the app says so plainly
+> instead of a generic "not a PDF or image" message.
+>
+> **Implemented (2026-10-05).** HEIC/HEIF photos are recognized by extension (`.heic`, `.heif`,
+> `.hif`) and by content (an ISO-BMFF `ftyp` box with a HEIC brand: `common.is_heic`), and get
+> the message "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir. Conviértelas a
+> JPG y vuelve a agregarlas.": in the browser upload (`uploadFiles` counts them apart from the
+> other skipped files), in `POST /api/files/from-paths` (a chosen HEIC file is skipped with that
+> message, also when its extension says otherwise; a chosen folder reports how many HEIC photos
+> it had), and in the analysis, as the error code `heic`, if one arrives anyway (a HEIC renamed
+> `.jpg` and uploaded). Screen 1 lists it under the accepted formats.
+
 **D6. Mirrored images.** "Volteadas" (flipped) can mean rotated 180° (covered) or mirrored
 (photo taken with a front camera). For mirroring, OCR must also run on the mirrored image,
 which doubles its time. I propose enabling it only when the normal pass finds no legible text,
@@ -692,4 +705,5 @@ the list still rules. Agreed?
   signatures, cells, tables and email headers they are also detected by context (D13).
 - OCR can fail with handwriting, very small text or very low-resolution images.
 - Profile, very small or occluded faces may not be detected.
+- HEIC/HEIF photos (iPhone) are not supported: they must be converted to JPG first (D5).
 - Human review of every document before publishing is mandatory.

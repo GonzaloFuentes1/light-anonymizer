@@ -136,8 +136,10 @@ def test_errors_by_content(tmp_path):
     doc.new_page().insert_text((72, 72), "Contenido ficticio")
     doc.save(tmp_path / "locked.pdf", encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="clave", owner_pw="clave")
     doc.close()
+    (tmp_path / "foto.heic").write_bytes(b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 64)
     expected = {"empty.pdf": "empty", "doc.pdf": "format", "bad.pdf": "corrupt", "bad.jpg": "corrupt"}
     expected["locked.pdf"] = "password"
+    expected["foto.heic"] = "heic"  # D5: not supported, with its own message
     for name, code in expected.items():
         file = analyzed(tmp_path / name)
         assert (file.status, file.error) == ("error", code), name
