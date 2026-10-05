@@ -680,6 +680,8 @@ def _assert_parity(engine, file, page, zoom, tmp_path, lossy=False):
     after = _pixels(engine.render_result(file, page, zoom, list(file.findings)))
     exported = _exported_render(engine, file, page, zoom, tmp_path)
     assert after.shape == exported.shape
+    before = _pixels(engine.render_page(file, page, zoom))  # the before column: same size, rows align
+    assert before.shape[:2] == after.shape[:2]
     if lossy:
         assert np.abs(after.astype(int) - exported.astype(int)).mean() < 2
     else:
@@ -739,7 +741,8 @@ def _shared_resource_pdf(path: Path, kind: str) -> Path:
     """Two pages that draw the same Form XObject (letterhead) or the same image XObject."""
     with pymupdf.open() as src:
         head = src.new_page(width=400, height=80)
-        head.insert_text((20, 40), f"Membrete con RUT {VALID_RUT}", fontsize=12)
+        head.draw_rect(pymupdf.Rect(0, 0, 400, 80), color=(0, 0, 0), fill=(0.8, 0.8, 0.9))
+        head.insert_text((20, 40), "Membrete institucional de prueba", fontsize=12)
         src.save(path.with_suffix(".head.pdf"))
     img = Image.new("RGB", (400, 80), "white")
     ImageDraw.Draw(img).text((20, 30), f"RUT {VALID_RUT}", fill=(0, 0, 0), font=font("sans", 20))
@@ -760,13 +763,18 @@ def _shared_resource_pdf(path: Path, kind: str) -> Path:
 def test_after_equals_export_with_a_resource_shared_by_two_pages(tmp_path, kind):
     path = _shared_resource_pdf(tmp_path / "shared.pdf", kind)
     engine = RealEngine()
-    # The export refuses a file with a legible RUT left on any page, so parity needs both pages marked.
-    both = _file(path, "pdf", [_manual(0, 10, 10, 390, 70), _manual(1, 10, 10, 390, 70)])
+    file = _file(path, "pdf", [_manual(1, 10, 10, 200, 70)])
+    with pymupdf.open(path) as doc:  # guard: both pages really share the resource
+        if kind == "image":
+            shared = {img[0] for img in doc[0].get_images()} & {img[0] for img in doc[1].get_images()}
+        else:
+            shared = {x[0] for x in doc[0].get_xobjects()} & {x[0] for x in doc[1].get_xobjects()}
+    assert shared
     for page in (0, 1):
-        _assert_parity(engine, both, page, 1.0, tmp_path)
-    # Redacting only page 1 must not alter the resource page 0 draws.
-    one = _file(path, "pdf", [_manual(1, 10, 10, 390, 70)])
-    assert _pixels(engine.render_result(one, 0, 1.0, one.findings)).tobytes() == _pixels(engine.render_page(one, 0, 1.0)).tobytes()
+        _assert_parity(engine, file, page, 1.0, tmp_path)
+    # guard: the finding does change page 1, and only page 1
+    assert not (_pixels(engine.render_result(file, 1, 1.0, file.findings)) == _pixels(engine.render_page(file, 1, 1.0))).all()
+    assert (_pixels(engine.render_result(file, 0, 1.0, file.findings)) == _pixels(engine.render_page(file, 0, 1.0))).all()
 
 
 def test_after_reveals_and_redacts_a_hidden_layer(tmp_path):
