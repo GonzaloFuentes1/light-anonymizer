@@ -568,6 +568,24 @@ complied with and it stays replaceable (for example certifi, or Eigen inside onn
 is header-only MPL)? Is the Intel IPP license (not OSI) that comes inside OpenCV for Windows
 acceptable? If the answer is "strictly MIT/Apache/BSD", we build OpenCV without FFmpeg or IPP.
 
+> **Decided (2026-10-05): weak copyleft is acceptable** when its license is complied with and the
+> component stays replaceable: its license text ships with the executable, `INDEX.txt` says where
+> its source code is, and the one-folder packaging keeps it as separate files that can be swapped
+> (`scripts/collect_licenses.py`, `COPYLEFT_SOURCES`). What the Windows build bundles today under
+> those terms: GEOS (LGPL-2.1, the DLLs in `Shapely.libs/`, pulled in by rapidocr through shapely),
+> certifi and tqdm (MPL-2.0, also through rapidocr) and Eigen inside onnxruntime (MPL-2.0, headers
+> compiled in, notice kept). OpenCV's FFmpeg DLL (LGPL) is not bundled: the spec drops it and
+> `scripts/build_exe.py` fails the build if it shows up. Porting the OCR inference (5.4) is still
+> worth doing to remove rapidocr's network code, but no longer for licensing.
+>
+> **Intel IPP stays open: it is not weak copyleft, so D3 does not settle it.** The build bundles
+> `cv2.pyd` from opencv-python-headless 5.0.0.93, which links Intel IPP ICV 2026.0.0 statically
+> (`cv2.getBuildInformation()`: "Intel IPP: 2026.0.0", "3rdparty dependencies: … ipphal ippiw
+> ippicv"); its terms (Intel Simplified Software License) ship in OpenCV's
+> `LICENSE-3RD-PARTY.txt`. `build_exe.py` cannot drop or check it, since it is inside `cv2.pyd`.
+> The fix, once decided, is an OpenCV built with `-DWITH_IPP=OFF`, or YuNet and the OCR
+> preprocessing without OpenCV (LICENSES.md, section 1).
+
 **D4. macOS.** With the PyPI wheels it is not viable (GPL FFmpeg inside OpenCV). It is viable
 by building OpenCV without FFmpeg, or by running YuNet directly with onnxruntime. It requires a
 Mac with macOS 14 or later to build and test. Is it a requirement for version 1?
