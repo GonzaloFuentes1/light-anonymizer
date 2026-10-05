@@ -3,7 +3,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: una ventana de app simulada (barra de pasos + pantallas) con una columna de notas de diseño al lado; en Revisión, tres paneles: archivos/páginas, documento, hallazgos. */
+/* Layout: a simulated app window (step bar + screens) with a column of design notes beside it. In Review: the document column (file bar, toolbar, one scroll of before/after page rows) and the findings column. */
 :root {
   --paper: #F2F4F7;
   --surface: #FFFFFF;
@@ -18,7 +18,9 @@
   --warn: #8F4500; --warn-soft: #FBEAD7;
   --bad: #AF2216; --bad-soft: #FAE2DE;
   --chrome: #DFE4EB;
-  /* el documento es papel blanco en ambos temas, como en cualquier visor de PDF */
+  /* "Dibujar zona": marker yellow, the one tool that adds a censorship by hand */
+  --draw: #FFD23F; --draw-ink: #1F1A00; --draw-edge: #8A6100;
+  /* the document is white paper in both themes, as in any PDF viewer */
   --page: #FFFFFF; --page-ink: #1C1C1C; --page-muted: #555555;
   --z-rut: #1C5DCF; --z-correo: #7639BF; --z-telefono: #08766F; --z-nombre: #A35A00;
   --z-direccion: #B12D63; --z-rostro: #C13A0B; --z-ocr: #4A5464; --z-manual: #111418;
@@ -33,7 +35,7 @@
     --paper: #0E131A; --surface: #151C26; --surface-2: #1C2532; --ink: #E5EAF1; --muted: #9AA6B6; --line: #2A3544;
     --accent: #93ABEE; --accent-ink: #0E131A; --accent-soft: #1E2A44;
     --ok: #57C892; --ok-soft: #12301F; --warn: #F1A85E; --warn-soft: #382510; --bad: #F2796F; --bad-soft: #3A1714;
-    --chrome: #1A2230;
+    --chrome: #1A2230; --draw-edge: #FFD23F;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .45);
   }
 }
@@ -42,7 +44,7 @@
   --paper: #0E131A; --surface: #151C26; --surface-2: #1C2532; --ink: #E5EAF1; --muted: #9AA6B6; --line: #2A3544;
   --accent: #93ABEE; --accent-ink: #0E131A; --accent-soft: #1E2A44;
   --ok: #57C892; --ok-soft: #12301F; --warn: #F1A85E; --warn-soft: #382510; --bad: #F2796F; --bad-soft: #3A1714;
-  --chrome: #1A2230;
+  --chrome: #1A2230; --draw-edge: #FFD23F;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .45);
 }
 
@@ -58,7 +60,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mono { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
 .wrap { max-width: 1480px; margin: 0 auto; display: grid; gap: 22px; }
 
-/* Encabezado de la página de mockup */
+/* Header of the mockup page */
 .intro { display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: end; justify-content: space-between; }
 .intro h1 { font-size: 30px; font-weight: 700; letter-spacing: -.01em; }
 .intro p { color: var(--muted); max-width: 70ch; margin-top: 6px; }
@@ -67,9 +69,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .theme button { border: 0; background: transparent; padding: 6px 14px; cursor: pointer; color: var(--muted); }
 .theme button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 
-.stage { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 22px; align-items: start; }
+/* The app window takes the whole width; the design notes go below it (they are not part of the app). */
+.stage { display: grid; gap: 22px; }
 
-/* Ventana de la app */
+/* App window */
 .win { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-m); box-shadow: var(--shadow); overflow: hidden; min-width: 0; }
 .titlebar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--chrome); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .titlebar strong { color: var(--ink); }
@@ -83,7 +86,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .screen { display: none; }
 .screen.on { display: block; }
 
-/* Pantalla 1: inicio */
+/* Screen 1: start */
 .home { padding: 28px; display: grid; gap: 20px; }
 .notice { display: flex; gap: 12px; align-items: start; background: var(--warn-soft); color: var(--ink); border: 1px solid color-mix(in oklab, var(--warn) 35%, transparent); border-radius: var(--r-m); padding: 12px 14px; }
 .notice b { color: var(--warn); }
@@ -112,7 +115,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .namelist { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; }
 
-/* Pantalla 2: procesamiento */
+/* Screen 2: processing */
 .proc { padding: 24px 28px; display: grid; gap: 18px; }
 .proc-top { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
 .proc-top h2 { font-size: 20px; }
@@ -129,37 +132,62 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .state.warn { background: var(--warn-soft); color: var(--warn); }
 .errbox { grid-column: 2 / 4; display: grid; gap: 8px; background: var(--bad-soft); border-radius: var(--r-s); padding: 10px 12px; }
 
-/* Pantalla 3: revisión */
-.review { display: grid; grid-template-columns: 210px minmax(0, 1fr) 340px; min-height: 720px; }
+/* Screen 3: review. The window height is fixed so the pages scroll inside the viewport, as in the app. */
+.review { display: grid; grid-template-columns: minmax(0, 1fr) 340px; height: clamp(600px, calc(100vh - 300px), 960px); }
 .col { min-width: 0; }
-.col-files { border-right: 1px solid var(--line); background: var(--surface); display: grid; align-content: start; }
-.col-files h3, .col-find h3 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 12px 14px 6px; }
-.fbtn { display: grid; gap: 2px; text-align: left; border: 0; background: transparent; padding: 9px 14px; cursor: pointer; border-left: 3px solid transparent; }
-.fbtn[aria-current="true"] { background: var(--accent-soft); border-left-color: var(--accent); }
-.fbtn .fname { font-size: 14px; }
-.fbtn .state { justify-self: start; font-size: 12px; padding: 1px 8px; }
-.thumbs { display: grid; gap: 10px; padding: 8px 14px 16px; }
-.thumb { border: 1px solid var(--line); background: var(--page); border-radius: 4px; height: 96px; position: relative; cursor: pointer; padding: 8px; display: grid; align-content: start; gap: 4px; }
-.thumb[aria-current="true"] { outline: 3px solid var(--accent); outline-offset: 1px; }
-.thumb i { display: block; height: 4px; border-radius: 2px; background: #D9DCE1; }
-.thumb i.z { background: #1A1A1A; }
-.thumb b { position: absolute; right: 6px; bottom: 6px; font-size: 11px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
+.col-doc { background: var(--surface-2); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
 
-.col-doc { background: var(--surface-2); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; }
+/* File bar: which file is open, and which page crosses the middle of the view */
+.rv-bar { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.rv-bar label { font-size: 13px; font-weight: 700; color: var(--muted); }
+.rv-bar select { min-width: 0; max-width: 100%; border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-s); padding: 5px 8px; font-size: 14px; }
+.rv-bar .filestep { font-size: 17px; line-height: 1; padding: 3px 11px 5px; }
+.pageind { margin-left: auto; font-size: 13px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.pagefield { width: 4.2em; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: var(--r-s); padding: 3px 6px; font-size: 13px; text-align: right; }
+
 .tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--line); }
 .tool { border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-s); padding: 5px 10px; cursor: pointer; font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
+.tool:hover { background: var(--surface-2); }
 .tool[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .tool kbd, .keys kbd { font-family: var(--font-data); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface-2); color: var(--muted); }
 .tool[aria-pressed="true"] kbd { background: transparent; color: inherit; border-color: currentColor; }
+.tool.draw { background: var(--draw); border-color: var(--draw-edge); color: var(--draw-ink); font-weight: 700; }
+.tool.draw:hover { background: var(--draw); filter: brightness(.95); }
+.tool.draw kbd { background: rgba(255, 255, 255, .6); color: var(--draw-ink); border-color: rgba(0, 0, 0, .3); }
+/* While drawing, the button turns dark and says how to leave; the before pages get a dashed edge. */
+.tool.draw[aria-pressed="true"] { background: var(--draw-ink); color: var(--draw); border-color: var(--draw-edge); }
+.tool.draw[aria-pressed="true"] kbd { background: transparent; color: inherit; border-color: currentColor; }
 .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
-.zoomval { min-width: 48px; text-align: center; font-size: 13px; }
-.viewport { overflow: auto; padding: 24px; display: grid; justify-items: center; align-items: start; }
-.pagewrap { transform-origin: top center; transition: transform .2s ease; }
-@media (prefers-reduced-motion: reduce) { .pagewrap { transition: none; } }
+.zoomval { min-width: 58px; justify-content: center; }
 
-/* el documento ficticio */
-.page { width: 620px; background: var(--page); color: var(--page-ink); box-shadow: 0 2px 10px rgba(0, 0, 0, .18); padding: 46px 52px 56px; position: relative; font-family: Arial, "Liberation Sans", Helvetica, sans-serif; font-size: 12.5px; line-height: 1.55; }
-.page.drawing { cursor: crosshair; }
+/* Viewport: one scroll for every page. Each row is one page: before (original + zones) and after (result). --s is the scale, --cw the width of a column (the widest page at that scale). */
+.viewport { --s: 1; --cw: 620px; overflow: auto; min-height: 0; position: relative; scrollbar-gutter: stable; overscroll-behavior: contain; }
+.viewport:focus-visible { outline-offset: -3px; border-radius: 0; }
+.vp-inner { --padx: 24px; width: max-content; min-width: 100%; padding: 0 var(--padx) 24px; }
+.vp-head { position: sticky; top: 0; z-index: 6; display: grid; grid-template-columns: var(--cw) var(--cw); column-gap: 24px; justify-content: center; margin: 0 calc(-1 * var(--padx)) 16px; padding: 8px var(--padx); background: var(--surface-2); border-bottom: 1px solid var(--line); box-shadow: 0 4px 8px -6px rgba(0, 0, 0, .25); }
+.vp-head span, .cell .tag { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); text-align: center; }
+.prow { display: grid; grid-template-columns: var(--cw) var(--cw); column-gap: 24px; row-gap: 8px; justify-content: center; justify-items: center; align-items: start; margin-bottom: 24px; }
+.cell { display: grid; gap: 6px; justify-items: center; }
+.cell .tag { display: none; }
+.plabel { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.box { position: relative; background: var(--page); box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
+.cell.after .box { overflow: hidden; }
+.sheet { position: absolute; left: 50%; top: 50%; width: max-content; transform-origin: 50% 50%; }
+.zones, .blacks { position: absolute; inset: 0; }
+.viewport.drawing .cell.before .box { cursor: crosshair; touch-action: none; outline: 3px dashed var(--draw-edge); outline-offset: 3px; }
+.viewport.drawing .zone { pointer-events: none; }
+.viewport.no-after .cell.after, .viewport.no-after .vp-head .h-after { display: none; }
+.viewport.no-after .prow, .viewport.no-after .vp-head { grid-template-columns: var(--cw); }
+
+/* The after: the same page with every active zone in solid black. Nothing on it is clickable. */
+.cell.after .sheet { transition: opacity .15s ease; }
+.cell.after.updating .sheet { opacity: .45; }
+.black { position: absolute; background: #0B0B0B; }
+.badge { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 2; background: #17212D; color: #FFFFFF; font-size: 12px; font-weight: 700; padding: 3px 11px; border-radius: 999px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
+.badge[hidden] { display: none; }
+
+/* The invented document: a Letter page at one CSS pixel per PDF point */
+.page { width: 620px; min-height: 802px; background: var(--page); color: var(--page-ink); padding: 46px 52px 56px; position: relative; font-family: Arial, "Liberation Sans", Helvetica, sans-serif; font-size: 12.5px; line-height: 1.55; }
 .doc-h { display: flex; justify-content: space-between; border-bottom: 1.5px solid #2C3E66; padding-bottom: 6px; margin-bottom: 18px; }
 .doc-h b { color: #2C3E66; font-size: 13px; }
 .doc-h span { font-size: 11px; color: var(--page-muted); }
@@ -173,21 +201,30 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .photo-img { height: 120px; border-radius: 3px; background: linear-gradient(#C9D6E3, #9DB2C6); position: relative; overflow: hidden; }
 .photo-img .head { position: absolute; border-radius: 50%; background: #E2B58F; }
 .photo-img .body { position: absolute; border-radius: 40% 40% 0 0; background: #48607A; }
+.photo-img .banner { position: absolute; height: 14px; background: #F3EFE3; color: #2B2B2B; font-size: 6.2px; line-height: 14px; text-align: center; white-space: nowrap; overflow: hidden; border-radius: 1px; }
 .photo p { font-size: 11px; color: var(--page-muted); }
 .sign { margin-top: 26px; display: grid; grid-template-columns: 1fr 1fr; gap: 30px; }
 .sign div { border-top: 1px solid #444; padding-top: 4px; font-size: 11px; color: var(--page-muted); }
 .sign .scribble { font-family: "Segoe Script", "Brush Script MT", cursive; font-size: 20px; color: #1D3A7A; height: 30px; display: block; }
+/* page 2: a compact table of payments; its row lines cross the zones of the first row */
+.page .pay { width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.35; margin-top: 12px; }
+.page .pay th { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 700; color: #2C3E66; padding: 3px 6px; border-bottom: 1.5px solid #2C3E66; white-space: nowrap; }
+.page .pay td { padding: 1px 6px; border-bottom: 1px solid #8C96A3; vertical-align: middle; white-space: nowrap; }
+.page .pay .r { text-align: right; }
+.page .pay tfoot td { font-weight: 700; border-bottom: 0; padding-top: 4px; }
+.page .fine { margin-top: 14px; font-size: 11px; color: var(--page-muted); }
 
-/* zonas de censura sobre el documento */
-.zone { position: absolute; border: 2px solid var(--zc); background: color-mix(in srgb, var(--zc) 16%, transparent); border-radius: 2px; cursor: pointer; }
-.zone::after { content: attr(data-label); position: absolute; left: -2px; top: -18px; font: 700 10px/16px var(--font-ui); background: var(--zc); color: #FFFFFF; padding: 0 5px; border-radius: 3px 3px 3px 0; white-space: nowrap; }
-.zone.sel { box-shadow: 0 0 0 3px #FFFFFF, 0 0 0 6px var(--zc); z-index: 3; }
+/* Censorship zones over the before side. They sit inside the scaled page, so borders and labels are divided by the scale (--s) to keep their size on screen. */
+.zone { position: absolute; border: calc(2px / var(--s)) solid var(--zc); background: color-mix(in srgb, var(--zc) 16%, transparent); border-radius: calc(2px / var(--s)); cursor: pointer; }
+.zone::after { content: attr(data-label); position: absolute; left: calc(-2px / var(--s)); top: calc(-18px / var(--s)); font-family: var(--font-ui); font-weight: 700; font-size: calc(10px / var(--s)); line-height: calc(16px / var(--s)); background: var(--zc); color: #FFFFFF; padding: 0 calc(5px / var(--s)); border-radius: calc(3px / var(--s)) calc(3px / var(--s)) calc(3px / var(--s)) 0; white-space: nowrap; pointer-events: none; }
+.zone.label-below::after { top: auto; bottom: calc(-18px / var(--s)); border-radius: 0 calc(3px / var(--s)) calc(3px / var(--s)) calc(3px / var(--s)); }
+.zone.nolabel::after { display: none; }
+.zone.nolabel:hover::after { display: block; z-index: 4; }
+.zone.sel { box-shadow: 0 0 0 calc(3px / var(--s)) #FFFFFF, 0 0 0 calc(6px / var(--s)) var(--zc); z-index: 3; }
 .zone.removed { border-style: dashed; background: transparent; }
 .zone.removed::after { content: attr(data-label) " · quitada"; background: #6B7280; }
-.zone.doubt { border-width: 3px; }
-.result .zone { background: #0B0B0B; border-color: #0B0B0B; }
-.result .zone::after { display: none; }
-.result .zone.removed { display: none; }
+.zone.doubt { border-width: calc(3px / var(--s)); }
+.zone.ghost { pointer-events: none; }
 .z-rut { --zc: var(--z-rut); } .z-correo { --zc: var(--z-correo); } .z-telefono { --zc: var(--z-telefono); }
 .z-nombre { --zc: var(--z-nombre); } .z-direccion { --zc: var(--z-direccion); } .z-rostro { --zc: var(--z-rostro); }
 .z-ocr { --zc: var(--z-ocr); } .z-manual { --zc: var(--z-manual); }
@@ -195,16 +232,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .verify { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--surface); border-top: 1px solid var(--line); }
 .verify .msg { display: flex; gap: 10px; align-items: center; }
 .verify .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--ok); flex: none; }
-.keys { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px 0; }
+.keys { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px; border-top: 1px solid var(--line); }
 
-.col-find { border-left: 1px solid var(--line); background: var(--surface); display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; }
+.col-find { border-left: 1px solid var(--line); background: var(--surface); display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; }
 .find-sum { padding: 14px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
 .find-sum strong { font-size: 18px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px 2px 7px; background: var(--surface); cursor: pointer; }
 .chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--zc); display: block; }
 .chip[aria-pressed="false"] { opacity: .5; }
-.findlist { overflow: auto; padding-bottom: 10px; }
+.findlist { overflow: auto; padding-bottom: 10px; min-height: 0; }
 .group { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 14px 14px 6px; display: flex; justify-content: space-between; }
 .group.doubt { color: var(--warn); }
 .item { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 4px 10px; padding: 9px 14px; border-left: 3px solid transparent; cursor: pointer; }
@@ -217,7 +254,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .item.removed .val { text-decoration: line-through; color: var(--muted); }
 .item .acts { display: flex; gap: 4px; }
 
-/* Pantalla 4: exportar */
+/* Screen 4: export */
 .exp { padding: 24px 28px; display: grid; gap: 18px; }
 .exp h2 { font-size: 20px; }
 .dest { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; }
@@ -231,8 +268,9 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 .foot { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
 .foot p { color: var(--muted); font-size: 13px; max-width: 62ch; }
 
-/* notas de diseño */
-.notes { display: grid; gap: 14px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); }
+/* Design notes */
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; align-items: start; }
+.notes-h { grid-column: 1 / -1; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .note { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-m); padding: 16px; display: none; gap: 10px; }
 .note.on { display: grid; }
 .note h3 { font-size: 16px; }
@@ -243,7 +281,7 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 .legend span { display: flex; align-items: center; gap: 8px; }
 .legend span i { width: 18px; height: 12px; border: 2px solid var(--zc); background: color-mix(in srgb, var(--zc) 16%, transparent); border-radius: 2px; display: block; }
 
-/* diálogo */
+/* Dialog */
 dialog { border: 1px solid var(--line); border-radius: 12px; padding: 0; background: var(--surface); color: var(--ink); width: min(460px, calc(100vw - 32px)); box-shadow: var(--shadow); }
 dialog::backdrop { background: rgba(10, 15, 25, .45); }
 .dlg { padding: 20px; display: grid; gap: 14px; }
@@ -257,21 +295,27 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
 .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: 999px; font-size: 14px; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity .2s; }
 .toast.on { opacity: 1; }
 
-@media (max-width: 1180px) {
-  .stage { grid-template-columns: 1fr; }
-  .notes { position: static; }
-  .review { grid-template-columns: 180px minmax(0, 1fr); }
-  .col-find { grid-column: 1 / 3; border-left: 0; border-top: 1px solid var(--line); }
+@media (max-width: 860px) {
+  .review { grid-template-columns: 1fr; height: auto; }
+  .col-doc { height: clamp(560px, calc(100vh - 200px), 900px); }
+  .col-find { border-left: 0; border-top: 1px solid var(--line); }
+  .findlist { max-height: 460px; }
 }
+/* Stacked: when a column would be narrower than 420 px, each page's after goes under its before
+   and the fit uses the whole width (set by layout()). */
+.viewport.stacked .vp-head { display: none; }
+.viewport.stacked .vp-inner { padding-top: 16px; }
+.viewport.stacked .prow { grid-template-columns: var(--cw); row-gap: 6px; }
+.viewport.stacked .cell .tag { display: block; }
+.viewport.stacked .cell.after { margin-top: 10px; }
 @media (max-width: 760px) {
   body { padding-inline: 16px; }
-  .review { grid-template-columns: 1fr; }
-  .col-files { border-right: 0; border-bottom: 1px solid var(--line); }
-  .col-find { grid-column: auto; }
-  .thumbs { grid-template-columns: repeat(3, 1fr); }
   .home, .proc, .exp { padding: 18px 16px; }
-  .viewport { padding: 14px; justify-items: start; }
+  .vp-inner { --padx: 14px; }
   .dest, .namelist { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cell.after .sheet, .toast { transition: none; }
 }
 </style>
 
@@ -299,7 +343,7 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
         <button type="button" class="step" data-go="4"><span class="n">4</span>Exportar</button>
       </nav>
 
-      <!-- 1. INICIO -->
+      <!-- 1. START -->
       <div class="screen" data-screen="1">
         <div class="home">
           <div class="notice" role="note"><span aria-hidden="true">⚠</span><p><b>Prueba de ensayo:</b> usa solo documentos ficticios. No cargues informes reales hasta que la unidad de transparencia lo autorice.</p></div>
@@ -312,7 +356,7 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
           <div class="panel">
             <div class="panel-h"><h3>4 archivos listos para procesar</h3><button type="button" class="btn ghost small">Quitar todos</button></div>
             <ul class="filelist">
-              <li><span class="ficon">PDF</span><div><div class="fname">informe_honorarios_agosto.pdf</div><div class="fmeta">3 páginas · 412 KB</div></div><button type="button" class="btn ghost small" aria-label="Quitar informe_honorarios_agosto.pdf">Quitar</button></li>
+              <li><span class="ficon">PDF</span><div><div class="fname">informe_honorarios_agosto.pdf</div><div class="fmeta">2 páginas · 412 KB</div></div><button type="button" class="btn ghost small" aria-label="Quitar informe_honorarios_agosto.pdf">Quitar</button></li>
               <li><span class="ficon">JPG</span><div><div class="fname">cedula_frente.jpg</div><div class="fmeta">Imagen · 1,8 MB</div><label class="toggle"><input type="checkbox" id="todo-cedula" checked> Censurar todo el texto de esta imagen</label></div><button type="button" class="btn ghost small" aria-label="Quitar cedula_frente.jpg">Quitar</button></li>
               <li><span class="ficon">PDF</span><div><div class="fname">acta_reunion_escaneada.pdf</div><div class="fmeta">Escaneo · 2 páginas · 1,1 MB</div></div><button type="button" class="btn ghost small" aria-label="Quitar acta_reunion_escaneada.pdf">Quitar</button></li>
               <li><span class="ficon">PDF</span><div><div class="fname">resolucion_firmada.pdf</div><div class="fmeta">1 página · 96 KB</div></div><button type="button" class="btn ghost small" aria-label="Quitar resolucion_firmada.pdf">Quitar</button></li>
@@ -328,7 +372,7 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
         </div>
       </div>
 
-      <!-- 2. PROCESAMIENTO -->
+      <!-- 2. PROCESSING -->
       <div class="screen" data-screen="2">
         <div class="proc">
           <div class="proc-top">
@@ -336,7 +380,7 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
             <div class="row"><button type="button" class="btn">Cancelar todo</button><button type="button" class="btn primary" data-go="3">Revisar los listos</button></div>
           </div>
           <div class="panel">
-            <div class="job"><span class="ficon">PDF</span><div><div class="fname">informe_honorarios_agosto.pdf</div><div class="fmeta">13 zonas propuestas · verificación sin fugas</div></div><span class="state ok">Listo para revisar</span><div class="bar ok"><i style="width:100%"></i></div></div>
+            <div class="job"><span class="ficon">PDF</span><div><div class="fname">informe_honorarios_agosto.pdf</div><div class="fmeta">16 zonas propuestas · verificación sin fugas</div></div><span class="state ok">Listo para revisar</span><div class="bar ok"><i style="width:100%"></i></div></div>
             <div class="job"><span class="ficon">JPG</span><div><div class="fname">cedula_frente.jpg</div><div class="fmeta">Verificando la salida…</div></div><span class="state run">85 %</span><div class="bar"><i style="width:85%"></i></div></div>
             <div class="job"><span class="ficon">PDF</span><div><div class="fname">acta_reunion_escaneada.pdf</div><div class="fmeta">Leyendo el texto de la página 2 de 2 (escaneo)</div></div><span class="state run">55 %</span><div class="bar"><i style="width:55%"></i></div></div>
             <div class="job"><span class="ficon">PDF</span><div><div class="fname">resolucion_firmada.pdf</div><div class="fmeta">No se pudo abrir</div></div><span class="state bad">Necesita tu ayuda</span>
@@ -346,76 +390,118 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
         </div>
       </div>
 
-      <!-- 3. REVISIÓN -->
+      <!-- 3. REVIEW -->
       <div class="screen on" data-screen="3">
         <div class="review">
-          <aside class="col col-files" aria-label="Archivos y páginas">
-            <h3>Archivos</h3>
-            <button type="button" class="fbtn" aria-current="true"><span class="fname">informe_honorarios_agosto.pdf</span><span class="state warn">3 por revisar</span></button>
-            <button type="button" class="fbtn"><span class="fname">cedula_frente.jpg</span><span class="state bad">1 fuga</span></button>
-            <button type="button" class="fbtn"><span class="fname">acta_reunion_escaneada.pdf</span><span class="state wait">Procesando</span></button>
-            <h3>Páginas</h3>
-            <div class="thumbs">
-              <button type="button" class="thumb" aria-current="true" aria-label="Página 1, 9 zonas"><i style="width:60%"></i><i class="z" style="width:40%"></i><i class="z" style="width:55%"></i><i class="z" style="width:48%"></i><i style="width:80%"></i><i style="width:70%"></i><b>9</b></button>
-              <button type="button" class="thumb" aria-label="Página 2, 3 zonas"><i style="width:75%"></i><i style="width:65%"></i><i class="z" style="width:35%"></i><i style="width:80%"></i><b>3</b></button>
-              <button type="button" class="thumb" aria-label="Página 3, 1 zona"><i style="width:70%"></i><i style="width:60%"></i><i class="z" style="width:30%"></i><b>1</b></button>
-            </div>
-          </aside>
-
           <section class="col col-doc" aria-label="Documento">
+            <div class="rv-bar">
+              <label for="rv-file">Archivo</label>
+              <select id="rv-file">
+                <option selected>informe_honorarios_agosto.pdf · 3 por revisar</option>
+                <option>cedula_frente.jpg · 1 fuga</option>
+                <option disabled>acta_reunion_escaneada.pdf · Procesando</option>
+              </select>
+              <button type="button" class="tool filestep" id="b-fprev" aria-label="Archivo anterior" title="Archivo anterior">‹</button>
+              <button type="button" class="tool filestep" id="b-fnext" aria-label="Archivo siguiente" title="Archivo siguiente">›</button>
+              <label class="pageind" for="pagefield">pág. <input type="number" class="pagefield mono" id="pagefield" min="1" max="2" value="1" inputmode="numeric"> de 2</label>
+            </div>
             <div class="tools" role="toolbar" aria-label="Herramientas del visor">
-              <button type="button" class="tool" id="b-prev" aria-label="Hallazgo anterior">↑ <kbd>K</kbd></button>
-              <button type="button" class="tool" id="b-next" aria-label="Hallazgo siguiente">↓ <kbd>J</kbd></button>
-              <span class="sep" aria-hidden="true"></span>
-              <button type="button" class="tool" id="b-zout" aria-label="Alejar">−</button>
-              <span class="zoomval mono" id="zoomval">100 %</span>
-              <button type="button" class="tool" id="b-zin" aria-label="Acercar">+</button>
+              <button type="button" class="tool" id="b-zout" aria-label="Alejar" title="Alejar">−</button>
+              <button type="button" class="tool zoomval mono" id="b-zfit" title="Ajustar al ancho">100 %</button>
+              <button type="button" class="tool" id="b-zin" aria-label="Acercar" title="Acercar">+</button>
               <button type="button" class="tool" id="b-rot">Girar vista <kbd>R</kbd></button>
               <span class="sep" aria-hidden="true"></span>
-              <button type="button" class="tool" id="b-draw" aria-pressed="false">Dibujar zona <kbd>D</kbd></button>
-              <button type="button" class="tool" id="b-view" aria-pressed="false">Ver como quedará <kbd>V</kbd></button>
+              <button type="button" class="tool draw" id="b-draw" aria-pressed="false"><span aria-hidden="true">✎</span> <span class="lbl">Dibujar zona</span> <kbd>D</kbd></button>
+              <button type="button" class="tool" id="b-view" aria-pressed="true">Mostrar el después <kbd>V</kbd></button>
             </div>
-            <div class="viewport" id="viewport">
-              <div class="pagewrap" id="pagewrap">
-                <article class="page" id="page" aria-label="Página 1 de informe_honorarios_agosto.pdf">
-                  <div class="doc-h"><b>GOBIERNO REGIONAL FICTICIO</b><span>Folio N° 7814/2026</span></div>
-                  <h4>INFORME DE HONORARIOS · AGOSTO 2026</h4>
-                  <h5>1. Antecedentes del prestador</h5>
-                  <dl class="kv">
-                    <dt>Nombre:</dt><dd><span class="hit" id="h-nombre">Ana María Rojas Peña</span></dd>
-                    <dt>RUT:</dt><dd><span class="hit" id="h-rut1">15.782.334-9</span></dd>
-                    <dt>Correo:</dt><dd><span class="hit" id="h-correo1">ana.rojas@ejemplo.cl</span></dd>
-                    <dt>Teléfono:</dt><dd><span class="hit" id="h-tel1">+56 9 8123 4567</span></dd>
-                    <dt>Dirección:</dt><dd><span class="hit" id="h-dir">Pasaje Los Alerces 442, depto 31</span>, Concepción</dd>
-                  </dl>
-                  <h5>2. Productos del período</h5>
-                  <p>Producto 1: Informe de avance del programa de fomento productivo. Se realizaron tres reuniones de coordinación con los equipos municipales.</p>
-                  <dl class="kv" style="margin-top:8px"><dt>Monto bruto:</dt><dd>$ 1.450.000</dd><dt>Fecha de pago:</dt><dd>21 de septiembre de 2026</dd></dl>
-                  <h5>3. Contraparte técnica</h5>
-                  <dl class="kv">
-                    <dt>Nombre:</dt><dd><span class="hit" id="h-nombre2">Sofía Cárdenas Carrasco</span></dd>
-                    <dt>RUT:</dt><dd><span class="hit" id="h-rut2">9.876.543-3</span></dd>
-                    <dt>Correo:</dt><dd><span class="hit" id="h-correo2">scardenas@goreficticio.cl</span></dd>
-                    <dt>Teléfono:</dt><dd><span class="hit" id="h-tel2">(41) 221 3456</span>, anexo 4753</dd>
-                  </dl>
-                  <div class="photo">
-                    <div class="photo-img" id="h-foto" aria-label="Fotografía de la actividad">
-                      <span class="body" style="left:36px;top:70px;width:62px;height:60px"></span><span class="head" id="h-cara1" style="left:50px;top:30px;width:34px;height:40px"></span>
-                      <span class="body" style="left:126px;top:84px;width:44px;height:46px"></span><span class="head" id="h-cara2" style="left:136px;top:58px;width:24px;height:28px"></span>
-                    </div>
-                    <p>Fotografía del taller con organizaciones comunitarias. La imagen trae además el texto «ana.rojas@ejemp1o.cl» en un pendón.</p>
+
+            <div class="viewport" id="viewport" tabindex="0" aria-label="Páginas del documento, antes y después">
+              <div class="vp-inner" id="vp-inner">
+                <div class="vp-head"><span>Antes</span><span class="h-after">Después</span></div>
+
+                <div class="prow" role="group" aria-label="Página 1 de 2" data-page="1">
+                  <div class="cell before">
+                    <span class="tag" aria-hidden="true">Antes</span>
+                    <div class="box"><div class="sheet">
+                      <div class="page" role="img" aria-label="Página 1 de 2, original">
+                        <div class="doc-h"><b>GOBIERNO REGIONAL FICTICIO</b><span>Folio N° 7814/2026</span></div>
+                        <h4>INFORME DE HONORARIOS · AGOSTO 2026</h4>
+                        <h5>1. Antecedentes del prestador</h5>
+                        <dl class="kv">
+                          <dt>Nombre:</dt><dd><span class="hit" id="h-nombre">Ana María Rojas Peña</span></dd>
+                          <dt>RUT:</dt><dd><span class="hit" id="h-rut1">15.782.334-9</span></dd>
+                          <dt>Correo:</dt><dd><span class="hit" id="h-correo1">ana.rojas@ejemplo.cl</span></dd>
+                          <dt>Teléfono:</dt><dd><span class="hit" id="h-tel1">+56 9 8123 4567</span></dd>
+                          <dt>Dirección:</dt><dd><span class="hit" id="h-dir">Pasaje Los Alerces 442, depto 31</span>, Concepción</dd>
+                        </dl>
+                        <h5>2. Productos del período</h5>
+                        <p>Producto 1: Informe de avance del programa de fomento productivo. Se realizaron tres reuniones de coordinación con los equipos municipales.</p>
+                        <dl class="kv" style="margin-top:8px"><dt>Monto bruto:</dt><dd>$ 1.450.000</dd><dt>Fecha de pago:</dt><dd>21 de septiembre de 2026</dd></dl>
+                        <h5>3. Contraparte técnica</h5>
+                        <dl class="kv">
+                          <dt>Nombre:</dt><dd><span class="hit" id="h-nombre2">Sofía Cárdenas Carrasco</span></dd>
+                          <dt>RUT:</dt><dd><span class="hit" id="h-rut2">9.876.543-3</span></dd>
+                          <dt>Correo:</dt><dd><span class="hit" id="h-correo2">scardenas@goreficticio.cl</span></dd>
+                          <dt>Teléfono:</dt><dd><span class="hit" id="h-tel2">(41) 221 3456</span>, anexo 4753</dd>
+                        </dl>
+                        <div class="photo">
+                          <div class="photo-img" id="h-foto">
+                            <span class="banner" style="left:148px;top:7px;width:68px">ana.rojas@ejemp1o.cl</span>
+                            <span class="body" style="left:36px;top:70px;width:62px;height:60px"></span><span class="head" id="h-cara1" style="left:50px;top:30px;width:34px;height:40px"></span>
+                            <span class="body" style="left:126px;top:84px;width:44px;height:46px"></span><span class="head" id="h-cara2" style="left:136px;top:58px;width:24px;height:28px"></span>
+                          </div>
+                          <p>Fotografía del taller con organizaciones comunitarias. En el pendón del fondo se lee un correo.</p>
+                        </div>
+                        <div class="sign">
+                          <div><span class="scribble" id="h-firma">A. Rojas</span>Prestador(a) de servicios</div>
+                          <div><span class="scribble">S. Cárdenas</span>V°B° contraparte técnica</div>
+                        </div>
+                      </div>
+                      <div class="zones"></div>
+                    </div></div>
                   </div>
-                  <div class="sign">
-                    <div><span class="scribble" id="h-firma">A. Rojas</span>Prestador(a) de servicios</div>
-                    <div><span class="scribble">S. Cárdenas</span>V°B° contraparte técnica</div>
+                  <div class="cell after">
+                    <span class="tag" aria-hidden="true">Después</span>
+                    <div class="box"><div class="sheet"><div class="blacks" aria-hidden="true"></div></div><span class="badge" hidden>Actualizando…</span></div>
                   </div>
-                </article>
+                  <div class="plabel" aria-hidden="true">Página 1 de 2</div>
+                </div>
+
+                <div class="prow" role="group" aria-label="Página 2 de 2" data-page="2">
+                  <div class="cell before">
+                    <span class="tag" aria-hidden="true">Antes</span>
+                    <div class="box"><div class="sheet">
+                      <div class="page" role="img" aria-label="Página 2 de 2, original">
+                        <div class="doc-h"><b>GOBIERNO REGIONAL FICTICIO</b><span>Folio N° 7814/2026 · Anexo</span></div>
+                        <h4>ANEXO · DETALLE DE PAGOS DEL PERÍODO</h4>
+                        <p>Pagos del programa de fomento productivo durante agosto de 2026, según el registro de tesorería.</p>
+                        <table class="pay">
+                          <thead><tr><th>Fecha</th><th>Beneficiario</th><th>RUT</th><th>Teléfono</th><th class="r">Monto</th></tr></thead>
+                          <tbody>
+                            <tr><td>05-08-2026</td><td><span class="hit" id="h-nombre3">Joaquín Ibarra Muñoz</span></td><td><span class="hit" id="h-rut3">17.204.881-1</span></td><td><span class="hit" id="h-tel3">+56 9 7345 0912</span></td><td class="r">$ 380.000</td></tr>
+                            <tr><td>19-08-2026</td><td>Imprenta Ficticia Ltda.</td><td>—</td><td>—</td><td class="r">$ 125.000</td></tr>
+                            <tr><td>28-08-2026</td><td>Arriendo de salón comunitario</td><td>—</td><td>—</td><td class="r">$ 90.000</td></tr>
+                          </tbody>
+                          <tfoot><tr><td colspan="4">Total pagado</td><td class="r">$ 595.000</td></tr></tfoot>
+                        </table>
+                        <p class="fine">Los pagos se realizan por transferencia y se avisan al teléfono de contacto de cada beneficiario.</p>
+                      </div>
+                      <div class="zones"></div>
+                    </div></div>
+                  </div>
+                  <div class="cell after">
+                    <span class="tag" aria-hidden="true">Después</span>
+                    <div class="box"><div class="sheet"><div class="blacks" aria-hidden="true"></div></div><span class="badge" hidden>Actualizando…</span></div>
+                  </div>
+                  <div class="plabel" aria-hidden="true">Página 2 de 2</div>
+                </div>
               </div>
             </div>
+
             <div>
-              <div class="keys" aria-label="Atajos de teclado"><span><kbd>J</kbd> <kbd>K</kbd> siguiente y anterior</span><span><kbd>Supr</kbd> quitar censura</span><span><kbd>D</kbd> dibujar zona</span><span><kbd>+</kbd> <kbd>−</kbd> zoom</span><span><kbd>R</kbd> girar vista</span><span><kbd>V</kbd> ver como quedará</span></div>
+              <div class="keys" aria-label="Atajos de teclado"><span><kbd>J</kbd> <kbd>K</kbd> siguiente y anterior</span><span><kbd>Supr</kbd> quitar censura</span><span><kbd>D</kbd> dibujar zona</span><span><kbd>+</kbd> <kbd>−</kbd> zoom</span><span><kbd>R</kbd> girar vista</span><span><kbd>V</kbd> mostrar u ocultar el después</span></div>
               <div class="verify">
-                <div class="msg"><span class="dot" aria-hidden="true"></span><div><strong>Revisión lista para confirmar</strong><div class="fmeta" id="vsum">13 zonas a censurar · verificación sin fugas · 3 hallazgos por revisar</div></div></div>
+                <div class="msg"><span class="dot" aria-hidden="true"></span><div><strong>Revisión lista para confirmar</strong><div class="fmeta" id="vsum">16 zonas a censurar · verificación sin fugas · 3 hallazgos por revisar</div></div></div>
                 <button type="button" class="btn primary" id="b-confirm">Confirmar este archivo</button>
               </div>
             </div>
@@ -423,16 +509,8 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
 
           <aside class="col col-find" aria-label="Hallazgos">
             <div class="find-sum">
-              <strong id="fcount">13 zonas en este archivo</strong>
-              <div class="chips" id="chips" aria-label="Filtrar por tipo">
-                <button type="button" class="chip z-rut" aria-pressed="true" data-t="rut"><i></i>RUT 2</button>
-                <button type="button" class="chip z-correo" aria-pressed="true" data-t="correo"><i></i>Correo 3</button>
-                <button type="button" class="chip z-telefono" aria-pressed="true" data-t="telefono"><i></i>Teléfono 2</button>
-                <button type="button" class="chip z-nombre" aria-pressed="true" data-t="nombre"><i></i>Nombre 2</button>
-                <button type="button" class="chip z-direccion" aria-pressed="true" data-t="direccion"><i></i>Dirección 1</button>
-                <button type="button" class="chip z-rostro" aria-pressed="true" data-t="rostro"><i></i>Rostro 2</button>
-                <button type="button" class="chip z-manual" aria-pressed="true" data-t="manual"><i></i>Agregada 1</button>
-              </div>
+              <strong id="fcount">16 zonas en este archivo</strong>
+              <div class="chips" id="chips" role="group" aria-label="Filtrar por tipo"></div>
             </div>
             <div></div>
             <div class="findlist" id="findlist"></div>
@@ -440,7 +518,7 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
         </div>
       </div>
 
-      <!-- 4. EXPORTAR -->
+      <!-- 4. EXPORT -->
       <div class="screen" data-screen="4">
         <div class="exp">
           <h2>Exportar los archivos anonimizados</h2>
@@ -452,7 +530,7 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
             <table>
               <thead><tr><th>Archivo</th><th style="text-align:right">Censuradas</th><th style="text-align:right">Quitadas por ti</th><th>Verificación</th><th>Estado</th></tr></thead>
               <tbody>
-                <tr><td class="fname">informe_honorarios_agosto.pdf</td><td class="num">12</td><td class="num">1</td><td>Sin fugas</td><td><span class="state ok">Confirmado</span></td></tr>
+                <tr><td class="fname">informe_honorarios_agosto.pdf</td><td class="num">15</td><td class="num">1</td><td>Sin fugas</td><td><span class="state ok">Confirmado</span></td></tr>
                 <tr><td class="fname">acta_reunion_escaneada.pdf</td><td class="num">18</td><td class="num">0</td><td>Sin fugas</td><td><span class="state ok">Confirmado</span></td></tr>
                 <tr><td class="fname">cedula_frente.jpg</td><td class="num">9</td><td class="num">0</td><td><span style="color:var(--bad);font-weight:700">1 fuga sin resolver</span></td><td><span class="state bad">No se exporta</span><div class="fmeta">El RUN sigue legible en la esquina inferior. Vuelve a Revisar.</div></td></tr>
                 <tr><td class="fname">resolucion_firmada.pdf</td><td class="num">—</td><td class="num">—</td><td>—</td><td><span class="state wait">Omitido</span><div class="fmeta">Protegido con contraseña</div></td></tr>
@@ -472,6 +550,7 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
     </section>
 
     <aside class="notes" aria-label="Notas de diseño">
+      <h2 class="notes-h">Notas de diseño · no aparecen en la aplicación</h2>
       <div class="note" data-note="1">
         <h3>1 · Elegir archivos</h3>
         <ul>
@@ -494,15 +573,20 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
       <div class="note on" data-note="3">
         <h3>3 · Revisar (pantalla central)</h3>
         <ul>
-          <li>Lo dudoso va primero: RUT con dígito verificador que no coincide, OCR de baja confianza, rostros pequeños.</li>
-          <li>Cada zona lleva color y etiqueta de tipo, para no depender solo del color.</li>
-          <li>Quitar una censura pide confirmación y un motivo opcional, y queda en el informe.</li>
-          <li>"Dibujar zona" agrega una censura a mano, por ejemplo una firma.</li>
-          <li>"Ver como quedará" muestra el resultado con las barras negras.</li>
-          <li>Se opera entera con teclado.</li>
+          <li>Las páginas van una debajo de otra y se recorren con la rueda del mouse. Ya no hay miniaturas ni botones para cambiar de página.</li>
+          <li>A la izquierda, el original con las zonas de color; a la derecha, cómo quedará, con las censuras en negro. En la app lo genera el mismo código que exporta; aquí está simulado.</li>
+          <li>Al quitar, restaurar o dibujar una zona, el después de esa página se atenúa con «Actualizando…» y en un momento muestra el resultado nuevo.</li>
+          <li>Si el después de una página no se puede generar, esa página dice «No se pudo mostrar el resultado de esta página» y ofrece «Reintentar». Nunca muestra el original en su lugar: podría confundirse con una página censurada.</li>
+          <li>Los filtros por tipo solo ocultan las zonas de color del antes. El después siempre muestra todas las censuras activas.</li>
+          <li>«Mostrar el después» (V) oculta o muestra la columna derecha. En una ventana angosta, el después queda debajo del antes.</li>
+          <li>El archivo se elige en la barra de arriba; ‹ › pasa al anterior o al siguiente que se pueda revisar.</li>
+          <li>En un documento largo puedes escribir el número en «pág.» y presionar Enter para ir a esa página. Cada página dice cuántas zonas tiene.</li>
+          <li>«Dibujar zona» va en amarillo para encontrarla al tiro. Mientras dibujas, el botón dice «Dibujando · Esc para salir» y las páginas del antes se marcan con un borde.</li>
+          <li>Para pasar de un hallazgo a otro: clic en la lista de la derecha, o las teclas J y K (ya no hay botones para eso).</li>
+          <li>Lo dudoso va primero, cada zona lleva color y etiqueta, y quitar una censura pide confirmación y queda en el informe. Se opera entera con teclado.</li>
           <li>Nunca dice "documento limpio": dice "revisión lista para confirmar".</li>
         </ul>
-        <p class="ask">Prueba: haz clic en un hallazgo, presiona <span class="mono">Supr</span> o "Quitar", y luego "Dibujar zona" sobre la firma.</p>
+        <p class="ask">Prueba: baja hasta la página 2, quita una censura y mira cómo cambia el después.</p>
       </div>
       <div class="note" data-note="4">
         <h3>4 · Exportar</h3>
@@ -550,8 +634,9 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const LABEL = { rut: "RUT", correo: "Correo", telefono: "Teléfono", nombre: "Nombre", direccion: "Dirección", rostro: "Rostro", ocr: "Texto en imagen", manual: "Agregada" };
+  const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // Hallazgos del archivo de ejemplo (datos inventados). target: id del elemento del documento a cubrir.
+  // Findings of the sample file (invented data). target: id of the document element to cover; page: 1-based page number.
   const findings = [
     { id: "f1", t: "rut", val: "15.782.334-9", target: "h-rut1", doubt: "El dígito verificador no coincide: revisa el original", det: "patrones", page: 1 },
     { id: "f2", t: "rostro", val: "Rostro pequeño", target: "h-cara2", doubt: "Rostro pequeño (24 px), confianza 0,58", det: "rostros", page: 1, pad: 6 },
@@ -566,11 +651,15 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
     { id: "f11", t: "telefono", val: "(41) 221 3456", target: "h-tel2", det: "patrones", page: 1 },
     { id: "f12", t: "rostro", val: "Rostro", target: "h-cara1", det: "rostros", page: 1, pad: 8 },
     { id: "f13", t: "manual", val: "Firma (zona dibujada)", target: "h-firma", det: "agregada por ti", page: 1, pad: 4 },
+    { id: "f14", t: "nombre", val: "Joaquín Ibarra Muñoz", target: "h-nombre3", det: "lista de nombres", page: 2 },
+    { id: "f15", t: "rut", val: "17.204.881-1", target: "h-rut3", det: "patrones", page: 2 },
+    { id: "f16", t: "telefono", val: "+56 9 7345 0912", target: "h-tel3", det: "patrones", page: 2 },
   ];
-  const state = { sel: "f1", removed: {}, filter: new Set(Object.keys(LABEL)), zoom: 1, rot: 0, draw: false, result: false, extra: 0 };
-  const page = $("#page");
+  // scale: null means "fit to width"; after: whether the after column is shown.
+  const state = { sel: "f1", removed: {}, hidden: new Set(), scale: null, rot: 0, draw: false, after: true, extra: 0 };
+  const vp = $("#viewport"), inner = $("#vp-inner");
 
-  // --- pantallas ---
+  // --- screens ---
   function go(n) {
     $$(".screen").forEach(s => s.classList.toggle("on", s.dataset.screen === String(n)));
     $$(".note").forEach(s => s.classList.toggle("on", s.dataset.note === String(n)));
@@ -580,44 +669,225 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
       if (k === n) b.setAttribute("aria-current", "step");
       b.classList.toggle("done", k < n);
     });
-    if (n === 3) requestAnimationFrame(layoutZones);
+    if (n === 3) requestAnimationFrame(() => relayout(false));
   }
   $$("[data-go]").forEach(b => b.addEventListener("click", () => go(Number(b.dataset.go))));
 
-  // --- zonas sobre el documento ---
-  function rectOf(f) {
-    const el = document.getElementById(f.target);
-    if (!el) return null;
-    const pr = page.getBoundingClientRect(), r = el.getBoundingClientRect(), s = state.zoom;
-    let x = (r.left - pr.left) / s, y = (r.top - pr.top) / s, w = r.width / s, h = r.height / s;
-    if (state.rot % 180 !== 0) { return f._last || null; }
-    if (f.box) { [x, y, w, h] = [x + f.box[0], y + f.box[1], f.box[2], f.box[3]]; }
-    const p = f.pad ?? 3;
-    f._last = { x: x - p, y: y - p, w: w + 2 * p, h: h + 2 * p };
-    return f._last;
+  // --- page rows: the before cell (page + zone layer) and the after cell (simulated result) ---
+  const pages = $$(".prow", vp).map(row => {
+    const n = Number(row.dataset.page);
+    const before = $(".cell.before", row), after = $(".cell.after", row);
+    const page = $(".page", before);
+    // The after shows the same page, without ids or labels of its own; the app shows an image here.
+    const copy = page.cloneNode(true);
+    $$("[id]", copy).forEach(e => e.removeAttribute("id"));
+    $$("[aria-label]", copy).forEach(e => e.removeAttribute("aria-label"));
+    $(".sheet", after).prepend(copy);
+    return {
+      n, row, page, copy,
+      bbox: $(".box", before), bsheet: $(".sheet", before), zones: $(".zones", before),
+      acell: after, abox: $(".box", after), asheet: $(".sheet", after), blacks: $(".blacks", after), badge: $(".badge", after),
+      W: 0, H: 0, wanted: null, seq: 0,
+    };
+  });
+  const PAGES = pages.length;
+  pages.forEach(p => {
+    p.row.setAttribute("aria-label", `Página ${p.n} de ${PAGES}`);
+    p.page.setAttribute("aria-label", `Página ${p.n} de ${PAGES}, original`);
+    p.copy.setAttribute("aria-label", `Página ${p.n} de ${PAGES}, como quedará`);
+  });
+
+  // --- geometry: zone rectangles in page coordinates (unscaled, unrotated), read from the layout ---
+  function localRect(el, root) {
+    let x = 0, y = 0;
+    for (let n = el; n && n !== root; n = n.offsetParent) { x += n.offsetLeft; y += n.offsetTop; }
+    return { x, y, w: el.offsetWidth, h: el.offsetHeight };
   }
-  function layoutZones() {
-    $$(".zone", page).forEach(z => z.remove());
+  function measure() {
+    if (!pages[0].page.offsetWidth) return false; // screen hidden
+    for (const p of pages) { p.W = p.page.offsetWidth; p.H = p.page.offsetHeight; }
     for (const f of findings) {
-      if (!state.filter.has(f.t)) continue;
-      const r = f.rect || rectOf(f);
-      if (!r) continue;
-      const z = document.createElement("div");
-      z.className = `zone z-${f.t}` + (f.doubt ? " doubt" : "") + (state.removed[f.id] ? " removed" : "") + (state.sel === f.id ? " sel" : "");
-      z.dataset.label = LABEL[f.t];
-      z.dataset.id = f.id;
-      Object.assign(z.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
-      z.addEventListener("click", e => { e.stopPropagation(); select(f.id); });
-      page.appendChild(z);
+      if (!f.target) continue;
+      const el = document.getElementById(f.target);
+      if (!el) continue;
+      let { x, y, w, h } = localRect(el, pages[f.page - 1].page);
+      if (f.box) [x, y, w, h] = [x + f.box[0], y + f.box[1], f.box[2], f.box[3]];
+      const pad = f.pad ?? 3;
+      f.r = { x: x - pad, y: y - pad, w: w + 2 * pad, h: h + 2 * pad };
+    }
+    return true;
+  }
+
+  // One scale for the whole document. Fit-to-width fits the widest page (with the current rotation)
+  // into one column: the whole width, or half of it minus the gap when the after column is shown.
+  let fitScale = 1, laidOut = false;
+  const scaleNow = () => state.scale ?? fitScale;
+  function layout() {
+    if (!vp.clientWidth || !pages[0].W) return;
+    vp.classList.toggle("no-after", !state.after);
+    const cs = getComputedStyle(inner);
+    const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    const colGap = parseFloat(getComputedStyle(pages[0].row).columnGap) || 0;
+    // side by side unless a column would be narrower than 420 px
+    const stacked = state.after && (vp.clientWidth - pad - colGap) / 2 < 420;
+    vp.classList.toggle("stacked", stacked);
+    const cols = state.after && !stacked ? 2 : 1;
+    const gap = cols === 2 ? colGap : 0;
+    const turned = state.rot % 180 !== 0;
+    const widest = Math.max(...pages.map(p => (turned ? p.H : p.W)));
+    fitScale = Math.min(1.6, Math.max(0.1, Math.floor(((vp.clientWidth - pad - gap) / cols / widest) * 1000) / 1000));
+    const s = scaleNow();
+    vp.style.setProperty("--s", s);
+    vp.style.setProperty("--cw", `${widest * s}px`);
+    for (const p of pages) {
+      // each row reserves its final size, so the scroll height is right from the start
+      const w = (turned ? p.H : p.W) * s, h = (turned ? p.W : p.H) * s;
+      for (const box of [p.bbox, p.abox]) Object.assign(box.style, { width: `${w}px`, height: `${h}px` });
+      for (const sheet of [p.bsheet, p.asheet]) sheet.style.transform = `translate(-50%, -50%) rotate(${state.rot}deg) scale(${s})`;
+    }
+    const pct = Math.round(s * 100);
+    $("#b-zfit").textContent = `${pct} %`;
+    $("#b-zfit").setAttribute("aria-label", `Zoom ${pct} %. Ajustar al ancho`);
+    renderZones();
+    updateIndicator();
+  }
+  function relayout(keep) {
+    if (!measure()) return;
+    if (keep && laidOut) keepCenter(layout); else layout();
+    laidOut = true;
+    syncAfters(true);
+  }
+
+  // The current page is the row that crosses the vertical middle of the viewport.
+  function rowAtCenter() {
+    const vr = vp.getBoundingClientRect(), mid = vr.top + vp.clientTop + vp.clientHeight / 2;
+    let best = pages[0], dist = Infinity;
+    for (const p of pages) {
+      const r = p.row.getBoundingClientRect();
+      const d = mid < r.top ? r.top - mid : mid > r.bottom ? mid - r.bottom : 0;
+      if (d < dist) { dist = d; best = p; }
+    }
+    return best;
+  }
+  // The page field follows the scroll, except while the reviewer is typing in it.
+  function updateIndicator() { const f = $("#pagefield"); if (document.activeElement !== f) f.value = rowAtCenter().n; }
+  // Enter in the page field scrolls that page to the top of the view and gives the focus back to the viewport.
+  $("#pagefield").addEventListener("keydown", e => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const n = Math.min(PAGES, Math.max(1, Math.round(Number(e.target.value) || 1)));
+    const p = pages[n - 1], head = $(".vp-head").offsetHeight;
+    vp.scrollTo({ top: p.row.getBoundingClientRect().top - vp.getBoundingClientRect().top + vp.scrollTop - head - 8, behavior: reducedMotion() ? "auto" : "smooth" });
+    e.target.value = n;
+    vp.focus({ preventScroll: true });
+  });
+  let ticking = false;
+  vp.addEventListener("scroll", () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => { ticking = false; updateIndicator(); });
+  }, { passive: true });
+
+  // Zoom, rotation and V keep the point at the middle of the viewport in place (same page, same relative position).
+  function keepCenter(change) {
+    const p = rowAtCenter(), vr = vp.getBoundingClientRect(), r = p.row.getBoundingClientRect();
+    const mid = vr.top + vp.clientTop + vp.clientHeight / 2;
+    const fy = r.height ? (mid - r.top) / r.height : 0;
+    const fx = vp.scrollWidth ? (vp.scrollLeft + vp.clientWidth / 2) / vp.scrollWidth : 0.5;
+    change();
+    const vr2 = vp.getBoundingClientRect(), r2 = p.row.getBoundingClientRect();
+    vp.scrollTop = r2.top - vr2.top - vp.clientTop + vp.scrollTop + fy * r2.height - vp.clientHeight / 2;
+    vp.scrollLeft = fx * vp.scrollWidth - vp.clientWidth / 2;
+  }
+
+  // --- zones on the before side ---
+  // A label goes above its zone, below it, or nowhere (shown on hover) so it never covers another zone.
+  const LABEL_H = 16;
+  const labelWidth = text => 10 + text.length * 6.2;
+  const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  function placeLabels(items, s) {
+    const placed = [], out = new Map(), h = LABEL_H / s, g = 2 / s;
+    const order = [...items].sort((a, b) => (b.f.id === state.sel) - (a.f.id === state.sel) || a.r.y - b.r.y || a.r.x - b.r.x);
+    for (const it of order) {
+      const w = labelWidth(LABEL[it.f.t] + (state.removed[it.f.id] ? " · quitada" : "")) / s;
+      const above = { x: it.r.x - g, y: it.r.y - h - g, w, h };
+      const below = { x: it.r.x - g, y: it.r.y + it.r.h + g, w, h };
+      const free = c => !placed.some(p => overlaps(c, p)) && !items.some(o => o !== it && overlaps(c, o.r));
+      let where = "none";
+      if (it.f.id === state.sel || free(above)) where = "top";
+      else if (free(below)) where = "below";
+      if (where !== "none") placed.push(where === "top" ? above : below);
+      out.set(it.f.id, where);
+    }
+    return out;
+  }
+  function renderZones() {
+    const s = scaleNow();
+    for (const p of pages) {
+      // the type chips hide zones only here, on the before side
+      const items = findings.filter(f => f.page === p.n && f.r && !state.hidden.has(f.t)).map(f => ({ f, r: f.r }));
+      const where = placeLabels(items, s);
+      p.zones.replaceChildren(...items.map(({ f, r }) => {
+        const z = document.createElement("div");
+        z.className = ["zone", `z-${f.t}`, f.doubt && "doubt", state.removed[f.id] && "removed", state.sel === f.id && "sel",
+          where.get(f.id) === "below" && "label-below", where.get(f.id) === "none" && "nolabel"].filter(Boolean).join(" ");
+        z.dataset.label = LABEL[f.t];
+        z.dataset.id = f.id;
+        z.title = `${LABEL[f.t]}: ${f.val}`;
+        Object.assign(z.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
+        z.addEventListener("click", e => { e.stopPropagation(); if (!state.draw) select(f.id); });
+        return z;
+      }));
     }
   }
 
-  // --- lista de hallazgos ---
+  // --- the after side (simulated) ---
+  // Each page has a version made of its active findings. When it changes, the after of that page dims with
+  // "Actualizando…" while the new result is on its way (here ~400 ms); a late answer for an older version is dropped.
+  // The app renders it with the export code; if that fails it shows an error and "Reintentar", never the original.
+  const activeOn = n => findings.filter(f => f.page === n && f.r && !state.removed[f.id]);
+  const versionOf = n => activeOn(n).map(f => `${f.id}:${[f.r.x, f.r.y, f.r.w, f.r.h].map(Math.round).join(",")}`).join("|");
+  function paintAfter(p, rects) {
+    p.blacks.replaceChildren(...rects.map(r => {
+      const b = document.createElement("div");
+      b.className = "black";
+      Object.assign(b.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
+      return b;
+    }));
+  }
+  function setUpdating(p, on) { p.acell.classList.toggle("updating", on); p.badge.hidden = !on; }
+  function syncAfters(now = false) {
+    for (const p of pages) {
+      const v = versionOf(p.n);
+      if (v === p.wanted) continue;
+      p.wanted = v;
+      const seq = ++p.seq, rects = activeOn(p.n).map(f => ({ ...f.r }));
+      if (now) { paintAfter(p, rects); setUpdating(p, false); continue; }
+      setUpdating(p, true);
+      setTimeout(() => {
+        if (seq !== p.seq) return; // an older version: only the latest one is shown
+        paintAfter(p, rects);
+        setUpdating(p, false);
+      }, 400);
+    }
+  }
+
+  // --- findings list ---
+  const byPlace = (a, b) => a.page - b.page || (a.r?.y ?? 0) - (b.r?.y ?? 0) || (a.r?.x ?? 0) - (b.r?.x ?? 0);
+  function ordered() {
+    const vis = findings.filter(f => !state.hidden.has(f.t));
+    return [...vis.filter(f => f.doubt).sort(byPlace), ...vis.filter(f => !f.doubt).sort(byPlace)];
+  }
+  function renderChips() {
+    const types = Object.keys(LABEL).filter(t => findings.some(f => f.t === t));
+    $("#chips").innerHTML = types.map(t =>
+      `<button type="button" class="chip z-${t}" aria-pressed="${!state.hidden.has(t)}" data-t="${t}"><i></i>${LABEL[t]} ${findings.filter(f => f.t === t).length}</button>`).join("");
+  }
   function renderList() {
-    const vis = findings.filter(f => state.filter.has(f.t));
-    const doubt = vis.filter(f => f.doubt), rest = vis.filter(f => !f.doubt);
+    const list = ordered();
+    const doubt = list.filter(f => f.doubt), rest = list.filter(f => !f.doubt);
     const row = f => `
-      <div class="item z-${f.t}${state.sel === f.id ? " sel" : ""}${state.removed[f.id] ? " removed" : ""}" data-id="${f.id}" role="button" tabindex="0" aria-label="${LABEL[f.t]}: ${f.val}">
+      <div class="item z-${f.t}${state.sel === f.id ? " sel" : ""}${state.removed[f.id] ? " removed" : ""}" data-id="${f.id}" role="button" tabindex="0" aria-label="${LABEL[f.t]}: ${f.val}, página ${f.page}">
         <span class="sw" aria-hidden="true"></span>
         <span class="val">${f.val}</span>
         <span class="acts">${state.removed[f.id]
@@ -628,10 +898,10 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
     $("#findlist").innerHTML =
       `<div class="group doubt"><span>Para revisar primero</span><span>${doubt.length}</span></div>${doubt.map(row).join("")}` +
       `<div class="group"><span>Detectados</span><span>${rest.length}</span></div>${rest.map(row).join("")}`;
-    const activos = findings.filter(f => !state.removed[f.id]).length;
-    const quitadas = Object.keys(state.removed).length;
-    $("#fcount").textContent = `${activos} zonas en este archivo`;
-    $("#vsum").textContent = `${activos} zonas a censurar · verificación sin fugas` + (quitadas ? ` · ${quitadas} quitada${quitadas > 1 ? "s" : ""} por ti` : " · 3 hallazgos por revisar");
+    const active = findings.filter(f => !state.removed[f.id]).length;
+    const removed = Object.keys(state.removed).length;
+    $("#fcount").textContent = `${active} zonas en este archivo`;
+    $("#vsum").textContent = `${active} zonas a censurar · verificación sin fugas` + (removed ? ` · ${removed} quitada${removed > 1 ? "s" : ""} por ti` : " · 3 hallazgos por revisar");
   }
   $("#findlist").addEventListener("click", e => {
     const rm = e.target.closest("[data-rm]"), undo = e.target.closest("[data-undo]"), it = e.target.closest(".item");
@@ -641,28 +911,55 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
   });
   $("#findlist").addEventListener("keydown", e => {
     const it = e.target.closest(".item");
-    if (it && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(it.dataset.id); }
+    if (it && e.target === it && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(it.dataset.id); }
   });
 
-  function select(id) {
-    state.sel = id; refresh();
-    const z = $(`.zone[data-id="${id}"]`, page);
-    if (z) z.scrollIntoView({ block: "center", inline: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  // Selecting a finding scrolls the viewport so its zone is centred, on whatever page it is. It uses the geometry
+  // (row position + rectangle × scale, rotation-aware), so it works even when the zone is not drawn.
+  function zoneCenter(f) {
+    const p = pages[f.page - 1], s = scaleNow(), a = (state.rot * Math.PI) / 180;
+    const lx = f.r.x + f.r.w / 2 - p.W / 2, ly = f.r.y + f.r.h / 2 - p.H / 2;
+    const vr = vp.getBoundingClientRect(), br = p.bbox.getBoundingClientRect();
+    return {
+      x: br.left - vr.left - vp.clientLeft + vp.scrollLeft + br.width / 2 + (lx * Math.cos(a) - ly * Math.sin(a)) * s,
+      y: br.top - vr.top - vp.clientTop + vp.scrollTop + br.height / 2 + (lx * Math.sin(a) + ly * Math.cos(a)) * s,
+    };
   }
+  function scrollToFinding(f) {
+    if (!f?.r || !vp.clientWidth) return;
+    const c = zoneCenter(f), head = $(".vp-head").offsetHeight; // the sticky header covers the top of the view
+    vp.scrollTo({ left: c.x - vp.clientWidth / 2, top: c.y - head / 2 - vp.clientHeight / 2, behavior: reducedMotion() ? "auto" : "smooth" });
+  }
+  // keeps the selected row visible in the findings list, scrolling only the list (never the page)
+  function revealInList(id) {
+    const list = $("#findlist"), it = $(`.item[data-id="${id}"]`, list);
+    if (!it || !list.clientHeight) return;
+    const top = it.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    if (top < list.scrollTop) list.scrollTop = top - 8;
+    else if (top + it.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + it.offsetHeight - list.clientHeight + 8;
+  }
+  function select(id) { state.sel = id; refresh(); revealInList(id); scrollToFinding(findings.find(f => f.id === id)); }
   function move(d) {
-    const vis = findings.filter(f => state.filter.has(f.t));
-    const ordered = [...vis.filter(f => f.doubt), ...vis.filter(f => !f.doubt)];
-    let i = ordered.findIndex(f => f.id === state.sel);
-    i = (i + d + ordered.length) % ordered.length;
-    select(ordered[i].id);
+    const list = ordered();
+    if (!list.length) return;
+    let i = list.findIndex(f => f.id === state.sel);
+    i = (i + d + list.length) % list.length;
+    select(list[i].id);
   }
-  function refresh() { renderList(); layoutZones(); }
+  function refresh() { renderList(); renderZones(); syncAfters(); renderRowLabels(); }
+  // "Página n de N · k zonas": k counts the zones that will be censored on that page (not the removed ones).
+  function renderRowLabels() {
+    for (const p of pages) {
+      const k = findings.filter(f => f.page === p.n && !state.removed[f.id]).length;
+      $(".plabel", p.row).textContent = `Página ${p.n} de ${PAGES} · ${k} ${k === 1 ? "zona" : "zonas"}`;
+    }
+  }
 
-  // --- quitar con confirmación ---
+  // --- removing with confirmation ---
   const dlg = $("#dlg");
   let pending = null;
   function ask(id) {
-    if (state.removed[id]) return;
+    if (!id || state.removed[id]) return;
     pending = id;
     $("#dlg-val").textContent = findings.find(f => f.id === id).val;
     $("#dlg-nota").value = "";
@@ -675,77 +972,132 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
     dlg.close(); refresh(); toast("Censura quitada. Queda registrada en el informe de auditoría.");
   });
 
-  // --- herramientas del visor ---
-  function applyTransform() {
-    $("#pagewrap").style.transform = `scale(${state.zoom}) rotate(${state.rot}deg)`;
-    $("#zoomval").textContent = Math.round(state.zoom * 100) + " %";
+  // --- viewer tools ---
+  const zoomBy = k => keepCenter(() => { state.scale = Math.min(4, Math.max(0.2, scaleNow() * k)); layout(); });
+  const zoomFit = () => keepCenter(() => { state.scale = null; layout(); });
+  function rotate() {
+    keepCenter(() => { state.rot = (state.rot + 90) % 360; layout(); });
+    toast(state.rot ? `Vista girada ${state.rot}°. El archivo exportado conserva su orientación.` : "Vista sin girar.");
   }
-  const zoom = d => { state.zoom = Math.min(2, Math.max(0.5, +(state.zoom + d).toFixed(2))); applyTransform(); };
-  $("#b-zin").addEventListener("click", () => zoom(0.1));
-  $("#b-zout").addEventListener("click", () => zoom(-0.1));
-  $("#b-rot").addEventListener("click", () => { findings.forEach(f => f.rect = f.rect || rectOf(f)); state.rot = (state.rot + 90) % 360; applyTransform(); });
-  $("#b-next").addEventListener("click", () => move(1));
-  $("#b-prev").addEventListener("click", () => move(-1));
-  function setDraw(on) { state.draw = on; $("#b-draw").setAttribute("aria-pressed", on); page.classList.toggle("drawing", on); if (on) toast("Arrastra sobre el documento para agregar una zona"); }
-  function setView(on) { state.result = on; $("#b-view").setAttribute("aria-pressed", on); page.classList.toggle("result", on); }
+  function setDraw(on) {
+    state.draw = on;
+    $("#b-draw").setAttribute("aria-pressed", on);
+    $("#b-draw .lbl").textContent = on ? "Dibujando · Esc para salir" : "Dibujar zona";
+    vp.classList.toggle("drawing", on);
+    if (on) toast("Arrastra sobre una página del antes para agregar una zona");
+  }
+  function setAfter(on) {
+    state.after = on;
+    $("#b-view").setAttribute("aria-pressed", on);
+    keepCenter(layout);
+  }
+  $("#b-zin").addEventListener("click", () => zoomBy(1.2));
+  $("#b-zout").addEventListener("click", () => zoomBy(1 / 1.2));
+  $("#b-zfit").addEventListener("click", zoomFit);
+  $("#b-rot").addEventListener("click", rotate);
   $("#b-draw").addEventListener("click", () => setDraw(!state.draw));
-  $("#b-view").addEventListener("click", () => setView(!state.result));
+  $("#b-view").addEventListener("click", () => setAfter(!state.after));
 
-  // dibujar una zona con el mouse
-  let start = null, ghost = null;
-  page.addEventListener("pointerdown", e => {
-    if (!state.draw || state.rot) return;
-    const pr = page.getBoundingClientRect();
-    start = { x: (e.clientX - pr.left) / state.zoom, y: (e.clientY - pr.top) / state.zoom };
-    ghost = document.createElement("div"); ghost.className = "zone z-manual"; ghost.dataset.label = "Agregada";
-    page.appendChild(ghost); page.setPointerCapture(e.pointerId);
-  });
-  page.addEventListener("pointermove", e => {
-    if (!start) return;
-    const pr = page.getBoundingClientRect();
-    const x = (e.clientX - pr.left) / state.zoom, y = (e.clientY - pr.top) / state.zoom;
-    Object.assign(ghost.style, { left: Math.min(x, start.x) + "px", top: Math.min(y, start.y) + "px", width: Math.abs(x - start.x) + "px", height: Math.abs(y - start.y) + "px" });
-  });
-  page.addEventListener("pointerup", () => {
-    if (!start) return;
-    const r = { x: parseFloat(ghost.style.left), y: parseFloat(ghost.style.top), w: parseFloat(ghost.style.width) || 0, h: parseFloat(ghost.style.height) || 0 };
-    ghost.remove(); start = null;
-    if (r.w < 8 || r.h < 8) return;
-    state.extra += 1;
-    findings.push({ id: "m" + state.extra, t: "manual", val: `Zona dibujada ${state.extra}`, det: "agregada por ti", page: 1, rect: r });
-    setDraw(false); select("m" + state.extra); toast("Zona agregada");
-  });
+  // drawing a zone with the mouse, on the before cell of any page (the inverse of the cell's transform)
+  function toLocal(p, e) {
+    const br = p.bbox.getBoundingClientRect(), s = scaleNow(), a = (-state.rot * Math.PI) / 180;
+    const dx = (e.clientX - (br.left + br.width / 2)) / s, dy = (e.clientY - (br.top + br.height / 2)) / s;
+    return { x: dx * Math.cos(a) - dy * Math.sin(a) + p.W / 2, y: dx * Math.sin(a) + dy * Math.cos(a) + p.H / 2 };
+  }
+  const clampTo = (v, max) => Math.min(max, Math.max(0, v));
+  let drag = null;
+  for (const p of pages) {
+    p.bbox.addEventListener("pointerdown", e => {
+      if (!state.draw || e.button !== 0) return;
+      e.preventDefault();
+      const ghost = document.createElement("div");
+      ghost.className = "zone z-manual ghost";
+      ghost.dataset.label = LABEL.manual;
+      p.zones.appendChild(ghost);
+      try { p.bbox.setPointerCapture(e.pointerId); } catch { /* a synthetic pointer cannot be captured */ }
+      drag = { p, a: toLocal(p, e), ghost, r: null };
+    });
+    p.bbox.addEventListener("pointermove", e => {
+      if (!drag || drag.p !== p) return;
+      const b = toLocal(p, e);
+      const x1 = clampTo(Math.min(drag.a.x, b.x), p.W), x2 = clampTo(Math.max(drag.a.x, b.x), p.W);
+      const y1 = clampTo(Math.min(drag.a.y, b.y), p.H), y2 = clampTo(Math.max(drag.a.y, b.y), p.H);
+      drag.r = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+      Object.assign(drag.ghost.style, { left: `${x1}px`, top: `${y1}px`, width: `${x2 - x1}px`, height: `${y2 - y1}px` });
+    });
+    const finish = commit => {
+      if (!drag || drag.p !== p) return;
+      const { r, ghost } = drag;
+      drag = null;
+      ghost.remove();
+      const min = 6 / scaleNow();
+      if (!commit || !r || r.w < min || r.h < min) return;
+      state.extra += 1;
+      const id = "m" + state.extra;
+      findings.push({ id, t: "manual", val: `Zona dibujada ${state.extra}`, det: "agregada por ti", page: p.n, r });
+      setDraw(false); renderChips(); select(id); toast("Zona agregada");
+    };
+    p.bbox.addEventListener("pointerup", () => finish(true));
+    p.bbox.addEventListener("pointercancel", () => finish(false));
+  }
 
-  // filtros por tipo
+  // type filters: they hide zones on the before side and rows in the list; the after keeps every active zone
   $("#chips").addEventListener("click", e => {
-    const c = e.target.closest(".chip"); if (!c) return;
+    const c = e.target.closest(".chip");
+    if (!c) return;
     const t = c.dataset.t, on = c.getAttribute("aria-pressed") !== "true";
     c.setAttribute("aria-pressed", on);
-    on ? state.filter.add(t) : state.filter.delete(t);
-    if (t === "manual") on ? state.filter.add("ocr") : null;
-    refresh();
+    if (on) state.hidden.delete(t); else state.hidden.add(t);
+    renderList(); renderZones();
   });
 
-  // atajos de teclado (solo en Revisión y fuera de campos de texto)
+  // --- file bar (the mockup carries only one file) ---
+  const FILES = [
+    { name: "informe_honorarios_agosto.pdf", ok: true },
+    { name: "cedula_frente.jpg", ok: true },
+    { name: "acta_reunion_escaneada.pdf", ok: false, why: "aún se procesa" },
+  ];
+  const OPEN = 0;
+  function stepFile(d) {
+    const skipped = [];
+    let i = OPEN;
+    do {
+      i = (i + d + FILES.length) % FILES.length;
+      if (!FILES[i].ok) skipped.push(FILES[i]);
+    } while (!FILES[i].ok && i !== OPEN);
+    if (i === OPEN) { toast("No hay otro archivo listo para revisar."); return; }
+    const skip = skipped.length ? ` (se salta ${skipped.map(f => `${f.name}, que ${f.why}`).join(", ")})` : "";
+    toast(`En la app se abriría ${FILES[i].name}${skip}. Esta maqueta trae solo un archivo.`);
+  }
+  $("#b-fprev").addEventListener("click", () => stepFile(-1));
+  $("#b-fnext").addEventListener("click", () => stepFile(1));
+  $("#rv-file").addEventListener("change", e => {
+    const f = FILES[e.target.selectedIndex];
+    e.target.selectedIndex = OPEN;
+    toast(`En la app se abriría ${f.name} en su primer hallazgo. Esta maqueta trae solo un archivo.`);
+  });
+
+  // keyboard shortcuts (only in Review, outside text fields, without modifier keys)
   document.addEventListener("keydown", e => {
     if (!$('[data-screen="3"]').classList.contains("on") || dlg.open) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
     const k = e.key.toLowerCase();
     if (k === "j") move(1);
     else if (k === "k") move(-1);
     else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); ask(state.sel); }
     else if (k === "d") setDraw(!state.draw);
-    else if (k === "v") setView(!state.result);
-    else if (k === "r") $("#b-rot").click();
-    else if (e.key === "+" || e.key === "=") zoom(0.1);
-    else if (e.key === "-") zoom(-0.1);
+    else if (k === "v") setAfter(!state.after);
+    else if (k === "r") rotate();
+    else if (e.key === "+" || e.key === "=") zoomBy(1.2);
+    else if (e.key === "-" || e.key === "−") zoomBy(1 / 1.2);
     else if (e.key === "Escape") setDraw(false);
   });
 
   $("#b-confirm").addEventListener("click", () => toast("Archivo confirmado. Puedes seguir con el siguiente o exportar."));
   $("#b-export").addEventListener("click", () => toast("Exportado: 2 archivos y el informe de auditoría en la carpeta de destino."));
 
-  // tema de la maqueta
+  // mockup theme
   const themeBtns = { light: $("#t-light"), system: $("#t-system"), dark: $("#t-dark") };
   Object.entries(themeBtns).forEach(([k, b]) => b.addEventListener("click", () => {
     if (k === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", k);
@@ -755,8 +1107,11 @@ dialog::backdrop { background: rgba(10, 15, 25, .45); }
   let tid = null;
   function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(tid); tid = setTimeout(() => t.classList.remove("on"), 2600); }
 
-  window.addEventListener("resize", () => { if (!state.rot) findings.forEach(f => { if (!f.rect) f._last = null; }); layoutZones(); });
-  document.fonts?.ready.then(layoutZones);
-  renderList(); applyTransform(); requestAnimationFrame(layoutZones);
+  new ResizeObserver(() => relayout(true)).observe(vp);
+  renderChips();
+  relayout(false);
+  renderList();
+  renderRowLabels();
+  document.fonts?.ready.then(() => { relayout(true); renderList(); renderZones(); });
 })();
 </script>
