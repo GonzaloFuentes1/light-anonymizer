@@ -346,9 +346,9 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
         "StartMenuName": f"Anonimizador prueba {tag}",
     }
 
-    def compile_installer(app: Path, version: str) -> Path:
+    def compile_installer(app: Path, version: str, test_build: bool) -> Path:
         out = tmp_path / "out"
-        command = builder.iscc_command(ISCC, version, app, out, test_build=False, extra=test_defines)
+        command = builder.iscc_command(ISCC, version, app, out, test_build=test_build, extra=test_defines)
         subprocess.run(command, check=True, capture_output=True)
         return out / f"{builder.installer_name(version)}.exe"
 
@@ -356,7 +356,8 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
     (old_app / "_internal" / "dropped_in_v2.dll").write_bytes(b"old library")
     new_app, _ = fake_build(tmp_path / "v2", version="0.0.2")
     (new_app / "_internal" / "added_in_v2.dll").write_bytes(b"new library")
-    old_setup, new_setup = compile_installer(old_app, "0.0.1"), compile_installer(new_app, "0.0.2")
+    old_setup = compile_installer(old_app, "0.0.1", test_build=True)
+    new_setup = compile_installer(new_app, "0.0.2", test_build=False)
     assert old_setup.is_file() and new_setup.is_file()
 
     target = tmp_path / "Programs" / "LightAnonymizer"
@@ -366,44 +367,47 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
         args = [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS", f"/DIR={target}"]
         return subprocess.run(args, timeout=120).returncode
 
-    def installed_version() -> str | None:
+    def installed(value: str = "DisplayVersion") -> str | None:
+        """What Settings > Apps shows about the test installation (None: not installed)."""
         key = uninstall_key(test_defines["AppId"])
         if key is None:
             return None
         with key:
-            return winreg.QueryValueEx(key, "DisplayVersion")[0]
+            return winreg.QueryValueEx(key, value)[0]
 
-    def uninstall() -> None:
+    def uninstall() -> int:
         args = [str(target / "unins000.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
-        subprocess.run(args, timeout=120)
+        return subprocess.run(args, timeout=120).returncode
 
     try:
         assert install(old_setup) == 0
         assert (target / "_internal" / "dropped_in_v2.dll").is_file() and (target / "LEEME.txt").is_file()
-        assert installed_version() == "0.0.1"
+        assert installed() == "0.0.1"
+        # A test build says so in the installed-apps list (and the accents survive the compiler).
+        assert installed("DisplayName") == "Anonimizador (compilación de prueba: no distribuir)"
+        assert installed("Publisher") == "Gonzalo Fuentes"
         assert not list(start_menu.glob(f"{test_defines['StartMenuName']}*"))  # /NOICONS
 
         with Mutex(test_defines["AppMutex"]):  # the app is running: Setup gives up, nothing changes
             assert install(new_setup) != 0
-        assert (target / "_internal" / "dropped_in_v2.dll").is_file() and installed_version() == "0.0.1"
+        assert (target / "_internal" / "dropped_in_v2.dll").is_file() and installed() == "0.0.1"
 
         assert install(new_setup) == 0
         assert not (target / "_internal" / "dropped_in_v2.dll").exists()  # no old library left behind
         assert (target / "_internal" / "added_in_v2.dll").is_file()
-        assert installed_version() == "0.0.2"
+        assert installed() == "0.0.2" and installed("DisplayName") == "Anonimizador"
 
         with Mutex(test_defines["AppMutex"]):  # running: the uninstaller gives up too
-            uninstall()
-            time.sleep(3)
-        assert (target / "LightAnonymizer.exe").is_file() and installed_version() == "0.0.2"
+            assert uninstall() != 0
+        assert (target / "LightAnonymizer.exe").is_file() and installed() == "0.0.2"
 
         (target / "_internal" / "written_later.txt").write_text("x", encoding="utf-8")
-        uninstall()  # the uninstaller finishes in a copy of itself: wait for the folder to go
+        assert uninstall() == 0  # it ends in a copy of itself, which deletes the folder: wait for it
         deadline = time.monotonic() + 60
         while target.exists() and time.monotonic() < deadline:
             time.sleep(0.25)
         assert not target.exists()
-        assert installed_version() is None
+        assert installed() is None
     finally:
         if (target / "unins000.exe").exists():
             uninstall()

@@ -77,6 +77,8 @@ VersionInfoCopyright=© 2026 Gonzalo Fuentes. Licencia GNU AGPL-3.0-or-later.
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\LightAnonymizer
 DisableDirPage=yes
+; No folder page, but the last page before installing says where the program goes.
+AlwaysShowDirOnReadyPage=yes
 DisableProgramGroupPage=yes
 ; Only so that /NOICONS (tests, scripted installs) can skip the Start menu shortcut.
 AllowNoIcons=yes
