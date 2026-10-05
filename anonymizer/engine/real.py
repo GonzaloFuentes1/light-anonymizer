@@ -23,7 +23,7 @@ import uuid
 from contextlib import nullcontext
 from pathlib import Path
 
-from anonymizer.engine import context, estimate, faces, ocr
+from anonymizer.engine import context, estimate, exceptions, faces, ocr
 from anonymizer.engine.common import (
     IMAGE_FORMATS,
     IMAGE_SUFFIXES,
@@ -87,7 +87,7 @@ def settle_optional(findings: list[Finding]) -> int:
             continue
         normalized = normalize_1to1(f.text).replace("_", " ")  # ".../ana_soto": "_" is a word character
         if any(p.search(normalized) for p in needles):
-            f.optional = False
+            f.optional, f.optional_reason = False, None
             if f.status == "suggested":
                 f.status = "proposed"
                 f.history = [HistoryEntry(at=f.history[0].at if f.history else now_iso(), action="proposed")]
@@ -166,6 +166,7 @@ class RealEngine:
                     pages, findings = self._analyze_image(file, names, options, report)
             report(0.98, "Preparando la revisión")
             settle_optional(findings)
+            exceptions.apply(findings, file.exceptions, names)  # D10: listed values start unapplied
             file.pages = pages
             file.findings = findings
             file.status = "ready"
@@ -207,6 +208,7 @@ class RealEngine:
             status=status,
             optional=bool(zone.optional),
             history=[HistoryEntry(at=now_iso(), action=status)],
+            optional_reason="url" if zone.optional else None,
         )
         self._sources[finding.id] = source
         return finding

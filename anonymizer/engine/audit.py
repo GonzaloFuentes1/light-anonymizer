@@ -1,9 +1,10 @@
 """Audit report of an export: JSON for systems and a readable PDF (Spanish) for people.
 
 The report never contains the censored data itself: only its type, position, detector and the
-reviewer's decisions. The text of a censure removed by the reviewer, and of a URL left visible
-(D12), is included, because that text stays visible in the published document anyway. Each file
-also records which detection groups were searched and how long the analysis took.
+reviewer's decisions. The text of a censure removed by the reviewer, of a URL left visible (D12)
+and of a value of the exceptions list left visible (D10), is included, because that text stays
+visible in the published document anyway. Each file also records which detection groups were
+searched and how long the analysis took.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 import pymupdf
 
 from anonymizer import __version__
+from anonymizer.engine.exceptions import REASON as EXCEPTION
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import (
     DETECTION_GROUPS,
@@ -144,6 +146,7 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
             "doubt_reason": f.doubt_reason,
             "status": f.status,
             "optional": f.optional,
+            "optional_reason": f.optional_reason,
             "applied": f.active,
             "history": [asdict(h) for h in f.history],
         }
@@ -166,7 +169,6 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
     active = [f for f in file.findings if f.active]
     leaks = result.leaks if result else file.leaks
     options = _options(file)
-    optional = [f for f in file.findings if f.optional]
     return {
         "id": file.id,
         "name": file.name,
@@ -180,20 +182,8 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
         "detections_off": [g.key for g in DETECTION_GROUPS if g.detection and not getattr(options, g.key)],
         "images_unread": _unread_images(file),
         "timings": dict(file.timings),
-        "other_urls": {
-            "applied": sum(1 for f in optional if f.active),
-            "left_visible": sum(1 for f in optional if f.status == "suggested"),
-            "items": [
-                {
-                    "finding_id": f.id,
-                    "page_number": f.page + 1,
-                    "applied": f.active,
-                    # Only what stays visible: the text of an applied URL is censored data.
-                    **({"visible_text": f.text} if not f.active and f.text else {}),
-                }
-                for f in optional
-            ],
-        },
+        "other_urls": _optional_record(_other_urls(file)),
+        "exceptions": _optional_record(_exceptions(file)),
         "redactions_applied": len(active),
         "removed_by_reviewer": sum(1 for f in file.findings if f.status == "removed"),
         "added_by_reviewer": sum(1 for f in active if _is_added(f)),
@@ -206,6 +196,33 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
             "passed": result is not None and not leaks,
             "leaks": [asdict(leak) for leak in leaks],
         },
+    }
+
+
+def _other_urls(file: AnalyzedFile) -> list[Finding]:
+    """Optional findings of D12: URLs that are not personal."""
+    return [f for f in file.findings if f.optional and f.optional_reason != EXCEPTION]
+
+
+def _exceptions(file: AnalyzedFile) -> list[Finding]:
+    """Optional findings of D10: values of the user's exceptions list."""
+    return [f for f in file.findings if f.optional and f.optional_reason == EXCEPTION]
+
+
+def _optional_record(optional: list[Finding]) -> dict:
+    return {
+        "applied": sum(1 for f in optional if f.active),
+        "left_visible": sum(1 for f in optional if f.status == "suggested"),
+        "items": [
+            {
+                "finding_id": f.id,
+                "page_number": f.page + 1,
+                "applied": f.active,
+                # Only what stays visible: the text of an applied one is censored data.
+                **({"visible_text": f.text} if not f.active and f.text else {}),
+            }
+            for f in optional
+        ],
     }
 
 
@@ -267,7 +284,8 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
     active = [f for f in file.findings if f.active]
     removed = [f for f in file.findings if f.status == "removed"]
     added = [f for f in active if _is_added(f)]
-    optional = [f for f in file.findings if f.optional]
+    optional = _other_urls(file)
+    listed = _exceptions(file)
     if result is None:
         parts.append("<p class='muted'>No se intentó exportar este archivo.</p>")
     elif result.exported:
@@ -340,6 +358,18 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
         )
         if visible:
             parts.append(_table(["Página", "Queda visible"], [[f.page + 1, f.text or "—"] for f in visible]))
+
+    if listed:
+        parts.append("<h3>Lista de excepciones (RUT de instituciones, números 600 y 800)</h3>")
+        applied = [f for f in listed if f.active]
+        visible = [f for f in listed if f.status == "suggested"]
+        parts.append(
+            f"<p>{_count(len(applied), 'dato censurado', 'datos censurados')} · "
+            f"{_count(len(visible), 'dato queda visible', 'datos quedan visibles')}.</p>"
+        )
+        if visible:
+            rows = [[TYPE_LABELS.get(f.type, f.type), f.page + 1, f.text or "—"] for f in visible]
+            parts.append(_table(["Tipo", "Página", "Queda visible"], rows))
 
     parts.append("<h3>Zonas agregadas por quien revisó</h3>")
     if added:

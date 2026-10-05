@@ -80,7 +80,9 @@ def ocr_variant(text: str) -> str:
 
 
 def phones(text: str) -> list[tuple[int, int]]:
-    """Chilean phone numbers (9 digits after the country code, or 8 after a phone label)."""
+    """Chilean phone numbers (9 digits after the country code, 10 for a 600 number, or 8 after a
+    phone label). 600 and 800 numbers belong to institutions: they are still censored by default
+    and the user can list them as exceptions (D10)."""
     output = []
     for m in _RUN.finditer(text):
         d = re.sub(r"\D", "", m.group(0))
@@ -90,7 +92,7 @@ def phones(text: str) -> list[tuple[int, int]]:
             d = d[2:]
         if len(d) == 10 and d.startswith("0"):
             d = d[1:]
-        ok = len(d) == 9 and d[0] in "23456789"
+        ok = (len(d) == 9 and d[0] in "23456789") or (len(d) == 10 and d.startswith("600"))
         if not ok and len(d) == 8 and _PHONE_LABEL.search(text[max(0, m.start() - 25) : m.start()]):
             ok = True
         if ok:

@@ -58,7 +58,13 @@
         <div class="panel">
           <div class="namelist">
             <div><div class="fname">Lista de nombres y direcciones</div><div class="fmeta" id="names-meta">Se censuran donde aparezcan, aunque estén sin tildes o en otro orden.</div></div>
-            <button type="button" class="btn" id="b-names">Editar lista</button>
+            <button type="button" class="btn" id="b-names" aria-label="Editar la lista de nombres y direcciones">Editar lista</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="namelist">
+            <div><div class="fname">Lista de excepciones</div><div class="fmeta" id="exceptions-meta">RUT de instituciones y números 600 u 800 que no quieres censurar. Igual aparecen en la revisión, sin censurar.</div></div>
+            <button type="button" class="btn" id="b-exceptions" aria-label="Editar la lista de excepciones">Editar lista</button>
           </div>
         </div>
         <div class="panel" id="detect-panel" hidden>
@@ -214,6 +220,19 @@
     </label>
     <p class="fmeta" id="names-count" aria-live="polite"></p>
     <div class="row"><button type="button" class="btn" id="dlg-names-no">Cancelar</button><button type="submit" class="btn primary" id="dlg-names-yes">Guardar lista</button></div>
+  </form>
+</dialog>
+
+<!-- Exceptions list editor (D10): RUTs of institutions, phones and 600/800 numbers -->
+<dialog id="dlg-exceptions" aria-labelledby="dlg-exceptions-t">
+  <form method="dialog" class="dlg" id="dlg-exceptions-form">
+    <h2 id="dlg-exceptions-t">Lista de excepciones</h2>
+    <p>Escribe un RUT, un teléfono o un número 600 u 800 por línea, por ejemplo el RUT de tu institución o su mesa central. Donde aparezcan, se detectan igual y se muestran en la revisión sin censurar: tú decides si censurarlos.</p>
+    <label for="exceptions-text">RUT, teléfonos y números 600 u 800
+      <textarea id="exceptions-text" class="names-text" spellcheck="false" placeholder="Un RUT o un número por línea"></textarea>
+    </label>
+    <p class="fmeta" id="exceptions-count" aria-live="polite"></p>
+    <div class="row"><button type="button" class="btn" id="dlg-exceptions-no">Cancelar</button><button type="submit" class="btn primary" id="dlg-exceptions-yes">Guardar lista</button></div>
   </form>
 </dialog>
 

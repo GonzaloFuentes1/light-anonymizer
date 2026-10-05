@@ -215,7 +215,8 @@ Base: the notebook's `PATRONES` (patterns), plus what the research showed is mis
 - **Phone**: every current area code (2, 32–35, 41–45, 51–53, 55, 57, 58, 61, 63–65, 67,
   71–73, 75, plus 44 for VoIP), mobiles, old formats with 0 and 09, old 8-digit numbers only
   next to a label (Fono, Tel., Cel., WhatsApp), extensions. 600/800 numbers are institutional:
-  by default they are redacted anyway and the reviewer decides (D10).
+  by default they are redacted anyway; the ones on the user's exceptions list are shown
+  unapplied and the reviewer decides (D10).
 - **Email**: NFKC, apostrophes, obfuscations (`[arroba]`, `(at)`, `arroba … punto cl`), PDF
   line breaks and soft hyphens.
 - **Tolerance to OCR errors** (only on text that comes from OCR): O/o/D/Q→0, l/I/i/|→1, Z→2,
@@ -651,6 +652,35 @@ errors) into the published file.
 72.xxx.xxx-x) are not personal data. I propose redacting them anyway by default (recall) and
 allowing a configurable allowlist. Amounts and dates are not redacted (as in the notebook), to
 be confirmed with the transparency unit.
+
+> **Decided (2026-10-05): censored by default, plus an exceptions list.** RUTs of institutions
+> and 600/800 numbers are still censored by default. The user keeps a "Lista de excepciones" (one
+> RUT, phone or 600/800 number per line); a value on it is not discarded (validations never
+> discard a finding) but shown unapplied, for the reviewer to decide.
+>
+> **Implemented (2026-10-05).** `anonymizer/engine/exceptions.py`. Values are compared normalized:
+> a RUT by its digits and check digit (no dots or dash, the check digit in uppercase; OCR's X read
+> as K), a phone by its digits without +56/0056 or the old trunk 0, so "+56 600 123 4567",
+> "600-123-4567" and "600 123 4567" are the same entry. An entry written as a RUT (dash before the
+> check digit, a K, or dots) is only a RUT, one written as a phone only a phone, bare digits either;
+> a line that is neither is refused (`PUT /api/exceptions` answers 422 naming it, and the dialog
+> stays open). A RUT or phone finding becomes *optional* with `optional_reason = "exception"` only
+> when every datum its text covers is on the list (or is a URL that is not personal): an OCR line
+> that also has a name, an e-mail or another RUT stays applied. It reuses the D12 machinery: it
+> starts `suggested` (shown, not applied), "Censurar" / "No censurar" are logged as `applied` /
+> `skipped`, `POST /api/files/{id}/findings/apply-optional` takes `{reason: "exception"}` ("Censurar
+> todas las excepciones"; `{reason: "url"}` for the other URLs, nothing for both), and on export it
+> is left visible without being a leak. D12's URLs now carry `optional_reason = "url"`. The list
+> lives in the session like the name list (`GET`/`PUT /api/exceptions`, `exceptions_count` in
+> `/api/state`, screen 1 panel "Lista de excepciones" with its editor) and applies to the files
+> processed after it is saved; each file keeps the list it was analyzed with
+> (`AnalyzedFile.exceptions`), and both engines apply it before the file is ready. In the review,
+> the group that was "Otros enlaces (sin censurar)" is now "No se censuran por defecto" and holds
+> both kinds, each item saying why ("otro enlace" or "en tu lista de excepciones"); the summaries
+> count them apart ("1 otro enlace y 2 excepciones sin censurar"). The audit report lists them
+> apart too (JSON `exceptions`, next to `other_urls`, and `optional_reason` per finding; a PDF
+> section with the values left visible). 600 numbers (10 digits) are now phones in every format;
+> before, "600 123 4567" was only caught as a RUT-shaped number and "600-123-4567" not at all.
 
 **D11. WebView2 and network traffic.** The app window uses WebView2, a Windows component that
 talks to Microsoft on its own (section 5.6). Options: (a) keep pywebview with the hardened

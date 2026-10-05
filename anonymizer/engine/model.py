@@ -16,7 +16,8 @@ from typing import Any, Literal
 
 FindingType = Literal["rut", "email", "phone", "url", "name", "address", "face", "signature", "qr", "text", "manual"]
 # "suggested": detected and shown to the reviewer, but not applied unless the reviewer applies it
-# (D12: URLs that are not personal). "removed": the reviewer kept it visible.
+# (D12: URLs that are not personal; D10: values on the exceptions list). "removed": the reviewer
+# kept it visible.
 FindingStatus = Literal["proposed", "suggested", "removed", "added"]
 FileStatus = Literal["queued", "processing", "ready", "confirmed", "error", "exported", "cancelled"]
 
@@ -57,10 +58,13 @@ class Finding:
     doubtful: bool = False
     doubt_reason: str | None = None  # Spanish, e.g. "El dígito verificador no coincide"
     status: str = "proposed"  # one of FindingStatus
-    # D12: every datum it covers is a URL that is not personal. It starts "suggested" (unless the
-    # option to redact the other URLs is on) and the reviewer applies it or skips it.
+    # Not censored by default: it starts "suggested" and the reviewer applies it or skips it. D12:
+    # every datum it covers is a URL that is not personal (it starts applied when the option to
+    # redact the other URLs is on). D10: every datum it covers is on the user's exceptions list.
     optional: bool = False
     history: list[HistoryEntry] = field(default_factory=list)
+    # Why it is optional: "url" (D12) or "exception" (D10); None when it is not optional.
+    optional_reason: str | None = None
 
     @property
     def active(self) -> bool:
@@ -99,12 +103,15 @@ class AnalyzedFile:
     status: str = "queued"  # one of FileStatus
     progress: float = 0.0  # 0..1
     step: str = "En espera"  # Spanish, what the engine is doing right now
-    error: str | None = None  # code: password | corrupt | empty | format | unsupported | internal
+    error: str | None = None  # code: password | corrupt | empty | format | heic | unsupported | internal
     error_message: str | None = None  # Spanish, plain language
     leaks: list[Leak] = field(default_factory=list)
     output_path: str | None = None
     # Detection groups it was analyzed with (``DetectionOptions.to_dict``), set when it is processed.
     options: dict[str, bool] = field(default_factory=dict)
+    # D10: the user's exceptions list (RUTs, phones, 600/800 numbers) it is analyzed with; the
+    # findings it covers start unapplied (``engine.exceptions``).
+    exceptions: list[str] = field(default_factory=list)
     # Seconds: "analyze" (total), its stages ("text", "render", "ocr", "faces", "qr", only those that
     # ran; see ``common.StageClock``) and "export".
     timings: dict[str, float] = field(default_factory=dict)

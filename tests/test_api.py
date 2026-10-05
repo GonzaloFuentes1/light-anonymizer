@@ -83,7 +83,7 @@ def test_token_required_and_headers():
         r = c.get("/api/state", headers={"X-Session-Token": TOKEN})
         assert r.status_code == 200
         assert r.headers["cache-control"] == "no-store"
-        assert r.json() == {"files": [], "names_count": 0, "engine": "fake"}
+        assert r.json() == {"files": [], "names_count": 0, "exceptions_count": 0, "engine": "fake"}
         assert "access-control-allow-origin" not in r.headers
         # The index is public and carries the token.
         r = c.get("/")
@@ -637,6 +637,86 @@ def test_other_urls_start_applied_with_the_option(client):
     file_id = processed(client, make_url_pdf())
     other = next(f for f in client.get(f"/api/files/{file_id}").json()["findings"] if f["text"] == OTHER_URL)
     assert other["optional"] and other["status"] == "proposed"
+
+
+INSTITUTION_RUT = "72.123.456-8"  # invented, valid check digit
+TOLL_FREE = "800 123 456"
+
+
+def make_institution_pdf() -> bytes:
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), f"RUT del servicio: {INSTITUTION_RUT}", fontsize=11)
+    page.insert_text((72, 130), f"Mesa de ayuda: {TOLL_FREE}", fontsize=11)
+    page.insert_text((72, 160), f"RUT de la persona: {VALID_RUT}", fontsize=11)
+    page.insert_text((72, 190), f"Noticia: {OTHER_URL}", fontsize=11)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_exceptions_get_and_put(client):
+    assert client.get("/api/exceptions").json() == {"entries": []}
+    r = client.put("/api/exceptions", json={"entries": [INSTITUTION_RUT, "72123456-8", f" {TOLL_FREE} ", ""]})
+    assert r.json() == {"entries": [INSTITUTION_RUT, TOLL_FREE]}
+    assert client.get("/api/state").json()["exceptions_count"] == 2
+    r = client.put("/api/exceptions", json={"entries": [INSTITUTION_RUT, "Mesa central"]})
+    assert r.status_code == 422 and r.json()["error"] == "invalid_exception"
+    assert "«Mesa central»" in r.json()["message"]
+    assert client.get("/api/exceptions").json()["entries"] == [INSTITUTION_RUT, TOLL_FREE]  # unchanged
+
+
+def test_listed_values_are_suggested_not_discarded(client, tmp_path):
+    # D10: a value on the exceptions list is still found and shown, but starts unapplied.
+    client.put("/api/exceptions", json={"entries": [INSTITUTION_RUT, TOLL_FREE]})
+    file_id = processed(client, make_institution_pdf(), "institucion.pdf")
+    by_text = {f["text"]: f for f in client.get(f"/api/files/{file_id}").json()["findings"]}
+    for value in (INSTITUTION_RUT, TOLL_FREE):
+        f = by_text[value]
+        assert f["optional"] and f["optional_reason"] == "exception" and f["status"] == "suggested"
+        assert [h["action"] for h in f["history"]] == ["suggested"]
+    assert not by_text[VALID_RUT]["optional"] and by_text[VALID_RUT]["status"] == "proposed"
+    assert by_text[OTHER_URL]["optional_reason"] == "url"
+    summary = next(f for f in client.get("/api/state").json()["files"] if f["id"] == file_id)
+    assert summary["counts"]["suggested"] == 3 and summary["counts"]["suggested_exceptions"] == 2
+
+    # Censor only the exceptions, then leave the RUT of the institution visible again.
+    r = client.post(f"/api/files/{file_id}/findings/apply-optional", json={"reason": "exception"})
+    assert sorted(f["text"] for f in r.json()["applied"]) == sorted([INSTITUTION_RUT, TOLL_FREE])
+    assert r.json()["file"]["counts"]["suggested"] == 1  # the other URL is still unapplied
+    base = f"/api/files/{file_id}/findings/{by_text[INSTITUTION_RUT]['id']}"
+    r = client.patch(base, json={"action": "remove"})
+    assert r.json()["error"] == "optional" and "este dato" in r.json()["message"]
+    assert client.patch(base, json={"action": "skip"}).json()["status"] == "suggested"
+    r = client.post(f"/api/files/{file_id}/findings/apply-optional", json={"reason": "otra"})
+    assert r.status_code == 422
+
+    client.post(f"/api/files/{file_id}/confirm")
+    r = client.post("/api/export", json={"dest_dir": str(tmp_path), "audit_pdf": True, "audit_json": True})
+    result = r.json()["results"][0]
+    assert result["exported"] and result["leaks"] == [] and result["removed_by_reviewer"] == 0
+    with pymupdf.open(result["output_path"]) as doc:
+        text = doc[0].get_text()
+    assert INSTITUTION_RUT in text and TOLL_FREE not in text and VALID_RUT not in text
+    record = json.loads(Path(r.json()["audit"]["json_path"]).read_text(encoding="utf-8"))["files"][0]
+    assert record["exceptions"]["applied"] == 1 and record["exceptions"]["left_visible"] == 1
+    visible = [i["visible_text"] for i in record["exceptions"]["items"] if "visible_text" in i]
+    assert visible == [INSTITUTION_RUT]  # the censored one is never written in the report
+    assert record["other_urls"]["left_visible"] == 1 and len(record["other_urls"]["items"]) == 1
+    reasons = {f["optional_reason"] for f in record["findings"]}
+    assert reasons == {None, "url", "exception"}
+    assert Path(r.json()["audit"]["pdf_path"]).is_file()
+
+
+def test_exceptions_apply_to_the_files_processed_after_saving_them(client):
+    first = processed(client, make_institution_pdf(), "antes.pdf")
+    client.put("/api/exceptions", json={"entries": [INSTITUTION_RUT]})
+    second = processed(client, make_institution_pdf(), "despues.pdf")
+    rut = {}
+    for file_id in (first, second):
+        found = client.get(f"/api/files/{file_id}").json()["findings"]
+        rut[file_id] = next(f for f in found if f["text"] == INSTITUTION_RUT)
+    assert rut[first]["status"] == "proposed" and rut[second]["status"] == "suggested"
 
 
 def test_editing_optional_urls_reopens_a_confirmed_file(client):

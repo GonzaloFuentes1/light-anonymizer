@@ -72,6 +72,8 @@ def test_app_js_syntax():
                 "Acerca de",
                 "Copiar enlace",
                 "Ver licencia completa",
+                "Lista de excepciones",
+                "Escribe un RUT, un teléfono o un número 600 u 800 por línea",
                 "Software libre: puedes usarlo, estudiarlo, modificarlo y compartirlo según la licencia GNU AGPL v3 "
                 "o posterior. Se entrega sin ninguna garantía.",
                 "Funciona sin conexión: no envía tus documentos ni datos a ningún lado.",
@@ -88,7 +90,10 @@ def test_app_js_syntax():
                 "En este archivo no se buscaron: ",
                 "Revisa esas partes a mano.",
                 "En estos archivos no se buscó todo.",
-                "Otros enlaces (sin censurar)",
+                # D12 and D10 share one group: other URLs and values of the exceptions list.
+                "No se censuran por defecto",
+                "en tu lista de excepciones",
+                "Censurar todas las excepciones",
                 "Censurar todos los otros enlaces",
                 "No censurar",
                 "sin censurar",
