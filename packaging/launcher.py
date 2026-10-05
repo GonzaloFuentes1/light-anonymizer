@@ -5,6 +5,10 @@ Spanish (the detail goes to the technical log). When the app has finished (windo
 stopped, working folder deleted, log flushed) the process ends at once: the interpreter's own
 teardown (pythonnet, onnxruntime, about 1 GB of memory) kept it alive 4-14 s after the window
 had gone.
+
+While it runs, every instance holds the named mutex ``APP_MUTEX`` (in its session and in the
+global namespace): the installer and the uninstaller (``AppMutex`` in packaging/installer.iss)
+see it and ask the user to close the app instead of replacing or deleting files in use.
 """
 
 import logging
@@ -13,10 +17,13 @@ import os
 import sys
 
 TITLE = "Anonimizador"
+# Must match AppMutex in packaging/installer.iss (tests/test_installer.py checks it).
+APP_MUTEX = "LightAnonymizer.Running"
 UNEXPECTED = (
     "El Anonimizador se cerró por un problema inesperado. El detalle quedó en el registro técnico "
     "(%LOCALAPPDATA%\\Anonimizador\\logs).\n\n"
-    "Si vuelve a ocurrir, descomprime de nuevo la carpeta completa de la aplicación."
+    "Si vuelve a ocurrir, instala de nuevo la aplicación (o, si usas la versión .zip, descomprime "
+    "de nuevo la carpeta completa)."
 )
 
 
@@ -26,9 +33,31 @@ def show_error(message: str) -> None:
     ctypes.windll.user32.MessageBoxW(None, message, TITLE, 0x10)  # MB_ICONERROR
 
 
+def hold_app_mutex() -> list[int]:
+    """Creates (or opens) the app's named mutexes; Windows releases them when the process ends.
+
+    Several instances may run at once: each one opens the same mutexes, which exist while any of
+    them is alive. Returns the handles, never closed on purpose. A mutex that cannot be created is
+    skipped: it only serves the installer.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    create = ctypes.WinDLL("kernel32").CreateMutexW  # own instance: the argtypes stay local
+    create.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    create.restype = wintypes.HANDLE
+    handles = []
+    for name in (APP_MUTEX, "Global\\" + APP_MUTEX):
+        handle = create(None, False, name)
+        if handle:
+            handles.append(handle)
+    return handles
+
+
 def run() -> int:
     # Nothing starts child processes today; this keeps a future one from re-running the whole app.
     multiprocessing.freeze_support()
+    hold_app_mutex()  # first: the installer must see the app while it is still starting
     try:
         from anonymizer.app import StartupError, main
 
