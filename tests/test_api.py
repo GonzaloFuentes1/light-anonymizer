@@ -677,3 +677,23 @@ def test_fake_engine_after_of_an_image(tmp_path):
                       polygon=[[10, 10], [60, 10], [60, 40], [10, 40]], detector="reviewer", status="added")  # fmt: skip
     pixels = _png_pixels(FakeEngine().render_result(file, 0, 1.0, [finding]))
     assert pixels[20:30, 20:50].max() == 0 and pixels[70:90, 100:190].min() == 255
+
+
+def test_redacted_page(client, tmp_path):
+    file_id = upload(client, "a.pdf", make_pdf())
+    assert client.get(f"/api/files/{file_id}/pages/0.png?redacted=true").json()["error"] == "not_ready"
+    client.post("/api/process", json={"file_ids": [file_id]})
+    assert wait_status(client, file_id)["status"] == "ready"
+    url = f"/api/files/{file_id}/pages/0.png?zoom=0.5&redacted=true&v=abc"
+    r = client.get(url)
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert Image.open(io.BytesIO(r.content)).size == (298, 421)
+    assert client.get(f"/api/files/{file_id}/pages/3.png?redacted=true").status_code == 404
+    assert client.get(f"/api/files/{file_id}/pages/0.png?redacted=true&zoom=0").status_code == 422
+    plain = client.get(f"/api/files/{file_id}/pages/0.png?zoom=0.5").content
+    assert _png_pixels(r.content).tolist() != _png_pixels(plain).tolist()  # the after has black zones
+    file = client.get(f"/api/files/{file_id}").json()
+    for f in file["findings"]:
+        client.patch(f"/api/files/{file_id}/findings/{f['id']}", json={"action": "remove", "reason": "No es un dato personal"})
+    nothing = client.get(url).content
+    assert _png_pixels(nothing).tolist() == _png_pixels(plain).tolist()

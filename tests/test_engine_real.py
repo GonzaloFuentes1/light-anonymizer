@@ -834,3 +834,43 @@ def test_after_ignores_removed_suggested_and_other_pages(tmp_path):
         _manual(1, 10, 10, 100, 50, fid="o"),
     ]
     assert np.array_equal(_pixels(engine.render_result(file, 0, 1.0, kept)), plain)
+
+
+def test_redacted_route_equals_export_and_writes_nothing(tmp_path, monkeypatch):
+    import hashlib
+    import tempfile
+
+    import numpy as np
+
+    from anonymizer.api.server import create_app
+    from tests.live_client import LiveClient
+    from tests.test_api import TOKEN, upload, wait_status
+
+    app = create_app(RealEngine(), TOKEN)
+    with LiveClient(app) as client:
+        client.headers["X-Session-Token"] = TOKEN
+        file_id = upload(client, "informe.pdf", make_pdf(tmp_path / "a.pdf").read_bytes())
+        client.post("/api/process", json={"file_ids": [file_id]})
+        assert wait_status(client, file_id)["status"] == "ready"
+        file = client.get(f"/api/files/{file_id}").json()
+        signer = next(f for f in file["findings"] if f["text"] == SIGNER)
+        client.patch(f"/api/files/{file_id}/findings/{signer['id']}", json={"action": "remove", "reason": "Otro motivo"})
+        session = app.state.session
+        working = Path(session.get(file_id).path)
+        digest = hashlib.sha256(working.read_bytes()).hexdigest()
+        listing = sorted((p.name, p.stat().st_mtime_ns) for p in Path(session.dir).iterdir())
+        empty = tmp_path / "tmp"
+        empty.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(empty))
+        monkeypatch.setenv("TMP", str(empty))
+        monkeypatch.setenv("TEMP", str(empty))
+        after = client.get(f"/api/files/{file_id}/pages/0.png?redacted=true").content
+        assert list(empty.iterdir()) == []
+        assert sorted((p.name, p.stat().st_mtime_ns) for p in Path(session.dir).iterdir()) == listing
+        assert hashlib.sha256(working.read_bytes()).hexdigest() == digest
+        monkeypatch.undo()
+        client.post(f"/api/files/{file_id}/confirm")
+        dest = tmp_path / "salida"
+        client.post("/api/export", json={"dest_dir": str(dest), "audit_pdf": False, "audit_json": False})
+        out = AnalyzedFile(id="o", name="informe.pdf", path=str(dest / "informe.pdf"), kind="pdf")
+        assert np.array_equal(_pixels(after), _pixels(RealEngine().render_page(out, 0, 1.0)))
