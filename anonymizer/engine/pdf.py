@@ -17,7 +17,7 @@ import numpy as np
 import pymupdf
 
 from anonymizer.engine import context, faces, raster
-from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, stage, waiting_for
+from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, bbox_of, stage, waiting_for
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import DetectionOptions
 from anonymizer.engine.patterns import normalize_1to1
@@ -419,6 +419,41 @@ def raster_zones(
 # ---------------------------------------------------------------------------
 
 
+def redaction_rects(doc: pymupdf.Document, polygons_by_page: dict[int, list]) -> dict[int, list[pymupdf.Rect]]:
+    """The bounding box of each polygon (view space) in the unrotated space of its page, where
+    ``redact_page`` places the zones. Pages out of range are skipped. The caller holds ``PDF_LOCK``."""
+    rects: dict[int, list[pymupdf.Rect]] = {}
+    for n, polygons in polygons_by_page.items():
+        if not 0 <= n < doc.page_count:
+            continue
+        to_page = pymupdf.Matrix(doc[n].derotation_matrix)
+        rects[n] = [(pymupdf.Rect(*bbox_of(p)) * to_page).normalize() for p in polygons]
+    return rects
+
+
+def redact_page(doc: pymupdf.Document, n: int, rects: list[pymupdf.Rect]) -> None:
+    """Removes ``rects`` from page ``n`` for real (text, vector paths and image pixels) and cleans
+    the page (annotations, form fields, page-level actions and metadata). The caller holds ``PDF_LOCK``."""
+    page = doc[n]
+    # MuPDF misplaces redaction zones on a rotated page whose CropBox or MediaBox does not
+    # start at (0, 0): the zone moved or fell off the page and left the data visible.
+    # Unrotated, the page space is exactly the space of the zones; the rotation is put back.
+    rotation = page.rotation
+    if rotation:
+        page.set_rotation(0)
+    for r in rects:
+        page.add_redact_annot(r, fill=(0, 0, 0))
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+    if rotation:
+        page.set_rotation(rotation)
+    for annot in list(page.annots() or []):
+        page.delete_annot(annot)
+    for widget in list(page.widgets() or []):
+        page.delete_widget(widget)
+    for key in _PAGE_KEYS:
+        doc.xref_set_key(page.xref, key, "null")
+
+
 def redact(source: str, dest: str, rects_by_page: dict[int, list[pymupdf.Rect]]) -> None:
     """Writes ``dest``: ``source`` with the zones really removed (text, vector paths and image pixels)
     and the document cleaned (metadata, XMP, annotations, forms, attachments, layers, bookmarks,
@@ -428,24 +463,7 @@ def redact(source: str, dest: str, rects_by_page: dict[int, list[pymupdf.Rect]])
         try:
             reveal_layers(doc)
             for n in range(doc.page_count):
-                page = doc[n]
-                # MuPDF misplaces redaction zones on a rotated page whose CropBox or MediaBox does not
-                # start at (0, 0): the zone moved or fell off the page and left the data visible.
-                # Unrotated, the page space is exactly the space of the zones; the rotation is put back.
-                rotation = page.rotation
-                if rotation:
-                    page.set_rotation(0)
-                for r in rects_by_page.get(n, []):
-                    page.add_redact_annot(r, fill=(0, 0, 0))
-                page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
-                if rotation:
-                    page.set_rotation(rotation)
-                for annot in list(page.annots() or []):
-                    page.delete_annot(annot)
-                for widget in list(page.widgets() or []):
-                    page.delete_widget(widget)
-                for key in _PAGE_KEYS:
-                    doc.xref_set_key(page.xref, key, "null")
+                redact_page(doc, n, rects_by_page.get(n, []))
             for name in list(doc.embfile_names()):
                 doc.embfile_del(name)
             doc.set_toc([])

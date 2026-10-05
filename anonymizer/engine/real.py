@@ -418,12 +418,10 @@ class RealEngine:
 
         from anonymizer.engine import pdf
 
+        polygons: dict[int, list] = {}
+        for f in active:
+            polygons.setdefault(f.page, []).append(f.polygon)
         with PDF_LOCK:
             with pymupdf.open(file.path, filetype="pdf") as doc:
-                to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
-        rects: dict[int, list[pymupdf.Rect]] = {}
-        for f in active:
-            if 0 <= f.page < len(to_page):
-                x0, y0, x1, y1 = bbox_of(f.polygon)
-                rects.setdefault(f.page, []).append((pymupdf.Rect(x0, y0, x1, y1) * to_page[f.page]).normalize())
+                rects = pdf.redaction_rects(doc, polygons)
         pdf.redact(file.path, str(staged), rects)

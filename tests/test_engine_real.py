@@ -615,3 +615,36 @@ def test_redact_frame_fills_the_grown_polygon_only():
     assert out is arr
     assert arr[45:56, 55:146].max() == 0
     assert arr[5:20, 5:40].min() == 255
+
+
+# ---------------------------------------------------------------------------
+# after: PDF helpers (spec 4.1)
+# ---------------------------------------------------------------------------
+
+
+def test_redaction_rects_move_view_boxes_to_the_unrotated_page(tmp_path):
+    from anonymizer.engine import pdf
+    from anonymizer.engine.locks import PDF_LOCK
+
+    path = _boxed_pdf(tmp_path / "r.pdf", 90, "cropbox")
+    with PDF_LOCK, pymupdf.open(path) as doc:
+        rects = pdf.redaction_rects(doc, {0: [common.rect_polygon(10, 20, 110, 60)], 5: [common.rect_polygon(0, 0, 1, 1)]})
+        assert list(rects) == [0]
+        expected = (pymupdf.Rect(10, 20, 110, 60) * pymupdf.Matrix(doc[0].derotation_matrix)).normalize()
+        assert rects[0] == [expected]
+
+
+def test_redact_page_removes_text_and_annotations_of_that_page_only(tmp_path):
+    from anonymizer.engine import pdf
+    from anonymizer.engine.locks import PDF_LOCK
+
+    path = make_pdf(tmp_path / "a.pdf")
+    with pymupdf.open(path) as doc:
+        doc[0].add_freetext_annot(pymupdf.Rect(300, 600, 500, 640), "Nota de Persona Inventada")
+        doc.save(tmp_path / "b.pdf")
+    with PDF_LOCK, pymupdf.open(tmp_path / "b.pdf") as doc:
+        hit = doc[0].search_for(EMAIL)[0]
+        pdf.redact_page(doc, 0, [hit])
+        assert EMAIL not in doc[0].get_text()
+        assert VALID_RUT in doc[0].get_text()
+        assert not list(doc[0].annots() or [])
