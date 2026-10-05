@@ -25,6 +25,12 @@ Contract
     PNG of one page in view space (orientation as the user sees it), scaled by ``zoom``
     (1.0 = 1 pixel per point for PDFs, 1 pixel per pixel for images).
 
+``render_result(file, page, zoom, findings) -> bytes``
+    PNG of one page as it will be exported (the "after" of the review): the engine keeps the
+    findings of ``findings`` on that page that are active (neither "removed" nor "suggested"),
+    the same selection ``export`` makes, and applies them with the export's own redaction to an
+    in-memory copy. Nothing is written to disk. Same view space and zoom as ``render_page``.
+
 ``export(file, dest_dir) -> ExportResult``
     Apply every active finding (not "removed" nor "suggested") as real redaction, remove metadata,
     write a new file into ``dest_dir`` (never overwriting the original), then run the leak
@@ -37,7 +43,7 @@ import logging
 import os
 from typing import Protocol
 
-from anonymizer.engine.model import AnalyzedFile, ExportResult
+from anonymizer.engine.model import AnalyzedFile, ExportResult, Finding
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +54,8 @@ class Engine(Protocol):
     def profile(self, file: AnalyzedFile) -> dict: ...
 
     def render_page(self, file: AnalyzedFile, page: int, zoom: float = 1.0) -> bytes: ...
+
+    def render_result(self, file: AnalyzedFile, page: int, zoom: float, findings: list[Finding]) -> bytes: ...
 
     def export(self, file: AnalyzedFile, dest_dir: str) -> ExportResult: ...
 

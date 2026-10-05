@@ -647,3 +647,33 @@ def test_about(client, monkeypatch):
     monkeypatch.setattr(about, "DISTRIBUTION", "paquete-que-no-existe")
     body = client.get("/api/about").json()
     assert body["license_text"] is None and body["source_url"] and body["version"]
+
+
+def _png_pixels(png: bytes):
+    import numpy as np
+
+    return np.array(Image.open(io.BytesIO(png)).convert("RGB"))
+
+
+def test_fake_engine_after_equals_its_export(tmp_path):
+    import numpy as np
+
+    path = tmp_path / "a.pdf"
+    path.write_bytes(make_pdf(rotation=90))
+    engine = FakeEngine()
+    file = AnalyzedFile(id="f1", name="a.pdf", path=str(path))
+    engine.analyze(file, [])
+    after = _png_pixels(engine.render_result(file, 0, 1.0, list(file.findings)))
+    result = engine.export(file, str(tmp_path / "out"))
+    out = AnalyzedFile(id="o", name="a.pdf", path=result.output_path, kind="pdf")
+    assert np.array_equal(after, _png_pixels(engine.render_page(out, 0, 1.0)))
+
+
+def test_fake_engine_after_of_an_image(tmp_path):
+    img = Image.new("RGB", (200, 100), "white")
+    img.save(tmp_path / "f.png")
+    file = AnalyzedFile(id="f1", name="f.png", path=str(tmp_path / "f.png"), kind="image", status="ready")
+    finding = Finding(id="m", file_id="f1", page=0, type="manual",
+                      polygon=[[10, 10], [60, 10], [60, 40], [10, 40]], detector="reviewer", status="added")  # fmt: skip
+    pixels = _png_pixels(FakeEngine().render_result(file, 0, 1.0, [finding]))
+    assert pixels[20:30, 20:50].max() == 0 and pixels[70:90, 100:190].min() == 255

@@ -345,6 +345,60 @@ class FakeEngine:
             return buf.getvalue()
 
     # ------------------------------------------------------------------
+    # render_result
+    # ------------------------------------------------------------------
+
+    def render_result(self, file: AnalyzedFile, page: int, zoom: float, findings: list[Finding]) -> bytes:
+        zoom = max(0.05, min(8.0, float(zoom)))
+        mine = [f for f in findings if f.page == page and f.active]
+        kind = file.kind or sniff(file.path)
+        buf = io.BytesIO()
+        if kind == "pdf":
+            with PDF_LOCK:
+                with pymupdf.open(file.path, filetype="pdf") as doc:
+                    self._redact_page(doc, page, mine)
+                    pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+                    size, samples = (pix.width, pix.height), bytes(pix.samples)
+            Image.frombytes("RGB", size, samples).save(buf, "PNG", compress_level=1)
+            return buf.getvalue()
+        with Image.open(file.path) as img:
+            img.seek(page)
+            out = self._fill(ImageOps.exif_transpose(img.copy()).convert("RGB"), mine)
+        if zoom != 1.0:
+            out = out.resize((max(1, round(out.width * zoom)), max(1, round(out.height * zoom))), Image.Resampling.LANCZOS)
+        out.save(buf, "PNG", compress_level=1)
+        return buf.getvalue()
+
+    @staticmethod
+    def _redact_page(doc: pymupdf.Document, n: int, findings: list[Finding]) -> None:
+        """Real redaction of ``findings`` on page ``n`` and its annotations and form fields removed."""
+        page = doc[n]
+        to_page = pymupdf.Matrix(page.derotation_matrix)
+        # Zones are placed on the unrotated page (see ``pdf.redact``): MuPDF misplaces them
+        # on rotated pages whose CropBox or MediaBox does not start at (0, 0).
+        rotation = page.rotation
+        if rotation:
+            page.set_rotation(0)
+        for f in findings:
+            x0, y0, x1, y1 = bbox_of(f.polygon)
+            page.add_redact_annot((pymupdf.Rect(x0, y0, x1, y1) * to_page).normalize(), fill=(0, 0, 0))
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+        if rotation:
+            page.set_rotation(rotation)
+        for annot in list(page.annots() or []):
+            page.delete_annot(annot)
+        for widget in list(page.widgets() or []):
+            page.delete_widget(widget)
+
+    @staticmethod
+    def _fill(frame: Image.Image, findings: list[Finding]) -> Image.Image:
+        """Frame ``frame`` (view space, RGB) with each finding's polygon filled black."""
+        draw = ImageDraw.Draw(frame)
+        for f in findings:
+            draw.polygon([(x, y) for x, y in f.polygon], fill=(0, 0, 0))
+        return frame
+
+    # ------------------------------------------------------------------
     # export
     # ------------------------------------------------------------------
 
@@ -402,24 +456,7 @@ class FakeEngine:
                 for f in active:
                     by_page.setdefault(f.page, []).append(f)
                 for n in range(doc.page_count):
-                    page = doc[n]
-                    to_page = pymupdf.Matrix(page.derotation_matrix)
-                    # Zones are placed on the unrotated page (see ``pdf.redact``): MuPDF misplaces them
-                    # on rotated pages whose CropBox or MediaBox does not start at (0, 0).
-                    rotation = page.rotation
-                    if rotation:
-                        page.set_rotation(0)
-                    for f in by_page.get(n, []):
-                        x0, y0, x1, y1 = bbox_of(f.polygon)
-                        rect = (pymupdf.Rect(x0, y0, x1, y1) * to_page).normalize()
-                        page.add_redact_annot(rect, fill=(0, 0, 0))
-                    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
-                    if rotation:
-                        page.set_rotation(rotation)
-                    for annot in list(page.annots() or []):
-                        page.delete_annot(annot)
-                    for widget in list(page.widgets() or []):
-                        page.delete_widget(widget)
+                    self._redact_page(doc, n, by_page.get(n, []))
                 for embedded in list(doc.embfile_names()):
                     doc.embfile_del(embedded)
                 doc.set_toc([])
@@ -435,11 +472,7 @@ class FakeEngine:
             fmt = img.format if img.format in IMAGE_FORMATS else "PNG"
             frames = []
             for n, frame in enumerate(ImageSequence.Iterator(img)):
-                out = ImageOps.exif_transpose(frame.copy()).convert("RGB")
-                draw = ImageDraw.Draw(out)
-                for f in active:
-                    if f.page == n:
-                        draw.polygon([(x, y) for x, y in f.polygon], fill=(0, 0, 0))
+                out = self._fill(ImageOps.exif_transpose(frame.copy()).convert("RGB"), [f for f in active if f.page == n])
                 # A new image from raw pixels: no EXIF, XMP, ICC or text chunks are carried over.
                 frames.append(Image.frombytes("RGB", out.size, out.tobytes()))
         staged = folder / ("output" + IMAGE_FORMATS[fmt])
