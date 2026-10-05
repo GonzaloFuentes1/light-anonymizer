@@ -76,7 +76,7 @@ One folder rather than a single file: the app starts in one or two seconds inste
 
 ### The installer
 
-`build_exe.py --installer`, or `uv run python scripts/build_installer.py` after a build, compiles `packaging/installer.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install --id JRSoftware.InnoSetup -e`; its license allows commercial use and handing out the installers, see [LICENSES.md](LICENSES.md)). Compiling it takes one or two minutes. The installer:
+`build_exe.py --installer`, or `uv run python scripts/build_installer.py` after a build, compiles `packaging/installer.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install --id JRSoftware.InnoSetup -e`; its license allows commercial use and handing out the installers, see [LICENSES.md](LICENSES.md)). Compiling it takes one to three minutes (LZMA2, maximum compression). The installer:
 
 - installs for the current user only, without administrator rights, in `%LOCALAPPDATA%\Programs\LightAnonymizer`: a short path outside OneDrive;
 - speaks Spanish; shows the AGPL on a "Licencia" page that asks for no "I accept" (the AGPL does not have to be accepted to receive or run the program); adds "Anonimizador" to the Start menu, a desktop shortcut only if chosen (unchecked by default) and an entry in Settings > Apps > Installed apps, and ends with an "Abrir el Anonimizador" checkbox;

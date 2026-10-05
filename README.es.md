@@ -76,7 +76,7 @@ Se usa una carpeta y no un archivo único porque así la aplicación abre en uno
 
 ### El instalador
 
-`build_exe.py --installer`, o `uv run python scripts/build_installer.py` después de compilar, compila `packaging/installer.iss` con [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install --id JRSoftware.InnoSetup -e`; su licencia permite el uso comercial y entregar los instaladores, ver [LICENSES.md](LICENSES.md)). Compilarlo toma uno o dos minutos. El instalador:
+`build_exe.py --installer`, o `uv run python scripts/build_installer.py` después de compilar, compila `packaging/installer.iss` con [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install --id JRSoftware.InnoSetup -e`; su licencia permite el uso comercial y entregar los instaladores, ver [LICENSES.md](LICENSES.md)). Compilarlo toma de uno a tres minutos (LZMA2, compresión máxima). El instalador:
 
 - instala solo para el usuario actual, sin permisos de administrador, en `%LOCALAPPDATA%\Programs\LightAnonymizer`: una ruta corta y fuera de OneDrive;
 - está en español; muestra la AGPL en una página "Licencia" que no pide "Acepto" (la AGPL no tiene que aceptarse para recibir ni usar el programa); agrega "Anonimizador" al menú Inicio, un acceso directo en el escritorio solo si se elige (desmarcado por omisión) y una entrada en Configuración > Aplicaciones > Aplicaciones instaladas, y termina con la casilla "Abrir el Anonimizador";
