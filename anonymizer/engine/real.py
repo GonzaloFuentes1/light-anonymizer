@@ -30,7 +30,6 @@ from anonymizer.engine.common import (
     Cancelled,
     FileError,
     StageClock,
-    bbox_of,
     disable_power_throttling,
     now_iso,
     publish,
@@ -53,6 +52,16 @@ from anonymizer.engine.patterns import norm, normalize_1to1
 from anonymizer.engine.text import needle
 
 log = logging.getLogger(__name__)
+
+
+def _png(mode: str, size: tuple[int, int], samples: bytes) -> bytes:
+    """PNG of raw pixels, encoded outside ``PDF_LOCK`` (lossless; level 1 is fast)."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.frombytes(mode, size, samples).save(buf, "PNG", compress_level=1)
+    return buf.getvalue()
+
 
 _STAGE_TEXT = {
     "ocr": "Leyendo texto en imágenes (OCR)",
@@ -332,7 +341,8 @@ class RealEngine:
                 with pymupdf.open(file.path, filetype="pdf") as doc:
                     pdf.reveal_layers(doc)
                     pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-                    return pix.tobytes("png")
+                    size, samples = (pix.width, pix.height), bytes(pix.samples)
+            return _png("RGB", size, samples)
         from PIL import Image, ImageOps
 
         with Image.open(file.path) as img:
@@ -346,6 +356,38 @@ class RealEngine:
             buf = io.BytesIO()
             frame.save(buf, "PNG")
             return buf.getvalue()
+
+    def render_result(self, file: AnalyzedFile, page: int, zoom: float, findings: list[Finding]) -> bytes:
+        """PNG of page ``page`` as it will be exported: the active findings of that page applied
+        with the export's own redaction, on an in-memory copy. Nothing is written to disk."""
+        zoom = max(0.05, min(8.0, float(zoom)))
+        polygons = [f.polygon for f in findings if f.page == page and f.active]
+        kind = file.kind or sniff(file.path)
+        if kind == "pdf":
+            import pymupdf
+
+            from anonymizer.engine import pdf
+
+            with PDF_LOCK:
+                with pymupdf.open(file.path, filetype="pdf") as doc:
+                    pdf.reveal_layers(doc)
+                    rects = pdf.redaction_rects(doc, {page: polygons})
+                    pdf.redact_page(doc, page, rects.get(page, []))
+                    pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+                    size, samples = (pix.width, pix.height), bytes(pix.samples)
+            return _png("RGB", size, samples)
+        import numpy as np
+        from PIL import Image
+
+        from anonymizer.engine import image
+
+        arr = image.redact_frame(np.array(image.frame(file.path, page)), polygons)
+        out = Image.fromarray(arr)
+        if zoom != 1.0:
+            out = out.resize((max(1, round(out.width * zoom)), max(1, round(out.height * zoom))), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        out.save(buf, "PNG", compress_level=1)
+        return buf.getvalue()
 
     # ------------------------------------------------------------------
     # export
