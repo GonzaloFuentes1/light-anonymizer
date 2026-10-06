@@ -48,9 +48,9 @@ def now_iso() -> str:
 
 
 def sniff(path: str | Path) -> str:
-    """Real type of a file by its content: pdf | image | empty | format."""
+    """Real type of a file by its content: pdf | image | empty | heic | format."""
     with open(path, "rb") as fh:
-        head = fh.read(12)
+        head = fh.read(HEAD_BYTES)
     if not head:
         return "empty"
     if head.startswith(b"%PDF"):
@@ -59,7 +59,33 @@ def sniff(path: str | Path) -> str:
         head[:4] == b"RIFF" and head[8:12] == b"WEBP"
     ):
         return "image"
+    if is_heic(head):
+        return "heic"
     return "format"
+
+
+# Major brands of HEIC/HEIF photos (iPhones and many Android phones). They are not supported (D5):
+# the only reader without GPL code is LGPL, and phones and Windows convert them to JPG.
+HEIC_BRANDS = frozenset({b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs"})
+# Generic HEIF brands: also used by AVIF images, so they count only with a HEIC brand among the
+# compatible ones (an AVIF gets the general "format" message, not the one about iPhone photos).
+_HEIF_BRANDS = frozenset({b"mif1", b"msf1"})
+HEIC_SUFFIXES = frozenset({".heic", ".heif", ".hif"})
+HEAD_BYTES = 32  # enough for the "ftyp" box of a HEIC photo and a few of its compatible brands
+
+
+def is_heic(head: bytes) -> bool:
+    """The first bytes of a file (``HEAD_BYTES``) are those of a HEIC photo: an ISO-BMFF "ftyp" box
+    whose major brand, or one of its compatible brands after a generic HEIF one, is a HEIC brand."""
+    if head[4:8] != b"ftyp":
+        return False
+    major = head[8:12]
+    if major in HEIC_BRANDS:
+        return True
+    if major not in _HEIF_BRANDS:
+        return False
+    box = head[16 : int.from_bytes(head[:4], "big")]  # after major brand and minor version
+    return any(box[i : i + 4] in HEIC_BRANDS for i in range(0, len(box) - 3, 4))
 
 
 def unique_path(folder: Path, name: str) -> Path:

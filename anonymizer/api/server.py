@@ -14,6 +14,7 @@ Routes (JSON unless noted)::
     DELETE /api/files/{id}
     POST   /api/files/{id}/options         {all_text: bool}
     GET    /api/names                      PUT /api/names {entries: [str]}
+    GET    /api/exceptions                 PUT /api/exceptions {entries: [str]}   D10: RUTs, phones, 600/800
     GET    /api/options                    PUT /api/options {groups: {key: bool}}   detection groups
     GET    /api/estimate?ids=a,b           seconds per group (default: the files not processed yet)
     POST   /api/process                    {file_ids?: [str]}
@@ -22,7 +23,7 @@ Routes (JSON unless noted)::
     GET    /api/files/{id}/pages/{n}.png?zoom=1.5   image/png
     POST   /api/files/{id}/findings        {page, polygon, note?}
     PATCH  /api/files/{id}/findings/{fid}  {action: remove|restore|apply|skip, reason?, note?}
-    POST   /api/files/{id}/findings/apply-optional   apply every suggested finding (D12)
+    POST   /api/files/{id}/findings/apply-optional   {reason?: url|exception}   apply the suggested findings
     POST   /api/files/{id}/confirm
     GET    /api/default-export-dir
     POST   /api/export                     {dest_dir, file_ids?, audit_pdf, audit_json}
@@ -37,6 +38,10 @@ Detection groups (``model.DETECTION_GROUPS``) live only in the session: every st
 goes back to the defaults, so a group turned off once is never off by surprise later. Each file
 records the groups it was processed with (``options``) and the time of each stage (``timings``);
 those times adjust the estimate (``engine.estimate.CostModel``), whose rates alone are saved.
+
+The name list and the exceptions list (D10) also live only in the session, and apply to the files
+processed after they are saved. A finding covered by the exceptions list is not discarded: it
+becomes optional and starts unapplied (``engine.exceptions``), like the other URLs of D12.
 """
 
 from __future__ import annotations
@@ -58,7 +63,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -68,7 +73,8 @@ from pydantic import BaseModel, Field, StrictBool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from anonymizer import about
-from anonymizer.engine import audit, estimate
+from anonymizer.engine import audit, estimate, exceptions
+from anonymizer.engine.common import HEAD_BYTES, HEIC_SUFFIXES, is_heic
 from anonymizer.engine.model import (
     DETECTION_GROUPS,
     ERROR_MESSAGES,
@@ -202,6 +208,30 @@ def sniff_kind(path: Path) -> str | None:
     return None
 
 
+def is_heic_file(path: Path) -> bool:
+    """A HEIC/HEIF photo, by its extension or by its first bytes (D5: not supported)."""
+    if path.suffix.lower() in HEIC_SUFFIXES:
+        return True
+    try:
+        with open(path, "rb") as fh:
+            return is_heic(fh.read(HEAD_BYTES))
+    except OSError:
+        return False
+
+
+def heic_folder_message(count: int) -> str:
+    """Spanish: the HEIC photos of a chosen folder were not added (D5)."""
+    if count == 1:
+        return (
+            "Esta carpeta tiene 1 foto HEIC (por ejemplo de iPhone), que todavía no se puede abrir. "
+            "Conviértela a JPG y vuelve a agregarla."
+        )
+    return (
+        f"Esta carpeta tiene {count} fotos HEIC (por ejemplo de iPhone), que todavía no se pueden abrir. "
+        "Conviértelas a JPG y vuelve a agregarlas."
+    )
+
+
 def display_name(raw: str | None) -> str:
     """Base name of an uploaded file (browsers may send folder paths), safe to show and to export."""
     name = PureWindowsPath(raw or "").name
@@ -299,6 +329,7 @@ class Session:
         self.sizes: dict[str, int] = {}
         self.sources: dict[str, str] = {}
         self.names: list[str] = []
+        self.exceptions: list[str] = []  # D10: values not censored by default (engine.exceptions)
         self.options = DetectionOptions()  # session only: every start of the app uses the defaults
         self.profiles: dict[str, dict] = {}  # file id -> cheap facts for the estimate
         self.costs = estimate.CostModel.load(estimates_path)
@@ -369,6 +400,9 @@ class Session:
                 "removed": sum(1 for f in findings if f.status == "removed"),
                 "added": sum(1 for f in active if f.status == "added"),
                 "suggested": sum(1 for f in findings if f.status == "suggested"),
+                "suggested_exceptions": sum(
+                    1 for f in findings if f.status == "suggested" and f.optional_reason == exceptions.REASON
+                ),
             },
             "pages": pages,
             "size": self.sizes.get(file.id, 0),
@@ -453,6 +487,7 @@ class Session:
                 return
             file.status, file.step = "processing", "Comenzando"
             names = list(self.names)
+            file.exceptions = list(self.exceptions)  # applied by the engine before the file is ready
 
             def progress(fraction: float, step: str) -> None:
                 file.progress, file.step = fraction, step
@@ -518,6 +553,14 @@ class DetectionBody(BaseModel):
 
 class NamesBody(BaseModel):
     entries: list[str] = Field(default_factory=list, max_length=20000)
+
+
+class ExceptionsBody(BaseModel):
+    entries: list[str] = Field(default_factory=list, max_length=2000)
+
+
+class ApplyOptionalBody(BaseModel):
+    reason: Literal["url", "exception"] | None = None  # None: every suggested finding
 
 
 class ProcessBody(BaseModel):
@@ -710,7 +753,12 @@ def create_app(
     def state():
         with session.lock:
             files = [session.summary(f) for f in session.files.values()]
-        return {"files": files, "names_count": len(session.names), "engine": session.engine_name}
+        return {
+            "files": files,
+            "names_count": len(session.names),
+            "exceptions_count": len(session.exceptions),
+            "engine": session.engine_name,
+        }
 
     @app.post("/api/files")
     def upload(files: Annotated[list[UploadFile], File()]):
@@ -739,12 +787,17 @@ def create_app(
         for raw in body.paths:
             path = Path(raw)
             if path.is_dir():
-                found = sorted(
-                    p
-                    for p in path.rglob("*")
-                    if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES and not p.name.startswith((".", "~$"))
-                )
-                if not found:
+                found, heic = [], 0
+                for p in sorted(path.rglob("*")):
+                    if not p.is_file() or p.name.startswith((".", "~$")):
+                        continue
+                    if p.suffix.lower() in SUPPORTED_SUFFIXES:
+                        found.append(p)
+                    elif p.suffix.lower() in HEIC_SUFFIXES:
+                        heic += 1
+                if heic:  # D5: say why the iPhone photos were left out, instead of ignoring them
+                    skipped.append({"name": path.name, "message": heic_folder_message(heic)})
+                elif not found:
                     skipped.append({"name": path.name, "message": "Esta carpeta no tiene PDF ni imágenes."})
                 candidates.extend(found)
             elif path.is_file():
@@ -752,6 +805,9 @@ def create_app(
             else:
                 skipped.append({"name": display_name(raw), "message": "No se encontró este archivo."})
         for path in candidates[:MAX_FILES_FROM_PATHS]:
+            if is_heic_file(path):  # by its extension or, with another extension, by its content
+                skipped.append({"name": display_name(path.name), "message": ERROR_MESSAGES["heic"]})
+                continue
             file = session.new_file(path.name)
             try:
                 size = path.stat().st_size
@@ -792,6 +848,22 @@ def create_app(
     def put_names(body: NamesBody):
         session.names = clean_entries(body.entries)
         return {"entries": list(session.names)}
+
+    @app.get("/api/exceptions")
+    def get_exceptions():
+        return {"entries": list(session.exceptions)}
+
+    @app.put("/api/exceptions")
+    def put_exceptions(body: ExceptionsBody):
+        kept, invalid = exceptions.clean(body.entries)
+        if invalid:  # the list is not changed: the dialog stays open with the line to fix
+            raise ApiError(
+                422,
+                "invalid_exception",
+                f"«{invalid[0]}» no es un RUT, un teléfono ni un número 600 u 800. Escribe uno por línea.",
+            )
+        session.exceptions = kept
+        return {"entries": list(session.exceptions)}
 
     @app.get("/api/options")
     def get_detection_options():
@@ -911,9 +983,11 @@ def create_app(
                 raise ApiError(404, "not_found", "No se encontró esa censura.")
             reason = (body.reason or "").strip() or None
             note = (body.note or "").strip() or None
+            # D12 (other URLs) and D10 (exceptions list): applied or skipped, never "removed".
+            what = "este dato" if finding.optional_reason == exceptions.REASON else "este enlace"
             if body.action == "remove":
-                if finding.optional:  # D12: an optional URL is applied or skipped, never "removed"
-                    raise ApiError(409, "optional", "Para dejar visible este enlace, usa «No censurar».")
+                if finding.optional:
+                    raise ApiError(409, "optional", f"Para dejar visible {what}, usa «No censurar».")
                 if not finding.active:
                     raise ApiError(409, "already_removed", "Esta censura ya estaba quitada.")
                 finding.status = "removed"
@@ -926,16 +1000,16 @@ def create_app(
                 finding.history.append(HistoryEntry(at=now_iso(), action="restored", reason=reason, note=note))
             elif body.action == "apply":
                 if not finding.optional:
-                    raise ApiError(409, "not_optional", "Esta censura no es un enlace opcional.")
+                    raise ApiError(409, "not_optional", "Esta censura no es opcional.")
                 if finding.status != "suggested":
-                    raise ApiError(409, "not_suggested", "Este enlace ya está censurado.")
+                    raise ApiError(409, "not_suggested", f"{what.capitalize()} ya está censurado.")
                 finding.status = "proposed"
                 finding.history.append(HistoryEntry(at=now_iso(), action="applied", reason=reason, note=note))
             elif body.action == "skip":
                 if not finding.optional:
-                    raise ApiError(409, "not_optional", "Esta censura no es un enlace opcional: se quita con «Quitar».")
+                    raise ApiError(409, "not_optional", "Esta censura no es opcional: se quita con «Quitar».")
                 if finding.status != "proposed":
-                    raise ApiError(409, "not_applied", "Este enlace ya estaba sin censurar.")
+                    raise ApiError(409, "not_applied", f"{what.capitalize()} ya estaba sin censurar.")
                 finding.status = "suggested"
                 finding.history.append(HistoryEntry(at=now_iso(), action="skipped", reason=reason, note=note))
             else:
@@ -944,13 +1018,20 @@ def create_app(
             return asdict(finding)
 
     @app.post("/api/files/{file_id}/findings/apply-optional")
-    def apply_optional(file_id: str):
-        """Applies every suggested finding of the file (D12: "Censurar todos los otros enlaces")."""
+    def apply_optional(file_id: str, body: ApplyOptionalBody | None = None):
+        """Applies the suggested findings of the file: every one, or those of one ``reason``
+        ("url", D12: "Censurar todos los otros enlaces"; "exception", D10: "Censurar todas las
+        excepciones")."""
         file = session.get(file_id)
+        only = body.reason if body else None
         with session.lock:
             editable(file)
             at = now_iso()
-            applied = [f for f in file.findings if f.status == "suggested"]
+            applied = [
+                f
+                for f in file.findings
+                if f.status == "suggested" and (only is None or (f.optional_reason or "url") == only)
+            ]
             for f in applied:
                 f.status = "proposed"
                 f.history.append(HistoryEntry(at=at, action="applied"))

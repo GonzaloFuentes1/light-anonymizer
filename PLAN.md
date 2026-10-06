@@ -51,7 +51,8 @@ phase 0 only built the test set and the metric.
    at full resolution and on small faces if the image is downscaled. Detection has to run at
    several scales. It also misses 2 of 3 pure profiles.
 4. **OpenCV from PyPI on macOS ships GPL-3.0 FFmpeg**, linked in a way that cannot be removed.
-   On Windows it can be removed. This affects the viability of macOS (D4).
+   On Windows it can be removed. This affects the viability of macOS (D4: version 1 is Windows
+   only).
 5. **RapidOCR pulls in copyleft dependencies and code that uses the network** (model downloads,
    reading URLs). I propose using its models and porting only the inference (section 5.4).
 6. **The Chilean cédula encodes the RUN (Rol Único Nacional, the personal ID number), the
@@ -178,23 +179,26 @@ report mentions it.
    like any other.
 3. Patterns and names on the normalized text, with the geometry of each character.
 4. Every embedded image: OCR and faces; the areas are mapped to page coordinates.
-5. Pages with text converted to paths (no extractable text but with ink): they are rendered
-   and OCR is applied. When to do it is a trade-off between time and recall (D8).
+5. Text converted to paths: a page with almost no text layer is read whole by OCR, like a scan;
+   on a page with a text layer, only the areas with many letter-like paths and few characters
+   are rendered and read (D8).
 6. Export: real removal of the content under each area (text, image pixels, paths),
    structural cleanup and a full rewrite of the file.
 
 **Scanned PDF (no text layer) or mixed page.** The page is rendered at 300 dpi (200 dpi if the
 page is very large), OCR and faces run with rotations, and the page is rebuilt as a redacted
-image. If it carries an invisible OCR text layer (a scanner's "sandwich" PDF), that layer also
-contains the data and is removed along with the pixels.
+image, without adding any text layer (D9). If it carries an invisible OCR text layer (a scanner's
+"sandwich" PDF), that layer also contains the data: the redacted spans are removed from it along
+with the pixels, and the rest of the layer stays as the original had it.
 
 **Image (JPG, PNG, WEBP, multi-page TIFF).** The EXIF orientation is applied and detection runs
 with rotations. The output is written from the pixels, in the same format and **with no
 metadata at all**: no EXIF or GPS, nor the EXIF thumbnail (which keeps the original unredacted
 image), XMP, IPTC or PNG text chunks. TIFF pages are processed one by one.
 
-**HEIC.** Not viable without copyleft: the only non-GPL reading library (pi-heif) is LGPL-3.0
-(D5).
+**HEIC.** Not supported in version 1 (D5): the only non-GPL reading library (pi-heif) is
+LGPL-3.0, and phones and Windows convert HEIC photos to JPG. The app recognizes them (by
+extension and by content) and asks for a JPG instead of calling them an unknown format.
 
 ---
 
@@ -212,7 +216,8 @@ Base: the notebook's `PATRONES` (patterns), plus what the research showed is mis
 - **Phone**: every current area code (2, 32–35, 41–45, 51–53, 55, 57, 58, 61, 63–65, 67,
   71–73, 75, plus 44 for VoIP), mobiles, old formats with 0 and 09, old 8-digit numbers only
   next to a label (Fono, Tel., Cel., WhatsApp), extensions. 600/800 numbers are institutional:
-  by default they are redacted anyway and the reviewer decides (D10).
+  by default they are redacted anyway; the ones on the user's exceptions list are shown
+  unapplied and the reviewer decides (D10).
 - **Email**: NFKC, apostrophes, obfuscations (`[arroba]`, `(at)`, `arroba … punto cl`), PDF
   line breaks and soft hyphens.
 - **Tolerance to OCR errors** (only on text that comes from OCR): O/o/D/Q→0, l/I/i/|→1, Z→2,
@@ -265,8 +270,8 @@ detected**: this is a documented limit, and the test set measures it on purpose.
   (rotated quadrilaterals) go back to the original coordinates and are merged.
 - Redaction uses the detector's **rotated polygon**, not its bounding rectangle.
 - A "redact all text in this image" mode, which can be enabled per file.
-- Mirrored text (photo taken with a front camera): the 4 rotations do not read it. Adding the
-  mirrored version doubles the OCR time (D6).
+- Mirrored text (photo taken with a front camera): the 4 rotations do not read it. The mirrored
+  image is read too, only when the normal pass finds no legible text (D6).
 
 ### 5.5 QR and MRZ (proposed)
 
@@ -290,9 +295,11 @@ is recognized by its shape in the OCR text. I propose always redacting the whole
 - **WebView2 (pywebview's window on Windows) connects on its own**: in the test it requested
   Edge's experiment configuration and looked for a proxy (WPAD), while showing only
   `http://127.0.0.1`. With hardened startup arguments those two connections go away, but one
-  TLS connection from the WebView2 process to Microsoft servers remained (probably from the
-  Windows sign-in), which no argument suppresses. Documents never travel through it, but "zero
-  traffic" cannot be claimed for the Windows component (D11).
+  TLS connection from the WebView2 process to Microsoft servers remained. It came from the
+  Windows-account sign-in, and turning that feature off (`msOneAuthWAM`) removed it. Documents
+  never travel through WebView2's channels, but "zero traffic" cannot be claimed for the Windows
+  component: its updates, its crash reports and Windows' own checks are outside the app (D11;
+  README, "Network traffic").
 - Short install paths: with long paths (such as OneDrive's) Windows fails to load native
   libraries.
 
@@ -636,7 +643,8 @@ development-only, and a test fails if they show up. The bundle must include `LIC
 root (next to the `anonymizer` package also works): the "Acerca de" dialog shows it
 (`anonymizer/about.py`, `GET /api/about`) and only points to the source when it is missing.
 Also: `LICENSES.md` generated from the actual license files, a test that there is no network
-traffic, the final size, `README.md` with screenshots and `DEVELOPMENT.md`. macOS per D4.
+traffic, the final size, `README.md` with screenshots and `DEVELOPMENT.md`. Windows only (D4:
+macOS is not a version-1 target).
 
 ---
 
@@ -753,17 +761,89 @@ complied with and it stays replaceable (for example certifi, or Eigen inside onn
 is header-only MPL)? Is the Intel IPP license (not OSI) that comes inside OpenCV for Windows
 acceptable? If the answer is "strictly MIT/Apache/BSD", we build OpenCV without FFmpeg or IPP.
 
+> **Decided (2026-10-05): weak copyleft is acceptable** when its license is complied with and the
+> component stays replaceable: its license text ships with the executable, `INDEX.txt` says where
+> its source code is, and the one-folder packaging keeps it as separate files that can be swapped
+> (`scripts/collect_licenses.py`, `COPYLEFT_SOURCES`). What the Windows build bundles today under
+> those terms: GEOS (LGPL-2.1, the DLLs in `Shapely.libs/`, pulled in by rapidocr through shapely),
+> certifi and tqdm (MPL-2.0, also through rapidocr) and Eigen inside onnxruntime (MPL-2.0, headers
+> compiled in, notice kept). OpenCV's FFmpeg DLL (LGPL) is not bundled: the spec drops it and
+> `scripts/build_exe.py` fails the build if it shows up. Porting the OCR inference (5.4) is still
+> worth doing to remove rapidocr's network code, but no longer for licensing.
+>
+> **Intel IPP stays open: it is not weak copyleft, so D3 does not settle it.** The build bundles
+> `cv2.pyd` from opencv-python-headless 5.0.0.93, which links Intel IPP ICV 2026.0.0 statically
+> (`cv2.getBuildInformation()`: "Intel IPP: 2026.0.0", "3rdparty dependencies: … ipphal ippiw
+> ippicv"); its terms (Intel Simplified Software License) ship in OpenCV's
+> `LICENSE-3RD-PARTY.txt`. `build_exe.py` cannot drop or check it, since it is inside `cv2.pyd`.
+> The fix, once decided, is an OpenCV built with `-DWITH_IPP=OFF`, or YuNet and the OCR
+> preprocessing without OpenCV (LICENSES.md, section 1).
+
+> **Decided (2026-10-06): accepted for version 1 and documented as a known risk.** `cv2.pyd`
+> (opencv-python-headless) links Intel IPP ICV statically under Intel's proprietary license (the
+> Intel Simplified Software License: free redistribution, but not free software; it forbids
+> modifying and reverse engineering IPP). In one program with AGPL code (PyMuPDF) that is a grey
+> area, since the AGPL asks that the whole program be modifiable under its terms. Version 1 is
+> free and for internal use, so the risk is accepted there. Planned exit: before the app is handed
+> to other institutions, OpenCV is removed (YuNet and the OCR preprocessing on onnxruntime and
+> numpy) or rebuilt without IPP (`-DWITH_IPP=OFF`). Recorded in LICENSES.md (OpenCV) and in
+> section 13.
+
 **D4. macOS.** With the PyPI wheels it is not viable (GPL FFmpeg inside OpenCV). It is viable
 by building OpenCV without FFmpeg, or by running YuNet directly with onnxruntime. It requires a
 Mac with macOS 14 or later to build and test. Is it a requirement for version 1?
 
+> **Decided (2026-10-05): no. Version 1 targets Windows only** (Windows 10 and 11, 64-bit, with
+> the WebView2 runtime they include). Nothing is built or tested on macOS; the GPL FFmpeg of the
+> macOS OpenCV wheels and onnxruntime's HTTPS telemetry there stay documented for a later
+> version, which would need an OpenCV without FFmpeg (or YuNet on onnxruntime) and a Mac to test.
+
 **D5. HEIC.** Options: do not support it in version 1 and ask users to convert to JPG (my
 recommendation), or use pi-heif (LGPL-3.0, read-only).
+
+> **Decided (2026-10-05): HEIC is not supported in version 1**, and the app says so plainly
+> instead of a generic "not a PDF or image" message.
+>
+> **Implemented (2026-10-05).** HEIC/HEIF photos are recognized by extension (`.heic`, `.heif`,
+> `.hif`) and by content (an ISO-BMFF `ftyp` box with a HEIC brand, or a generic HEIF brand with a
+> HEIC one among its compatible brands, so an AVIF is not taken for one: `common.is_heic`), and get
+> the message "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir. Conviértelas a
+> JPG y vuelve a agregarlas.": in the browser upload (`uploadFiles` counts them apart from the
+> other skipped files), in `POST /api/files/from-paths` (a chosen HEIC file is skipped with that
+> message, also when its extension says otherwise; a chosen folder reports how many HEIC photos
+> it had), and in the analysis, as the error code `heic`, if one arrives anyway (a HEIC renamed
+> `.jpg` and uploaded). Screen 1 lists it under the accepted formats.
 
 **D6. Mirrored images.** "Volteadas" (flipped) can mean rotated 180° (covered) or mirrored
 (photo taken with a front camera). For mirroring, OCR must also run on the mirrored image,
 which doubles its time. I propose enabling it only when the normal pass finds no legible text,
 or as a per-file option. What does "volteadas" mean to you?
+
+> **Decided (2026-10-05): read the mirrored image only when the normal pass (every orientation)
+> finds no legible text in that image or page,** and map what it reads back to the image.
+>
+> **Implemented (2026-10-05).** `ocr.read_lines`: after the 0/90/270° pass, `ocr.needs_mirror`
+> asks for a second pass over the mirrored image (the same three orientations) when some lines
+> look like text (4 or more letters or digits) and none is legible (`ocr.legible`: score 0.9 or
+> more with 4 or more letters or digits). Its lines are mapped back (x → width − x) and added to
+> the normal ones, so the rest of the pipeline (patterns, names, context, dedup, redaction of the
+> polygon) is unchanged. The thresholds come from the test set: every image with text had lines
+> at 0.999 or more; the two mirrored ones none above 0.83; 28 of the 30 face photos had no line of
+> 4 letters at all, so a photo without text is not read twice. It applies to images, scanned
+> pages and the images inside PDF pages alike.
+>
+> **Measured (2026-10-05, test set, `results/details/decisions`).** Mirrored text: 10 of 10
+> elements found (was 1 of 10); rotated images 100 % recall (was 89.3 %), 0 leaks (was 9); overall
+> recall 96.5 % (was 95.6 %), leaks 34 (was 43), still 0 critical and 0 metadata leaks; every other
+> category unchanged. The 9 neutral lines of the two mirrored images are now covered too, since
+> OCR zones are whole lines (neutral text covered 296 of 1 862, was 287). Cost, measured in one instrumented run over the faces, cédula,
+> scanned and text-PDF files and the two mirrored images (63 files): a mirrored pass ran on 3 of
+> them, the two mirrored images and one crowd photo with stray letters, for 20 s against 572 s of
+> normal OCR (3.5 %); none on scanned pages, cédulas or PDF images. The other images (EXIF,
+> screenshots, TIFF, rotated) all had legible lines in the normal pass, so they get no extra pass.
+> Each mirrored image took about twice its OCR time (9 s + 8 s). Comparing whole-run times with the
+> run of 2026-10-01 says nothing here: the machine was shared with other jobs, and files that get
+> no extra pass (screenshots) were up to twice as slow.
 
 **D7. QR, MRZ and cédulas.** I propose adding QR and MRZ detectors and, when an image looks
 like a cédula (an MRZ or labels such as "NÚMERO DOCUMENTO"), suggesting the "redact all text"
@@ -774,14 +854,157 @@ is only visible with OCR. Options: OCR every text page (more recall, a few secon
 OCR only pages with suspicious paths (faster). I will decide with figures in phase 1, unless
 you prefer to fix it now.
 
+> **Decided (2026-10-05): OCR only the pages with suspicious vector paths**, not every page.
+>
+> **Implemented (2026-10-05).** `anonymizer/engine/vectors.py`. On every PDF page, when OCR is on,
+> the drawings are listed (`get_cdrawings`, a few milliseconds per page): letter-like paths are
+> filled, at most 40 pt on each side, and not a plain rectangle (bullets, table cells, QR
+> modules). They are grouped when closer than about one letter height; a group of 8 or more with
+> fewer characters of the text layer than half its paths is an area of drawn text. A page with a
+> text layer is rendered only if it has images or such areas, and only those areas are read (OCR,
+> no faces), like the images inside a page; a page with almost no text layer was already read
+> whole as a scan. What OCR finds is mapped to page space as usual, and each OCR zone on a page with
+> letter-like paths is grown to cover every such path it covers at least a quarter of
+> (`vectors.snap`): MuPDF removes a path only when the redaction covers all of it, so a box a
+> little tighter than a letter would have left that letter's path in the file under the black
+> box. The time estimate counts those areas as OCR regions.
+>
+> **Fixed after review (2026-10-05).** The unit is the subpath, not the path: some programs write a
+> whole line or block of drawn text as one path with one subpath per letter, and those blocks were
+> missed on pages with a text layer. MuPDF removes line art subpath by subpath, only the ones a zone
+> covers whole, so on export every zone, the reviewer's too, is grown to the whole letter subpaths
+> it covers at least 2 % of, and the leak check (`verify.glyph_leaks`) reports any letter subpath
+> left under an applied zone (before, a drawn zone 0.6 pt short exported with its letters still in
+> the file and no leak). The grouping of shapes uses a grid, so 20 000 markers on a page take well
+> under a second instead of about 9 s. Measured: the drawn-text page with a text layer, written
+> with one path for all its letters, went from 0 of 9 elements found (9 leaks, 6 critical) to 9 of
+> 9 and 0 leaks, including the vector-path check; the per-letter version stays 9 of 9. Over the 25
+> PDFs of the test set the elements found, the leaks and the neutral text covered are the same as
+> before these fixes, and no export was blocked by the new check.
+>
+> **Fixed after a second review (2026-10-06).** Growing whole zones erased content nobody marked:
+> any letter with 2 % of its box in a zone pulled the zone's edge out across its whole width, twice
+> for OCR zones (analysis and export), so at single spacing the lines above and below an OCR line
+> were erased, a chart next to a zone lost all its bars, and nothing of it showed in the review or
+> the audit. Now a letter belongs to a zone only when its centre, or half its box, is inside it
+> (`vectors.under`); each such letter gets a small rectangle of its own (`vectors.cover`), at most
+> 6 pt beyond the zone and never into an area the reviewer left visible (a removed censure, an
+> unapplied suggestion), and nothing else is added. That happens once, when the zone is applied:
+> `pdf.snap_rects(page, rects, keep)` per page, called by `pdf.redact` (and meant for any preview
+> of the export), with `pdf.apply_order`. The order matters because MuPDF 1.28 lets the first
+> redaction rectangle that touches a shape decide: the letters' rectangles go first, then the
+> zones, so a zone that cuts a letter of the next line leaves it. Each letter rectangle is 0.02 pt
+> larger than the letter (equal edges do not count as covered). The rectangles added are reported
+> by the export (`ExportResult.grown`) and the audit (`letters_covered` in the JSON, a table in the
+> PDF). The leak check counts only filled letters (shapes also stroked, such as chart markers drawn
+> filled and outlined, are not letters and MuPDF does not remove them as such), with the same
+> `under` rule, so exports that passed before the first fix pass again. Two drawn-text areas that
+> overlap are joined into one (a `Rect |=` that did not change the list dropped the second one,
+> and its e-mail was never read). Measured, re-running the review's sweep (a drawn block of five
+> lines, the middle one with an e-mail and a phone, OCR then export, fonts 10 and 12, spacing 1.0
+> to 1.5): every export passes, the middle line is removed whole, and the neighbouring lines keep
+> all their letters from spacing 1.15 up; at single spacing they keep 45 of 46 and 41 of 44 (the
+> dots of i's and the periods of those lines that fall entirely inside the zone go: MuPDF removes
+> every subpath a zone covers whole), where before the three middle lines were erased.
+>
+> **Fixed after a third review (2026-10-06).** Putting the letters' rectangles before the zones
+> in one pass leaked: a shape that is not a "letter" (an outline over 40 pt, as in a name drawn at
+> 64 pt) was first touched by a neighbouring letter's rectangle that does not contain it, and MuPDF
+> kept it although the zone covered it whole; the export passed. Now `pdf.apply_page_zones(page,
+> rects, keep)`, the one entry point for the export and any preview of it, applies the letters'
+> rectangles in a pass of their own and then the zones, which decide alone on everything else;
+> and the leak check also reports any filled shape, of any size, at least 90 % inside an applied
+> zone (`vectors.left_over`; the black boxes of the redactions are left out). A letter whose centre
+> is in an area the reviewer left visible belongs to that area: it is not covered and not a leak
+> (at single spacing, the periods of a URL left visible above the data line blocked the export).
+> Letters drawn filled and outlined are letters too: their rectangle is grown by the stroke's
+> reach as MuPDF measures it (half the width with round or bevel joins, ten times the width with
+> miter joins; measured), up to 6 pt; one that would need more stays and blocks the export.
+> Overlapping letter rectangles are joined only when the union stays out of the kept areas. A lone
+> "N." before a listed value is an initial, not "N°". Measured: the large drawn names of the
+> review (Helvetica, Oblique, Times Italic at 64 pt, an e-mail at 30 pt) under a generous zone
+> leave no shape in the file (with the one-pass order two of them kept outlines); the kept-neighbour
+> block exports at every spacing from 1.0; the review's sweep (fonts 8, 10 and 12, spacing 0.9 to
+> 1.5, OCR then export) exports everywhere with nothing of the data line left, the neighbouring
+> lines keep every shape from spacing 1.15 up, lose 1 to 3 dots or periods at 1.0, and at 0.9,
+> where the lines overlap, also the letters the zone covers.
+>
+> **Measured (2026-10-05).** The test set's drawn-text case is a page with no text layer at all,
+> already read whole as a scan (9 of 9, unchanged). For the case D8 is about, that page with two
+> neutral lines of real text added at its foot (so it is no longer treated as a scan, same ground
+> truth): before, 0 of 9 elements found, 9 leaks (6 critical: RUT, e-mail, phone); after, 9 of 9 and
+> 0 leaks, including the vector-path check (V). It found 3 areas of drawn text (two in the header,
+> one in the body) and the analysis went from 0.2 s to 17.5 s on the loaded machine, about the OCR
+> of a scanned page. Pages without drawn text are not rendered: listing their drawings cost 0.06 s
+> for the 19 pages of the 12 text PDFs of the test set (about 3 ms a page), and no other page of
+> the test set got an area.
+
 **D9. Output of scans.** I propose rebuilding the page only as an image, without a text layer.
 Adding an invisible OCR layer would make the PDF searchable, but it reintroduces text (and OCR
 errors) into the published file.
+
+> **Decided (2026-10-05): yes.** Scans are exported as images, without any added text layer.
+>
+> **Verified (2026-10-05): the export already does this; no code changed.** A scanned page is
+> redacted in place (`pdf.redact`: `apply_redactions` with `PDF_REDACT_IMAGE_PIXELS` blacks out
+> the pixels under each zone) and the file is rewritten; nothing writes text into it, so the
+> page goes out as its image, with no text at all
+> (`test_scan_is_exported_as_an_image_without_a_text_layer`). A scan that already carries an
+> invisible OCR layer (a scanner's "sandwich" PDF) has more than 50 characters of text, so it is
+> treated as a text page: that layer is searched like any text layer and its image is read by OCR.
+> On export, the characters under each zone are removed from the layer along with the pixels; the
+> rest of the layer is the original's own text, still invisible (render mode 3), not a new OCR
+> (`test_sandwich_ocr_layer_keeps_only_the_original_text_that_was_not_redacted`). That leftover
+> layer is kept because removing it would also remove the searchability the original had; the
+> leak check runs the patterns over it like over any text layer.
 
 **D10. Institutional data.** 600/800 numbers and the RUTs of institutions (for example a GORE's
 72.xxx.xxx-x) are not personal data. I propose redacting them anyway by default (recall) and
 allowing a configurable allowlist. Amounts and dates are not redacted (as in the notebook), to
 be confirmed with the transparency unit.
+
+> **Decided (2026-10-05): censored by default, plus an exceptions list.** RUTs of institutions
+> and 600/800 numbers are still censored by default. The user keeps a "Lista de excepciones" (one
+> RUT, phone or 600/800 number per line); a value on it is not discarded (validations never
+> discard a finding) but shown unapplied, for the reviewer to decide.
+>
+> **Implemented (2026-10-05).** `anonymizer/engine/exceptions.py`. Values are compared normalized:
+> a RUT by its digits and check digit (no dots or dash, the check digit in uppercase; OCR's X read
+> as K), a phone by its digits without +56/0056 or the old trunk 0, so "+56 600 123 4567",
+> "600-123-4567" and "600 123 4567" are the same entry. An entry written as a RUT (dash before the
+> check digit, a K, or dots) is only a RUT, one written as a phone only a phone, bare digits either;
+> a line that is neither is refused (`PUT /api/exceptions` answers 422 naming it, and the dialog
+> stays open). A RUT or phone finding becomes *optional* with `optional_reason = "exception"` only
+> when every datum its text covers is on the list (or is a URL that is not personal): an OCR line
+> that also has a name, an e-mail or another RUT stays applied. It reuses the D12 machinery: it
+> starts `suggested` (shown, not applied), "Censurar" / "No censurar" are logged as `applied` /
+> `skipped`, `POST /api/files/{id}/findings/apply-optional` takes `{reason: "exception"}` ("Censurar
+> todas las excepciones"; `{reason: "url"}` for the other URLs, nothing for both), and on export it
+> is left visible without being a leak. D12's URLs now carry `optional_reason = "url"`. The list
+> lives in the session like the name list (`GET`/`PUT /api/exceptions`, `exceptions_count` in
+> `/api/state`, screen 1 panel "Lista de excepciones" with its editor) and applies to the files
+> processed after it is saved; each file keeps the list it was analyzed with
+> (`AnalyzedFile.exceptions`), and both engines apply it before the file is ready. In the review,
+> the group that was "Otros enlaces (sin censurar)" is now "No se censuran por defecto" and holds
+> both kinds, each item saying why ("otro enlace" or "en tu lista de excepciones"); the summaries
+> count them apart ("1 otro enlace y 2 excepciones sin censurar"). The audit report lists them
+> apart too (JSON `exceptions`, next to `other_urls`, and `optional_reason` per finding; a PDF
+> section with the values left visible). 600 numbers (10 digits) are now phones in every format;
+> before, "600 123 4567" was only caught as a RUT-shaped number and "600-123-4567" not at all.
+>
+> **Fixed after review (2026-10-05).** A zone is left unapplied only when, once the listed values
+> and the URLs that are not personal are blanked out of its text, nothing but label words is left
+> ("RUT", "Fono", "Mesa central", "N°"…): no digit and no other word. An OCR zone is a whole line
+> and a context value can hold more than the pattern found, so before this a listed number could
+> leave visible a direct line no pattern takes ("mesa central 600 123 4567, anexo directo (2) 234
+> 5678") or a name only a context rule found. When an OCR rule and a context rule find the same
+> box, the zone now keeps the most specific type (a name before a RUT or a phone), so a context
+> name always blocks the list. A RUT is compared only with the RUTs of the list and a phone only
+> with its phones (a phone entry no longer matches a RUT with the same digits). A 600 number
+> written with spaces is no longer read as an undashed RUT (no RUT has that body), so it is a
+> phone and not a doubtful RUT. "Censurar todo el texto de esta imagen" ignores the list. The
+> audit report records the list each file was processed with (JSON `exceptions.entries`, and a
+> line in the PDF).
 
 **D11. WebView2 and network traffic.** The app window uses WebView2, a Windows component that
 talks to Microsoft on its own (section 5.6). Options: (a) keep pywebview with the hardened
@@ -790,6 +1013,26 @@ arguments, SmartScreen and crash reports disabled, and say so clearly in the doc
 (c) switch to an interface without a web engine, which means Qt (LGPL) or a much poorer
 interface. Is (a) acceptable, or is the requirement zero traffic measured with a firewall for
 the system components as well?
+
+> **Decided (2026-10-05): (a).** Keep pywebview and WebView2 with its Microsoft connections turned
+> off as far as the app can, and say clearly what may still talk to Microsoft.
+>
+> **Implemented (2026-10-05).** What `anonymizer/app.py` already set (`WEBVIEW2_ARGS`, through
+> `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`): no background networking, component updates, pings or
+> domain-reliability reports; SmartScreen off (`msSmartScreenProtection`); the Windows-account
+> sign-in off (`msOneAuthWAM`, `msLoadOneAuthInBackground`, `msImplicitSignin`,
+> `msEdgeOSAccountInfoSubstrate`: it was the source of the TLS connection to Microsoft 365 left in
+> 5.6); no proxy (no WPAD lookup); every name lookup of Chromium's network stack fails except
+> 127.0.0.1; no file URLs; and a fresh profile per instance, deleted on close. Added:
+> `--disable-breakpad`, Chromium's switch that turns crash reporting off (the crash handler has
+> its own HTTP client, which the host rules do not cover); whether WebView2 honors it was not
+> measured, since that needs a crash during a capture. A test keeps these flags in place. README
+> and README.es now have a "Network traffic" section that lists what may still talk to Microsoft
+> and why: WebView2 runtime updates (Edge Update, a Windows service), WebView2 crash reports
+> (Windows diagnostic-data settings), Windows' own checks of the executable (SmartScreen
+> reputation, Defender cloud lookups) and onnxruntime's ETW events (off at startup, local), and
+> that zero traffic needs IT to enforce it outside the app (a firewall rule for
+> `LightAnonymizer.exe`; one for `msedgewebview2.exe` would affect every program that uses it).
 
 **D12. URLs.** The notebook's pattern redacted every URL. In a real report that covered 36
 links to institutional news (and only halfway, because the URL continued on the next line).
@@ -840,10 +1083,11 @@ the list still rules. Agreed?
 | Unusual PDF fonts break the text rebuild (option A of D1) | verification with two extractors and automatic rasterization of the page |
 | Profiles and occluded faces not detected | several scales, a second detector, flagging doubtful ones, human review |
 | OCR with small print or low resolution | upscaling before OCR and tiling; documented limit |
-| OCR time with 4 or 8 orientations | measure and decide with figures (section 9) |
+| OCR time with 4 or 8 orientations | the mirrored orientations only for images without legible text (D6); drawn text read only where the page has it (D8) |
 | Dependencies that bring network code | port the OCR inference, a network-traffic test, onnxruntime without telemetry |
 | URL changes in the face sources | catalog with SHA-256 and a local cache |
 | The repository lives in OneDrive | `.venv` and generated data get synced; better to move it or exclude folders |
+| Intel IPP (proprietary, linked statically into OpenCV's `cv2.pyd`) ships with AGPL code: a licensing grey area (D3) | accepted for version 1, which is free and internal (decided 2026-10-06); before handing the app to other institutions, remove OpenCV or rebuild it without IPP |
 
 ## 14. Limits that will be documented in the app and in the README
 
@@ -851,6 +1095,8 @@ the list still rules. Agreed?
 - Names and addresses in running text are only detected if they are on the list; in
   signatures, cells, tables and email headers they are also detected by context (D13).
 - OCR can fail with handwriting, very small text or very low-resolution images.
+- Mirrored text (a photo taken with a front camera) is read only when nothing in that image is
+  legible as it is (D6): a mirrored sign in a photo that also has legible text is not read.
 - Profile, very small or occluded faces may not be detected.
 - Signatures are found by rules, not by a trained model (section 5.7), and every one is marked
   doubtful. They may be missed when nothing anchors them: no "Firma", "V°B°" or "p.p." label
@@ -869,4 +1115,15 @@ the list still rules. Agreed?
   is removed whole, also its part outside the zone (listed in the audit report). A stroke under a
   zone that cannot be removed without touching the rest of the page (a stroke that is also a
   clip, unusual content) also blocks the export.
+- HEIC/HEIF photos (iPhone) are not supported: they must be converted to JPG first (D5).
+- Text drawn as paths (D8) is found when its letters are filled shapes. Two kinds are not: letters
+  drawn as a single rectangle (l, I, a hyphen, a period: they look like table cells or bullets,
+  so a word made only of them is not counted) and text drawn with strokes instead of fills, such
+  as the SHX fonts of CAD drawings. On a page with almost no text layer both are still read, as
+  that page is read whole by OCR. Letters drawn filled and outlined are removed when their stroke
+  is thin (MuPDF needs the rectangle to cover the stroke too: up to ten times its width with miter
+  joins); with a thicker stroke they cannot be removed and the export is blocked with a leak.
+  Shapes drawn only with strokes are left to the handling of strokes. When a zone is applied,
+  MuPDF also removes the dots of i's and the periods of a neighbouring line that fall entirely
+  inside it.
 - Human review of every document before publishing is mandatory.

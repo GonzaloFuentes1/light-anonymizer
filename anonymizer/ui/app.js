@@ -46,6 +46,9 @@
   // Stages of an analysis (summary "timings"), shown when a file is done.
   const STAGE_LABELS = { text: "texto", ocr: "texto en imágenes", faces: "rostros", signatures: "firmas", qr: "QR" };
   const SUPPORTED_EXT = ["pdf", "jpg", "jpeg", "png", "webp", "tif", "tiff"];
+  // iPhone photos: not supported in version 1 (D5). Said plainly instead of "not PDF nor image".
+  const HEIC_EXT = ["heic", "heif", "hif"];
+  const HEIC_MSG = "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir. Conviértelas a JPG y vuelve a agregarlas.";
   const REVIEWABLE = new Set(["ready", "confirmed", "exported"]);
   const MSG = {
     network: "No se pudo conectar con el motor de la aplicación. Cierra el programa y vuelve a abrirlo.",
@@ -133,6 +136,7 @@
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const ext = (name) => (String(name).split(".").pop() || "").toLowerCase();
   const isSupported = (name) => SUPPORTED_EXT.includes(ext(name));
+  const isHeic = (f) => HEIC_EXT.includes(ext(f.name)) || /^image\/hei[cf]/i.test(f.type || "");
 
   function fmtSize(bytes) {
     if (bytes == null) return null;
@@ -237,6 +241,7 @@
     screen: 1,
     files: [], // summaries from GET /api/state
     namesCount: 0,
+    exceptionsCount: 0, // entries of the exceptions list (D10)
     engine: "",
     groups: [], // detection groups from GET /api/options (texts in Spanish, current state)
     estimate: null, // GET /api/estimate for the files that would be processed now
@@ -349,6 +354,7 @@
     const before = new Map(S.files.map((f) => [f.id, f.status]));
     S.files = Array.isArray(data.files) ? data.files : [];
     S.namesCount = data.names_count || 0;
+    S.exceptionsCount = data.exceptions_count || 0;
     S.engine = data.engine || "";
     for (const f of S.files) {
       // A file that finished, failed or was cancelled no longer needs the "requested" mark.
@@ -477,6 +483,10 @@
       S.namesCount > 0
         ? `${plural(S.namesCount, "entrada", "entradas")}. Se censuran donde aparezcan, aunque estén sin tildes o en otro orden.`
         : "La lista está vacía. Agrega los nombres y direcciones que siempre deben censurarse, aunque estén sin tildes o en otro orden.";
+    $("#exceptions-meta").textContent =
+      S.exceptionsCount > 0
+        ? `${plural(S.exceptionsCount, "entrada", "entradas")}. Se detectan igual, pero aparecen en la revisión sin censurar: tú decides si censurarlas.`
+        : "RUT de instituciones y números 600 u 800 que no quieres censurar. Igual aparecen en la revisión, sin censurar.";
 
     renderDetects();
     renderEstimate();
@@ -676,12 +686,12 @@
   async function uploadFiles(fileArray) {
     const all = [...fileArray].filter((f) => f && f.name);
     const files = all.filter((f) => isSupported(f.name));
-    const skipped = all.length - files.length;
+    const heic = all.filter((f) => !isSupported(f.name) && isHeic(f)).length;
+    const skipped = all.length - files.length - heic;
     if (!files.length) {
-      toast(
-        all.length ? "Ninguno de esos archivos es PDF, JPG, PNG, WEBP o TIFF." : "No se encontraron archivos para agregar.",
-        { bad: all.length > 0 },
-      );
+      let msg = all.length ? "Ninguno de esos archivos es PDF, JPG, PNG, WEBP o TIFF." : "No se encontraron archivos para agregar.";
+      if (heic) msg = skipped ? `${HEIC_MSG} Los demás no son PDF ni imágenes.` : HEIC_MSG;
+      toast(msg, { bad: all.length > 0 });
       return;
     }
     const form = new FormData();
@@ -694,7 +704,7 @@
         const src = files[i];
         if (src && src.name === a.name) S.sizes.set(a.id, src.size);
       });
-      toast(addedMessage(added.length, skipped));
+      toast(addedMessage(added.length, skipped, heic));
     } catch (err) {
       showError(err);
     }
@@ -702,11 +712,16 @@
     if (S.screen !== 1) go(1);
   }
 
-  function addedMessage(added, skipped) {
+  function addedMessage(added, skipped, heic = 0) {
     let msg = added
       ? `Se ${added === 1 ? "agregó" : "agregaron"} ${plural(added, "archivo", "archivos")}.`
       : "No se agregó ningún archivo.";
     if (skipped) msg += ` Se ${skipped === 1 ? "omitió" : "omitieron"} ${plural(skipped, "archivo", "archivos")} que no son PDF ni imágenes.`;
+    if (heic) {
+      msg += heic === 1
+        ? " Se omitió 1 foto HEIC (por ejemplo de iPhone), que todavía no se puede abrir: conviértela a JPG y vuelve a agregarla."
+        : ` Se omitieron ${heic} fotos HEIC (por ejemplo de iPhone), que todavía no se pueden abrir: conviértelas a JPG y vuelve a agregarlas.`;
+    }
     return msg;
   }
 
@@ -872,6 +887,60 @@
   }
 
   // ---------------------------------------------------------------------------------------------
+  // Exceptions list dialog (D10): values that are found and shown, but not censored by default
+  // ---------------------------------------------------------------------------------------------
+  function updateExceptionsCount() {
+    const n = parseNames($("#exceptions-text").value).length;
+    const out = $("#exceptions-count");
+    out.classList.remove("bad");
+    out.textContent = n ? `${plural(n, "entrada", "entradas")} en la lista.` : "La lista está vacía.";
+  }
+  async function openExceptions() {
+    let entries = [];
+    try {
+      const res = await api("/api/exceptions");
+      entries = (res && res.entries) || [];
+    } catch (err) {
+      showError(err);
+      return;
+    }
+    $("#exceptions-text").value = entries.join("\n");
+    updateExceptionsCount();
+    openDialog($("#dlg-exceptions"));
+    $("#exceptions-text").focus();
+  }
+  async function saveExceptions(e) {
+    e.preventDefault();
+    const entries = parseNames($("#exceptions-text").value);
+    const btn = $("#dlg-exceptions-yes");
+    btn.disabled = true;
+    try {
+      // The server checks each line: a line that is not a RUT or a number keeps the dialog open.
+      const res = await api("/api/exceptions", { method: "PUT", json: { entries } });
+      const saved = (res && res.entries) || entries;
+      $("#dlg-exceptions").close();
+      const processed = S.files.some((f) => REVIEWABLE.has(f.status));
+      toast(
+        `Lista de excepciones guardada: ${plural(saved.length, "entrada", "entradas")}.` +
+          (processed ? " Se aplica a los archivos que proceses desde ahora." : ""),
+      );
+      await refreshState();
+    } catch (err) {
+      if (err && err.code === "invalid_exception") {
+        // Said inside the dialog, which stays open: the line has to be fixed or removed.
+        const out = $("#exceptions-count");
+        out.textContent = err.message;
+        out.classList.add("bad");
+        $("#exceptions-text").focus();
+      } else {
+        showError(err);
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Dialog helpers
   // ---------------------------------------------------------------------------------------------
   function openDialog(dlg) {
@@ -919,7 +988,7 @@
       case "exported": {
         const parts = [`${plural(c.total || 0, "zona propuesta", "zonas propuestas")}`];
         if (c.doubtful) parts.push(`${plural(c.doubtful, "dudosa", "dudosas")} para revisar primero`);
-        if (c.suggested) parts.push(`${plural(c.suggested, "otro enlace", "otros enlaces")} sin censurar`);
+        if (c.suggested) parts.push(unappliedText(c.suggested - (c.suggested_exceptions || 0), c.suggested_exceptions || 0));
         return parts.join(" · ");
       }
       case "error": return "No se pudo procesar";
@@ -1483,6 +1552,18 @@
   }
 
   // --- findings column ---
+  // Why an optional finding is not censored by default: another URL (D12) or a value of the
+  // user's exceptions list (D10).
+  function isException(f) { return f.optional_reason === "exception"; }
+  function optionalWhy(f) { return isException(f) ? "en tu lista de excepciones" : "otro enlace"; }
+  /** "2 otros enlaces y 1 excepción sin censurar": the suggestions left unapplied. */
+  function unappliedText(urls, listed) {
+    const parts = [];
+    if (urls) parts.push(plural(urls, "otro enlace", "otros enlaces"));
+    if (listed) parts.push(plural(listed, "excepción", "excepciones"));
+    return parts.length ? `${joinEs(parts)} sin censurar` : "";
+  }
+
   function findingItem(f) {
     const rv = S.rv;
     const removed = f.status === "removed";
@@ -1495,13 +1576,14 @@
       const r = removedReason(f);
       whyEl.append(` · quitada${r ? `: ${r.toLowerCase()}` : ""}`);
     }
-    if (f.optional) whyEl.append(suggested ? " · sin censurar" : " · se censura");
+    if (f.optional) whyEl.append(` · ${optionalWhy(f)}`, suggested ? " · sin censurar" : " · se censura");
     let action;
     if (f.optional) {
-      // D12: an optional URL is censored or left visible with one click, without a reason.
+      // D12, D10: an optional finding is censored or left visible with one click, without a reason.
+      const what = isException(f) ? findingValue(f) : `el enlace ${findingValue(f)}`;
       action = h("button", {
         type: "button", class: "btn ghost small", dataset: { fk: `fa:${f.id}` },
-        "aria-label": suggested ? `Censurar el enlace ${findingValue(f)}` : `No censurar el enlace ${findingValue(f)}`,
+        "aria-label": suggested ? `Censurar ${what}` : `No censurar ${what}`,
         text: suggested ? "Censurar" : "No censurar",
         onclick: () => toggleOptional(f.id),
       });
@@ -1582,7 +1664,8 @@
     const rest = vis.filter((f) => !f.doubtful && !f.optional);
     const other = vis.filter((f) => f.optional);
     const anyOther = all.some((f) => f.optional);
-    const unapplied = all.filter((f) => f.status === "suggested").length;
+    const unappliedUrls = all.filter((f) => f.status === "suggested" && !isException(f)).length;
+    const unappliedListed = all.filter((f) => f.status === "suggested" && isException(f)).length;
     const list = $("#findlist");
     keepFocus(list, () => {
       const parts = [];
@@ -1600,22 +1683,47 @@
           : h("p", { class: "nofind", text: "No hay hallazgos con el filtro actual." }));
       }
       if (anyOther) {
+        // Not censored by default: other URLs (D12) and values of the exceptions list (D10).
+        const anyUrl = all.some((f) => f.optional && !isException(f));
+        const anyListed = all.some((f) => f.optional && isException(f));
         // With "Censurar también los otros enlaces" on, this file's other URLs started censored.
         const startedApplied = !!(rv.file && rv.file.options && rv.file.options.urls_other);
+        const urlsApplied = anyUrl && startedApplied;
+        // The heading never says "not censored" about URLs that started censored.
+        const heading = !urlsApplied ? "No se censuran por defecto" : anyListed ? "Otros enlaces y excepciones" : "Otros enlaces";
         parts.push(h("h3", { class: "group", id: "g-other" },
-          h("span", { text: startedApplied ? "Otros enlaces" : "Otros enlaces (sin censurar)" }), h("span", { text: String(other.length) })));
-        parts.push(h("p", { class: "group-note", text: startedApplied
-          ? "Sitios institucionales o documentos públicos. Se censuran porque así lo elegiste antes de procesar: deja visibles los que quieras."
-          : "Sitios institucionales o documentos públicos. No se censuran a menos que tú lo decidas." }));
-        parts.push(h("div", { class: "group-acts" }, h("button", {
-          type: "button", class: "btn small", dataset: { fk: "apply-other" },
-          disabled: !unapplied || undefined,
-          text: "Censurar todos los otros enlaces",
-          onclick: applyAllOptional,
-        })));
+          h("span", { text: heading }), h("span", { text: String(other.length) })));
+        const notes = [];
+        if (anyUrl) {
+          notes.push(urlsApplied
+            ? "Otros enlaces: sitios institucionales o documentos públicos. Se censuran porque así lo elegiste antes de procesar: deja visibles los que quieras."
+            : "Otros enlaces: sitios institucionales o documentos públicos.");
+        }
+        if (anyListed) notes.push("Excepciones: valores de tu lista de excepciones, como el RUT de tu institución o sus números 600 y 800.");
+        if (!urlsApplied) notes.push("No se censuran a menos que tú lo decidas.");
+        else if (anyListed) notes.push("Las excepciones no se censuran a menos que tú lo decidas.");
+        parts.push(h("p", { class: "group-note", text: notes.join(" ") }));
+        const acts = [];
+        if (anyUrl) {
+          acts.push(h("button", {
+            type: "button", class: "btn small", dataset: { fk: "apply-other" },
+            disabled: !unappliedUrls || undefined,
+            text: "Censurar todos los otros enlaces",
+            onclick: () => applyAllOptional("url"),
+          }));
+        }
+        if (anyListed) {
+          acts.push(h("button", {
+            type: "button", class: "btn small", dataset: { fk: "apply-listed" },
+            disabled: !unappliedListed || undefined,
+            text: "Censurar todas las excepciones",
+            onclick: () => applyAllOptional("exception"),
+          }));
+        }
+        parts.push(h("div", { class: "group-acts" }, acts));
         parts.push(other.length
           ? h("ul", { class: "items", "aria-labelledby": "g-other" }, other.map(findingItem))
-          : h("p", { class: "nofind", text: "No hay otros enlaces con el filtro actual." }));
+          : h("p", { class: "nofind", text: "No hay datos sin censurar por defecto con el filtro actual." }));
       }
       list.replaceChildren(...parts);
     });
@@ -1629,7 +1737,10 @@
     const all = rvFindings();
     const active = all.filter(isApplied).length;
     const removed = all.filter((f) => f.status === "removed").length;
-    const suggested = all.filter((f) => f.status === "suggested").length;
+    const unapplied = unappliedText(
+      all.filter((f) => f.status === "suggested" && !isException(f)).length,
+      all.filter((f) => f.status === "suggested" && isException(f)).length,
+    );
     const added = all.filter((f) => f.type === "manual" || f.detector === "reviewer").length;
     const seen = seenSet(file.id);
     const unseen = all.filter((f) => f.doubtful && !seen.has(f.id)).length;
@@ -1637,7 +1748,7 @@
     const parts = [`${plural(active, "zona", "zonas")} a censurar`];
     if (removed) parts.push(`${plural(removed, "quitada", "quitadas")} por ti`);
     if (added) parts.push(`${plural(added, "agregada", "agregadas")} por ti`);
-    if (suggested) parts.push(`${plural(suggested, "otro enlace", "otros enlaces")} sin censurar`);
+    if (unapplied) parts.push(unapplied);
     if (unseen) parts.push(`${plural(unseen, "hallazgo dudoso", "hallazgos dudosos")} sin abrir`);
     if (leaks) parts.push(`${plural(leaks, "fuga sin resolver", "fugas sin resolver")}`);
     else parts.push("la verificación de fugas se hace al exportar");
@@ -1696,8 +1807,10 @@
     const f = findingById(id || S.rv.sel);
     if (!f) { toast("Primero selecciona un hallazgo."); return; }
     if (f.optional) {
-      // D12: an optional URL is left visible with "No censurar" (no reason needed).
-      if (f.status === "suggested") toast("Este enlace no está censurado. Usa «Censurar» si quieres censurarlo.");
+      // D12, D10: an optional finding is left visible with "No censurar" (no reason needed).
+      if (f.status === "suggested") {
+        toast(`${isException(f) ? "Este dato" : "Este enlace"} no está censurado. Usa «Censurar» si quieres censurarlo.`);
+      }
       else toggleOptional(f.id);
       return;
     }
@@ -1745,7 +1858,7 @@
       showError(err);
     }
   }
-  // --- other URLs (D12): censor or leave visible ---
+  // --- other URLs (D12) and values of the exceptions list (D10): censor or leave visible ---
   async function toggleOptional(id) {
     const f = findingById(id);
     if (!f || !f.optional) return;
@@ -1753,18 +1866,21 @@
     try {
       const updated = await api(`/api/files/${enc(S.rv.id)}/findings/${enc(id)}`, { method: "PATCH", json: { action } });
       replaceFinding(updated);
+      const what = isException(f) ? "Este dato" : "Este enlace";
       toast(action === "apply"
-        ? "Este enlace se censurará."
-        : "Este enlace quedará visible. Queda registrado en el informe de auditoría.");
+        ? `${what} se censurará.`
+        : `${what} quedará visible. Queda registrado en el informe de auditoría.`);
       focusFinding(id);
       refreshState();
     } catch (err) {
       showError(err);
     }
   }
-  async function applyAllOptional() {
+  /** Applies every suggestion of one kind: "url" (other URLs) or "exception" (exceptions list). */
+  async function applyAllOptional(reason) {
+    const listed = reason === "exception";
     try {
-      const res = await api(`/api/files/${enc(S.rv.id)}/findings/apply-optional`, { method: "POST" });
+      const res = await api(`/api/files/${enc(S.rv.id)}/findings/apply-optional`, { method: "POST", json: { reason } });
       const applied = (res && res.applied) || [];
       if (S.rv.file) {
         const list = S.rv.file.findings;
@@ -1777,9 +1893,10 @@
       renderFindings();
       renderThumbs();
       renderVerify();
+      const more = listed ? plural(applied.length, "excepción más", "excepciones más") : plural(applied.length, "enlace más", "enlaces más");
       toast(applied.length
-        ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${plural(applied.length, "enlace más", "enlaces más")}.`
-        : "No quedaban otros enlaces sin censurar.");
+        ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${more}.`
+        : listed ? "No quedaban excepciones sin censurar." : "No quedaban otros enlaces sin censurar.");
       const first = applied[0] && $(`#findlist [data-fk="fa:${CSS.escape(applied[0].id)}"]`);
       if (first) first.focus({ preventScroll: true });
       refreshState();
@@ -2204,6 +2321,10 @@
     $("#names-text").addEventListener("input", updateNamesCount);
     $("#dlg-names-form").addEventListener("submit", saveNames);
     $("#dlg-names-no").addEventListener("click", () => $("#dlg-names").close());
+    $("#b-exceptions").addEventListener("click", openExceptions);
+    $("#exceptions-text").addEventListener("input", updateExceptionsCount);
+    $("#dlg-exceptions-form").addEventListener("submit", saveExceptions);
+    $("#dlg-exceptions-no").addEventListener("click", () => $("#dlg-exceptions").close());
     $("#b-process").addEventListener("click", () => {
       const mode = $("#b-process").dataset.mode;
       if (mode === "process") startProcessing(S.files.filter(isPending).map((f) => f.id));

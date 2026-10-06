@@ -42,11 +42,18 @@ _URL_CONTINUATION = re.compile(r"\n([\w\-./%?=&#~+:]+)(?=[ \t]*(?:\n|$))")
 
 
 def rut_valid_by_shape(m: re.Match[str]) -> bool:
-    """Avoids taking amounts or dates without a dash as a RUT: without a dash it requires 8-10 chars in a row."""
+    """Avoids taking amounts or dates without a dash as a RUT: without a dash it requires 8-10 chars in a row.
+
+    A 600 number written with spaces ("600 123 4567") has that shape too, but no RUT has a body of
+    600 million: it is left to ``phones`` (D10).
+    """
     text = m.group(0)
     if re.search(_DASH, text):
         return True
-    return bool(re.fullmatch(r"\d{7,9}[\dkK]", re.sub(r"\s", "", text))) and "." not in text
+    digits = re.sub(r"\s", "", text)
+    if len(digits) == 10 and digits.startswith("600"):
+        return False
+    return bool(re.fullmatch(r"\d{7,9}[\dkK]", digits)) and "." not in text
 
 
 def rut_check_digit(body: str) -> str:
@@ -80,7 +87,9 @@ def ocr_variant(text: str) -> str:
 
 
 def phones(text: str) -> list[tuple[int, int]]:
-    """Chilean phone numbers (9 digits after the country code, or 8 after a phone label)."""
+    """Chilean phone numbers (9 digits after the country code, 10 for a 600 number, or 8 after a
+    phone label). 600 and 800 numbers belong to institutions: they are still censored by default
+    and the user can list them as exceptions (D10)."""
     output = []
     for m in _RUN.finditer(text):
         d = re.sub(r"\D", "", m.group(0))
@@ -90,7 +99,7 @@ def phones(text: str) -> list[tuple[int, int]]:
             d = d[2:]
         if len(d) == 10 and d.startswith("0"):
             d = d[1:]
-        ok = len(d) == 9 and d[0] in "23456789"
+        ok = (len(d) == 9 and d[0] in "23456789") or (len(d) == 10 and d.startswith("600"))
         if not ok and len(d) == 8 and _PHONE_LABEL.search(text[max(0, m.start() - 25) : m.start()]):
             ok = True
         if ok:

@@ -23,7 +23,7 @@ import uuid
 from contextlib import nullcontext
 from pathlib import Path
 
-from anonymizer.engine import context, estimate, faces, ocr
+from anonymizer.engine import context, estimate, exceptions, faces, ocr
 from anonymizer.engine.common import (
     IMAGE_FORMATS,
     IMAGE_SUFFIXES,
@@ -87,7 +87,7 @@ def settle_optional(findings: list[Finding]) -> int:
             continue
         normalized = normalize_1to1(f.text).replace("_", " ")  # ".../ana_soto": "_" is a word character
         if any(p.search(normalized) for p in needles):
-            f.optional = False
+            f.optional, f.optional_reason = False, None
             if f.status == "suggested":
                 f.status = "proposed"
                 f.history = [HistoryEntry(at=f.history[0].at if f.history else now_iso(), action="proposed")]
@@ -161,7 +161,7 @@ class RealEngine:
         try:
             report(0.02, "Revisando el archivo")
             kind = sniff(file.path)
-            if kind in ("empty", "format"):
+            if kind in ("empty", "format", "heic"):
                 raise FileError(kind)
             file.kind = kind
             with clock.running():
@@ -171,6 +171,8 @@ class RealEngine:
                     pages, findings = self._analyze_image(file, names, options, report)
             report(0.98, "Preparando la revisión")
             settle_optional(findings)
+            if not file.all_text:  # "censurar todo el texto": every line is censored, listed ones too
+                exceptions.apply(findings, file.exceptions, names)  # D10: listed values start unapplied
             file.pages = pages
             file.findings = findings
             file.status = "ready"
@@ -212,6 +214,7 @@ class RealEngine:
             status=status,
             optional=bool(zone.optional),
             history=[HistoryEntry(at=now_iso(), action=status)],
+            optional_reason="url" if zone.optional else None,
         )
         self._sources[finding.id] = source
         return finding
@@ -383,13 +386,15 @@ class RealEngine:
         kind = file.kind or sniff(file.path)
         name = Path(file.name).name or "archivo"
         whole: list[dict] = []  # PDF strokes removed whole (ExportResult.strokes_removed_whole)
+        grown: list[dict] = []  # PDF letters drawn as paths that the zones also took (ExportResult.grown)
         with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
             if kind == "pdf":
                 if Path(name).suffix.lower() != ".pdf":
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
-                whole = self._export_pdf(file, active, staged)
+                whole, grown = self._export_pdf(file, active, kept, staged)
                 leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer)
+                leaks += verify.glyph_leaks(staged, active, kept)
             else:
                 from anonymizer.engine import image
 
@@ -425,11 +430,18 @@ class RealEngine:
             exported=not leaks,
             message=message,
             strokes_removed_whole=whole if not leaks else [],
+            grown=grown if not leaks else [],
         )
 
     @staticmethod
-    def _export_pdf(file: AnalyzedFile, active: list[Finding], staged: Path) -> list[dict]:
-        """Writes the redacted PDF; returns the strokes removed whole (``ExportResult``), in view space."""
+    def _export_pdf(
+        file: AnalyzedFile, active: list[Finding], kept: list[Finding], staged: Path
+    ) -> tuple[list[dict], list[dict]]:
+        """Applies the active findings; nothing is added over what was left visible (``kept``).
+
+        Returns, in view space for the audit report, the strokes removed whole
+        (``ExportResult.strokes_removed_whole``) and the letters drawn as paths that each zone also
+        took (D8, ``pdf.snap_rects``; ``ExportResult.grown``)."""
         import pymupdf
 
         from anonymizer.engine import pdf, strokes
@@ -442,10 +454,18 @@ class RealEngine:
         zones = strokes.zones_by_page(active, to_page)
         rects = {n: [r for r, _ in items] for n, items in zones.items()}
         drawn = {n: [r for r, f in items if f.type in strokes.DRAWN_TYPES] for n, items in zones.items()}
+        keep = {n: [r for r, _ in items] for n, items in strokes.zones_by_page(kept, to_page).items()}
         whole: list[tuple[int, pymupdf.Rect]] = []
-        pdf.redact(file.path, str(staged), rects, drawn, whole)
+        applied = pdf.redact(file.path, str(staged), rects, keep, drawn, whole)
         out = []
         for n, box in whole:
             r = (box * to_view[n]).normalize()
             out.append({"page": n, "polygon": [[round(x, 2), round(y, 2)] for x, y in rect_polygon(*r)]})
-        return out
+        grown = []
+        for n, groups in applied.items():
+            for (_, f), group in zip(zones.get(n, []), groups, strict=False):
+                extra = [(r * to_view[n]).normalize() for r in group[1:]]
+                if extra:
+                    rects_view = [[round(v, 2) for v in (r.x0, r.y0, r.x1, r.y1)] for r in extra]
+                    grown.append({"finding_id": f.id, "page": n, "rects": rects_view})
+        return out, grown

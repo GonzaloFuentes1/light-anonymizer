@@ -15,7 +15,8 @@ Contract
     ``options`` (the groups it used) and ``timings`` (seconds per stage and in total).
     ``progress(fraction, step_text_es)`` is called as work advances; ``cancel`` is a
     ``threading.Event`` that stops the work early (status "cancelled"). URLs that are not
-    personal are ``optional`` findings that start "suggested" (D12).
+    personal are ``optional`` findings that start "suggested" (D12), and so are the findings
+    covered by ``file.exceptions``, the user's exceptions list (D10, ``exceptions.apply``).
 
 ``profile(file) -> dict``
     Cheap facts about the file for the time estimate (``estimate.profile``): fast, nothing is

@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pymupdf
 
-from anonymizer.engine import context, faces, raster, signatures, strokes
+from anonymizer.engine import context, faces, raster, signatures, strokes, vectors
 from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, stage, waiting_for
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import DetectionOptions
@@ -454,6 +454,19 @@ def _name_boxes(tp: TextPage, to_view: pymupdf.Matrix) -> list[pymupdf.Rect]:
     return out
 
 
+def _pixel_boxes(
+    rects: list[pymupdf.Rect], to_pix: pymupdf.Matrix, width: int, height: int
+) -> list[tuple[int, int, int, int]]:
+    """Pixel boxes of the page render for areas in page space (clipped; those under 24 px skipped)."""
+    boxes = []
+    for rect in rects:
+        r = (rect * to_pix).normalize()
+        x0, y0, x1, y1 = max(0, int(r.x0)), max(0, int(r.y0)), min(width, int(r.x1) + 1), min(height, int(r.y1) + 1)
+        if x1 - x0 >= 24 and y1 - y0 >= 24:
+            boxes.append((x0, y0, x1, y1))
+    return boxes
+
+
 def raster_zones(
     doc: pymupdf.Document,
     tp: TextPage,
@@ -467,19 +480,25 @@ def raster_zones(
 
     Scanned pages (no text layer): OCR, faces and signatures over the whole page. Pages with text:
     OCR, faces and signatures only inside each embedded image, however small (a phone in a 2 %
-    image is still a leak), and QR codes over the whole page. A small image may be a signature by
-    itself, and a signature keyword of the text layer next to an image counts as if it were inside
-    it; an image repeated at the same place on several pages (a letterhead's emblem) is not.
-    ``cache`` (shared by the pages of a document) reads the same image region, rendered identically
-    on several pages, only once. ``options``: the detection groups that run; with OCR, faces,
-    signatures and QR off the page is not even rendered.
+    image is still a leak), OCR inside the areas with text drawn as paths (D8,
+    ``vectors.text_regions``), and QR codes over the whole page. A page with text and neither images
+    nor drawn text is not rendered. A small image may be a signature by itself, and a signature
+    keyword of the text layer next to an image counts as if it were inside it; an image repeated at
+    the same place on several pages (a letterhead's emblem) is not. ``cache`` (shared by the pages
+    of a document) reads the same image region, rendered identically on several pages, only once.
+    ``options``: the detection groups that run; with OCR, faces, signatures and QR off the page is
+    not even rendered.
     """
     options = options or DetectionOptions()
     cache = {} if cache is None else cache
     with waiting_for(PDF_LOCK):
         page = doc[tp.index]
         info = page.get_image_info(xrefs=True)
-        if not (tp.scanned or info) or not options.raster:
+        drawn: list[pymupdf.Rect] = []
+        if options.ocr and not tp.scanned:  # D8: letters drawn as paths, which only OCR can read
+            with stage("text"):
+                drawn = vectors.text_regions(page, tp.boxes)
+        if not (tp.scanned or info or drawn) or not options.raster:
             return []
         if info and not tp.scanned and options.signatures and "repeated" not in cache:
             cache["repeated"] = _repeated_images(doc)
@@ -562,6 +581,22 @@ def raster_zones(
                 moved = z._replace(polygon=z.polygon + [x0, y0])
                 (found_faces if z.type == "face" else zones).append(moved)
         zones += faces.merge(found_faces)
+        for x0, y0, x1, y1 in _pixel_boxes(drawn, to_pix, width, height):  # D8: text only, no faces
+            crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
+            # Its own key: an image with the same pixels is also searched for faces.
+            key = ("drawn", crop.shape, hashlib.blake2b(crop.tobytes(), digest_size=16).digest())
+            if key not in cache:
+                cache[key] = raster.detect_in_image(
+                    crop,
+                    name_list,
+                    face_regions=[],
+                    qr_enabled=False,
+                    ocr_min_side=736,
+                    step=step,
+                    options=options,
+                    signatures_enabled=False,  # drawn text: the vector signature rule looks at paths
+                )
+            zones += [z._replace(polygon=z.polygon + [x0, y0]) for z in cache[key]]
     output = []
     for z in raster.dedup(zones):
         (x0, y0), (x1, y1) = np.asarray(z.polygon).min(axis=0), np.asarray(z.polygon).max(axis=0)
@@ -575,19 +610,60 @@ def raster_zones(
 # ---------------------------------------------------------------------------
 
 
+def snap_rects(
+    page: pymupdf.Page, rects: list[pymupdf.Rect], keep: list[pymupdf.Rect] | tuple = ()
+) -> list[list[pymupdf.Rect]]:
+    """The rectangles that applying ``rects`` (unrotated page space) on ``page`` takes: for each zone,
+    the zone itself and one small rectangle per letter drawn as a path under it (D8,
+    ``vectors.cover``), since MuPDF removes such a letter only when one rectangle covers all of it.
+    ``keep``: areas the reviewer left visible; a letter that belongs to one is not taken, and no
+    added rectangle enters one. Call with ``PDF_LOCK`` held."""
+    letters = vectors.shapes(page) if rects else []
+    return [[r, *vectors.cover(r, letters, keep)] if letters else [r] for r in rects]
+
+
+def apply_page_zones(
+    page: pymupdf.Page, rects: list[pymupdf.Rect], keep: list[pymupdf.Rect] | tuple = ()
+) -> list[list[pymupdf.Rect]]:
+    """Applies ``rects`` (unrotated page space; the page must have no /Rotate while this runs) on
+    ``page`` and returns what ``snap_rects`` took for each zone. The one entry point for the export
+    and any preview of it.
+
+    Two passes, because MuPDF lets the first redaction rectangle that touches a shape decide whether
+    it is removed: first the letters' rectangles alone (overlapping ones joined, never into a kept
+    area), then the zones, which decide alone on everything else. In one pass, a letter's rectangle
+    touching a large shape the zone covers whole (an outline over 40 pt, a fill-and-stroke shape)
+    came first and kept it in the file."""
+    groups = snap_rects(page, rects, keep)
+    letters = vectors.join_overlapping([r for group in groups for r in group[1:]], keep)
+    if letters:
+        for r in letters:
+            page.add_redact_annot(r, fill=(0, 0, 0))
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+    for group in groups:
+        page.add_redact_annot(group[0], fill=(0, 0, 0))
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+    return groups
+
+
 def redact(
     source: str,
     dest: str,
     rects_by_page: dict[int, list[pymupdf.Rect]],
+    keep_by_page: dict[int, list[pymupdf.Rect]] | None = None,
     drawn_by_page: dict[int, list[pymupdf.Rect]] | None = None,
     whole_out: list[tuple[int, pymupdf.Rect]] | None = None,
-) -> None:
+) -> dict[int, list[list[pymupdf.Rect]]]:
     """Writes ``dest``: ``source`` with the zones really removed (text, vector paths and image pixels)
     and the document cleaned (metadata, XMP, annotations, forms, attachments, layers, bookmarks,
     JavaScript actions), fully rewritten. Stroked paths under the zones are removed by
     ``strokes.remove``; ``drawn_by_page``: the zones whose content may be a drawing (signatures,
     zones drawn by the reviewer), where a pen stroke mostly under the zone goes whole; ``whole_out``
-    receives (page, box in unrotated page space) of each stroke removed whole."""
+    receives (page, box in unrotated page space) of each stroke removed whole.
+
+    ``keep_by_page``: areas left visible on purpose (``snap_rects``). Returns, per page, the
+    rectangles applied for each zone of ``rects_by_page``, in the same order (``apply_page_zones``)."""
+    applied: dict[int, list[list[pymupdf.Rect]]] = {}
     with PDF_LOCK:
         doc = pymupdf.open(source, filetype="pdf")
         try:
@@ -605,9 +681,9 @@ def redact(
                     strokes.remove(page, rects_by_page[n], (drawn_by_page or {}).get(n, []), whole)
                     if whole_out is not None:
                         whole_out += [(n, pymupdf.Rect(box)) for box in whole]
-                for r in rects_by_page.get(n, []):
-                    page.add_redact_annot(r, fill=(0, 0, 0))
-                page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+                # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
+                keep = (keep_by_page or {}).get(n, ())
+                applied[n] = apply_page_zones(page, rects_by_page.get(n, []), keep)
                 if rotation:
                     page.set_rotation(rotation)
                 for annot in list(page.annots() or []):
@@ -626,3 +702,4 @@ def redact(
             doc.save(dest, garbage=4, deflate=True, clean=True)
         finally:
             doc.close()
+    return applied

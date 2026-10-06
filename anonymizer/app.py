@@ -46,11 +46,15 @@ log = logging.getLogger("anonymizer")
 # work account by itself and opened a TLS connection to Microsoft 365 (52.97.x.x:443) a few seconds
 # after every launch; that traffic goes through Windows, not Chromium's network stack, so only
 # turning the feature off stops it. The host rules make any name lookup by Chromium fail (the UI is
-# served from 127.0.0.1, which needs none).
+# served from 127.0.0.1, which needs none). ``--disable-breakpad`` is Chromium's switch that turns
+# crash reporting off: crash uploads use their own HTTP client, which the host rules do not cover
+# (whether WebView2 honors it has not been measured; that needs a crash during a capture). What may
+# still talk to Microsoft is listed in README.md, "Network traffic" (decision D11).
 WEBVIEW2_ARGS = (
     "--disable-features=ElasticOverscroll,msSmartScreenProtection,msOneAuthWAM,msLoadOneAuthInBackground,"
     "msImplicitSignin,msEdgeOSAccountInfoSubstrate "
     "--disable-background-networking --disable-component-update --no-pings --disable-domain-reliability "
+    "--disable-breakpad "
     '--no-proxy-server --host-resolver-rules="MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"'
 )
 FILE_TYPES = (

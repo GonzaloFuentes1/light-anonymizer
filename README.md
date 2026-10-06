@@ -6,6 +6,8 @@ A desktop tool that anonymizes PDFs and images **locally**, built for Chilean pu
 
 > **Status: phase 0 finished, phases 1–2 in progress, phase 3 pending.** The repository contains the test bench (a fictitious test set with exact ground truth, the evaluator and baselines), the engine and a preliminary desktop app that runs it. There is no installer yet. Human review of every document before publishing is mandatory, always.
 
+**Platform:** version 1 targets Windows 10 and 11 (64-bit) only; macOS is not supported (decision D4 in [PLAN.md](PLAN.md)).
+
 ## Principles
 
 1. **Recall over precision.** When in doubt, redact. Validations (RUT check digit, OCR confidence, face score) only order the review; they never discard a finding.
@@ -73,6 +75,21 @@ The AGPL requires offering the exact source of what is handed out, so the script
 One folder rather than a single file: the app starts in one or two seconds instead of unpacking hundreds of MB to `%TEMP%` on every launch, and antivirus programs flag it less often (the first launch after unzipping is slower while the antivirus scans it). It needs the WebView2 runtime, which Windows 10 and 11 include, and makes no network calls (WebView2 runs with its background services and its Windows-account sign-in turned off: with the sign-in on, it connected to Microsoft 365 on every launch). Unzip it to a short path outside OneDrive, such as `C:\Apps\LightAnonymizer`: with long paths Windows can fail to load native libraries.
 
 The executable takes the same options as `python -m anonymizer.app` (`--browser`, `--no-open`, `--engine`), except that it always uses the real engine: it refuses `--engine fake`, ignores `ANONYMIZER_ENGINE`, and if the engine's components are missing (an antivirus may quarantine one) it shows an error instead of falling back to the development engine, which would export scanned pages and photos unredacted. Startup errors appear in a Spanish message box, and closing the window while files are being processed or are reviewed but not exported asks for confirmation. Because it has no console, `--url-file PATH` writes the URL and the session token to a JSON file for automated tests; nothing is written unless the flag is given, and the file is deleted when the app closes. With `--browser`, deleting that file stops the app cleanly (its working folder is deleted too), since the executable cannot receive Ctrl+C.
+
+## Network traffic
+
+The app itself makes no network calls: the local server listens only on 127.0.0.1, the models are bundled and passed by path (nothing is downloaded), the interface loads nothing from outside (its Content-Security-Policy allows only the local server), and the telemetry of onnxruntime and FastAPI's OpenTelemetry is turned off at startup.
+
+The window is Microsoft's WebView2, a Windows component, and some of its own traffic cannot be ruled out from inside the app (decision D11). What the app does about it (`WEBVIEW2_ARGS` in `anonymizer/app.py`): it turns off WebView2's background services (component updates, pings, reliability reports), SmartScreen and the sign-in with the Windows account (with it on, WebView2 opened a connection to Microsoft 365 on every launch), passes Chromium's switch that turns crash reporting off, uses no proxy, and makes every name lookup of WebView2's network stack fail except for 127.0.0.1. Documents never travel through any of these channels.
+
+What may still talk to Microsoft, and why:
+
+- **WebView2 updates.** The WebView2 runtime is part of Windows and is updated by the Microsoft Edge Update service, on its own schedule, whether or not the app is open. The app cannot and should not turn it off.
+- **Crash reports of WebView2.** If WebView2 crashes, its crash handler may upload a report depending on the Windows diagnostic-data settings; it uses its own HTTP client, which the name-lookup rule does not cover. The crash-reporting switch is passed, but whether WebView2 honors it has not been measured (that needs a crash during a traffic capture).
+- **Windows itself, outside the app.** On first launch, SmartScreen checks the reputation of the unsigned `.exe` ("Windows protegió tu PC") and Microsoft Defender may look up or submit files to its cloud service, according to the machine's settings. These checks belong to the operating system, not to the app.
+- **onnxruntime's ETW events** are turned off at startup; on Windows they are local events that only the Windows diagnostic pipeline could collect, and only if the machine is set to.
+
+A machine that must have zero traffic needs IT to enforce it outside the app: an outbound firewall rule for `LightAnonymizer.exe`, and Windows/Edge policies for diagnostic data and WebView2 updates. A firewall rule on `msedgewebview2.exe` would also affect every other program that uses WebView2 (Teams, Outlook…), since that executable is shared.
 
 ## The test bench
 

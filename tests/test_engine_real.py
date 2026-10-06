@@ -136,8 +136,15 @@ def test_errors_by_content(tmp_path):
     doc.new_page().insert_text((72, 72), "Contenido ficticio")
     doc.save(tmp_path / "locked.pdf", encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="clave", owner_pw="clave")
     doc.close()
+    (tmp_path / "foto.heic").write_bytes(b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 64)
     expected = {"empty.pdf": "empty", "doc.pdf": "format", "bad.pdf": "corrupt", "bad.jpg": "corrupt"}
     expected["locked.pdf"] = "password"
+    expected["foto.heic"] = "heic"  # D5: not supported, with its own message
+    # A generic HEIF brand counts only with a HEIC brand among the compatible ones; an AVIF does not.
+    (tmp_path / "foto.heif").write_bytes(b"\x00\x00\x00\x1cftypmif1\x00\x00\x00\x00mif1heicmiaf" + b"\x00" * 64)
+    (tmp_path / "foto.avif").write_bytes(b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf" + b"\x00" * 64)
+    (tmp_path / "otra.avif").write_bytes(b"\x00\x00\x00\x1cftypmif1\x00\x00\x00\x00mif1avifmiaf" + b"\x00" * 64)
+    expected |= {"foto.heif": "heic", "foto.avif": "format", "otra.avif": "format"}
     for name, code in expected.items():
         file = analyzed(tmp_path / name)
         assert (file.status, file.error) == ("error", code), name
@@ -206,6 +213,60 @@ def test_unmarked_pattern_in_the_output_is_a_leak(tmp_path):
     result = RealEngine().export(file, str(tmp_path / "out"))
     assert not result.exported
     assert any(leak.type == "phone" and "no estaba marcado" in leak.message for leak in result.leaks)
+
+
+NEUTRAL_SCAN = "Acta ficticia escaneada con capa de texto invisible, solo para pruebas."
+
+
+def _image_page_pdf(path: Path, img: Image.Image, invisible: list[str] | None = None) -> Path:
+    """A PDF page that is one image (a scan); ``invisible`` adds an OCR layer on top (render mode 3)."""
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_image(page.rect, stream=buf.getvalue())
+    for i, line in enumerate(invisible or []):
+        page.insert_text((72, 100 + 22 * i), line, fontsize=11, render_mode=3)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+@needs_ocr
+def test_scan_is_exported_as_an_image_without_a_text_layer(tmp_path):
+    # D9: a scanned page goes out as the redacted image it came in as; no OCR text layer is added.
+    img = Image.new("RGB", (1240, 1754), "white")
+    draw = ImageDraw.Draw(img)
+    for i, line in enumerate([f"RUT: {VALID_RUT}", f"Correo: {EMAIL}", "Texto neutro de la nota"]):
+        draw.text((120, 160 + 70 * i), line, font=font("sans", 36), fill=(0, 0, 0))
+    engine = RealEngine()
+    file = analyzed(_image_page_pdf(tmp_path / "escaneo.pdf", img), engine=engine)
+    assert file.pages[0].scanned and {"rut", "email"} <= {f.type for f in file.findings}
+    result = engine.export(file, str(tmp_path / "out"))
+    assert result.exported, [leak.message for leak in result.leaks]
+    with pymupdf.open(result.output_path) as doc:
+        assert doc[0].get_text().strip() == ""
+        assert not doc[0].get_texttrace()
+        assert len(doc[0].get_images()) == 1
+
+
+def test_sandwich_ocr_layer_keeps_only_the_original_text_that_was_not_redacted(tmp_path):
+    # D9: in a scan with an invisible OCR layer, the redacted spans leave that layer too; what is
+    # left is the original's own text, still invisible, and nothing new is written.
+    lines = [NEUTRAL_SCAN, f"RUT: {VALID_RUT}", f"Correo: {EMAIL}"]
+    path = _image_page_pdf(tmp_path / "sandwich.pdf", Image.new("RGB", (850, 1100), "white"), lines)
+    options = {"ocr": False, "faces": False, "qr": False}  # only the text layer matters here
+    engine = RealEngine()
+    file = analyzed(path, engine=engine, options=options)
+    assert {"rut", "email"} <= {f.type for f in file.findings}
+    result = engine.export(file, str(tmp_path / "out"))
+    assert result.exported, [leak.message for leak in result.leaks]
+    with pymupdf.open(result.output_path) as doc:
+        spans = doc[0].get_texttrace()
+        text = doc[0].get_text()
+    assert VALID_RUT not in text and EMAIL not in text
+    assert NEUTRAL_SCAN in text and "RUT:" in text
+    assert spans and {span["type"] for span in spans} == {3}  # still invisible
 
 
 def test_image_metadata_check(tmp_path):
@@ -461,12 +522,13 @@ def _skip_zones(monkeypatch, skip):
     original = pdf.redact
     boxes = [common.bbox_of(f.polygon) for f in skip]
 
-    def faulty(source, dest, rects_by_page, drawn_by_page=None, whole_out=None):
+    def faulty(source, dest, rects_by_page, keep_by_page=None, drawn_by_page=None, whole_out=None):
         kept = {
             n: [r for r in rects if not any(abs(r.x0 - b[0]) < 0.01 and abs(r.y0 - b[1]) < 0.01 for b in boxes)]
             for n, rects in rects_by_page.items()
         }
-        return original(source, dest, kept, drawn_by_page, whole_out)
+        applied = original(source, dest, kept, keep_by_page, drawn_by_page, whole_out)
+        return {n: [[r] for r in rects_by_page.get(n, [])] for n in applied}  # one group per zone, as asked
 
     monkeypatch.setattr(pdf, "redact", faulty)
 

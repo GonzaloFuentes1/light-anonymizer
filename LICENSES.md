@@ -34,15 +34,15 @@ Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
 | **PyMuPDF** (MuPDF) | 1.28.2 | AGPL-3.0 or Artifex commercial license | ✅ | Used under the AGPL; for that reason the whole project is licensed under AGPL-3.0-or-later and its source is public (decision D1). |
 | pypdfium2 (PDFium) | 5.13.0 (PDFium 153.0.7999.0) | BSD-3-Clause / Apache-2.0 | ✅ | Bundles, among others, freetype (used under the FTL option), ICU, lcms, libjpeg-turbo, openjpeg, libpng, libtiff and zlib, all permissive. |
 | pypdf | 6.19.0 | BSD-3-Clause | ✅ | Candidate for cleaning the PDF structure (metadata, XMP, annotations, attachments, JavaScript, layers). |
-| opencv-python-headless | 5.0.0.93 | Apache-2.0 (OpenCV), MIT (packaging) | ⚠️ Windows / ⛔ macOS | Windows: bundles FFmpeg (LGPL-2.1) in a single video DLL that can be removed (YuNet was verified to keep working), and links Intel IPP ICV under the *Intel Simplified Software License* (not OSI). **Open issue:** IPP is statically linked into `cv2.pyd` and its license forbids modification and reverse engineering, restrictions the AGPL does not allow in the same program as AGPL MuPDF; the fix is a build of OpenCV without IPP (`-DWITH_IPP=OFF`) or dropping OpenCV (YuNet on onnxruntime). macOS: the PyPI wheels link a **GPL-3.0** FFmpeg with x264/x265 that cannot be removed. Alternative: build OpenCV without FFmpeg or IPP, or run YuNet directly with onnxruntime. |
+| opencv-python-headless | 5.0.0.93 | Apache-2.0 (OpenCV), MIT (packaging) | ⚠️ Windows / ⛔ macOS | Windows: bundles FFmpeg (LGPL-2.1) in a single video DLL that can be removed (YuNet was verified to keep working), and links Intel IPP ICV under the *Intel Simplified Software License* (not OSI). The executable leaves that DLL out (the spec drops it and `build_exe.py` checks), but it carries IPP ICV 2026.0.0 inside `cv2.pyd`. **Known risk, accepted for version 1 (decided 2026-10-06; D3 covers weak copyleft only):** IPP is statically linked into `cv2.pyd` under Intel's proprietary license (free redistribution, not free software), which forbids modification and reverse engineering, restrictions the AGPL does not allow in the same program as AGPL MuPDF: a grey area. Version 1 is free and internal; before the app is handed to other institutions, OpenCV is removed (YuNet on onnxruntime) or rebuilt without IPP (`-DWITH_IPP=OFF`). macOS (not a version-1 target, decision D4): the PyPI wheels link a **GPL-3.0** FFmpeg with x264/x265 that cannot be removed. Alternative: build OpenCV without FFmpeg or IPP, or run YuNet directly with onnxruntime. |
 | onnxruntime | 1.30.0 | MIT | ✅ | Includes Eigen (MPL-2.0, headers only), which is complied with by keeping the notice. Requires macOS 14 or later (Apple Silicon). **Ships Microsoft telemetry** (ETW on Windows; HTTPS upload on macOS since 1.29), which the app disables at startup (PLAN.md, 5.6). |
-| rapidocr | 3.9.2 | Apache-2.0 | ⚠️ | The package itself is compatible, but it requires opencv-python with a GUI (Qt and FFmpeg), shapely (GEOS, LGPL-2.1), requests and certifi (MPL-2.0) and tqdm (MPL-2.0). It also includes code that downloads models and opens URLs. Proposal: use its models and port only the inference (PLAN.md, section 5.4). |
+| rapidocr | 3.9.2 | Apache-2.0 | ⚠️ | The package itself is compatible, but it requires opencv-python with a GUI (Qt and FFmpeg), shapely (GEOS, LGPL-2.1), requests and certifi (MPL-2.0) and tqdm (MPL-2.0); the weak-copyleft ones are accepted (D3) and ship with their licenses. It also includes code that downloads models and opens URLs (the app passes the models by path, so none is downloaded). Proposal: use its models and port only the inference (PLAN.md, section 5.4). |
 | PaddleOCR models (ONNX) | PP-OCR | Apache-2.0 | ✅ | Per-model details in section 2. |
 | YuNet (opencv_zoo) | 2023mar / 2026may | MIT | ✅ | Copyright (c) 2020 Shiqi Yu. |
 | numpy | 2.5.3 | BSD-3-Clause and other permissive licenses | ✅ | OpenBLAS (BSD-3); GCC runtime with the GCC exception. |
 | Pillow | 12.3.0 | MIT-CMU | ✅ | Bundles freetype (FTL), harfbuzz, lcms2, libjpeg-turbo, libpng, libwebp, openjpeg, libtiff, zlib-ng, xz, all permissive. Does not read HEIC. |
 | pillow-heif | 1.8.0 | BSD-3 (source) / **GPL-2.0 (wheels, because of x265)** | ⛔ | Will not be used. |
-| pi-heif | 1.4.0 | BSD-3 (source) / LGPL-3.0 (libheif, libde265) | ⚠️ | Decode only. Acceptable only if LGPL is approved, with folder-mode packaging (not a single file). **Decision pending** (D5). |
+| pi-heif | 1.4.0 | BSD-3 (source) / LGPL-3.0 (libheif, libde265) | ⛔ | Decode only. Not used: HEIC is not supported in version 1 (D5); the app asks for a JPG instead. |
 | rapidfuzz | 3.14.6 | MIT | ✅ | Fuzzy name matching. |
 | pyclipper | 1.4.0 | MIT | ✅ | Polygon expansion for the text detector (replaces shapely). |
 | FastAPI | 0.142.2 | MIT | ✅ | Now requires `opentelemetry-api` (Apache-2.0), which sends nothing without the SDK. The app turns FastAPI's telemetry off anyway (`telemetry=` all off, `OTEL_SDK_DISABLED`), so no exporter can be set up from the environment. |
@@ -57,11 +57,17 @@ Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
 Not in the current executable: pypdfium2 and piexif (test bench only), pypdf, rapidfuzz,
 reportlab, pillow-heif, pi-heif, qrcode, segno and python-phonenumbers.
 
-Weak-copyleft components: rapidocr pulls in shapely/GEOS (LGPL-2.1, shipped as separate DLLs
-that can be replaced in the one-folder layout), certifi and tqdm (MPL-2.0), plus requests; they
-ship in the executable, with their license texts and source packages listed in
-`THIRD_PARTY_LICENSES/INDEX.txt`, until the port of the inference (PLAN.md, 5.4) removes them.
-img2pdf (LGPL-3.0) and pyzbar/zbar (LGPL-2.1) are not used.
+Weak-copyleft components (LGPL, MPL) are accepted when their license is complied with and they
+stay replaceable (decision D3, 2026-10-05). rapidocr pulls in shapely/GEOS (LGPL-2.1, shipped as
+separate DLLs in `Shapely.libs/` that can be replaced in the one-folder layout), certifi and tqdm
+(MPL-2.0), plus requests; onnxruntime compiles in Eigen (MPL-2.0, headers only). They ship in the
+executable with their license texts, and `THIRD_PARTY_LICENSES/INDEX.txt` says where their source
+code is. OpenCV's FFmpeg DLL (LGPL-2.1) is not bundled: the spec drops it and the build fails if
+it shows up. img2pdf (LGPL-3.0) and pyzbar/zbar (LGPL-2.1) are not used.
+
+Intel IPP is not weak copyleft (D3 does not cover it); it is **accepted for version 1 as a known risk** (decided 2026-10-06, see the OpenCV row and PLAN.md, D3): the executable
+bundles `cv2.pyd` of opencv-python-headless 5.0.0.93, with IPP ICV 2026.0.0 linked statically
+(`cv2.getBuildInformation()`); its terms ship in OpenCV's `LICENSE-3RD-PARTY.txt`.
 
 ## 2. Models
 

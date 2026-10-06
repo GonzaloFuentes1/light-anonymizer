@@ -76,6 +76,18 @@ def test_each_instance_has_its_own_webview_profile(monkeypatch, tmp_path):
     assert (root / "4000000002" / "Local State").is_file()
 
 
+def test_webview2_starts_with_its_microsoft_connections_off():
+    # D11: what turns WebView2's own traffic off. Losing one of these flags brings a connection back.
+    args = app.WEBVIEW2_ARGS
+    features = args.split("--disable-features=", 1)[1].split()[0].split(",")
+    for feature in ("msSmartScreenProtection", "msOneAuthWAM", "msLoadOneAuthInBackground", "msImplicitSignin"):
+        assert feature in features
+    assert "ElasticOverscroll" in features  # pywebview's own flag, which the variable replaces
+    for flag in ("--disable-background-networking", "--disable-component-update", "--no-pings", "--disable-breakpad"):
+        assert flag in args.split()
+    assert "--no-proxy-server" in args and '--host-resolver-rules="MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"' in args
+
+
 class FakeWindow:
     def __init__(self, answer: bool):
         self.answer, self.asked = answer, 0
