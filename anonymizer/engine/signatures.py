@@ -1,6 +1,6 @@
 """Handwritten and drawn signatures, found by rules over ink strokes, keywords and lines.
 
-No pretrained signature detector passed the license review (PLAN.md, section 14: every one we
+No pretrained signature detector passed the license review (PLAN.md, section 5.7: every one we
 found is trained on data whose copyright is unclear, such as Tobacco800), so these rules look for
 what a signature leaves on a page:
 
@@ -10,12 +10,17 @@ what a signature leaves on a page:
   stamp), a grid (a table, a QR code), a filled shape nor part of a texture (a photo). A stroke
   counts near a signature keyword ("Firma", "Firmado", "V°B°", "p.p."), over a signature line of a
   document or inside a small image placed on a text page; next to a keyword, letters written apart
-  count too. On a plain sheet of paper a large curly stroke counts by itself. In a table, the
-  column under the header "Firma" is a zone whatever it holds. A zone covers the stroke and the
+  count too. A stroke that OCR read as part of a line of text (a title in a script font) needs a
+  keyword, or a signature line with the signer's name or role on its other side. On a plain sheet
+  of paper a large curly stroke that OCR did not read counts by itself. In a table, the column
+  under the header "Firma" is a zone whatever it holds. An image repeated at the same place on
+  several pages (a letterhead emblem) is never a signature by itself. A zone covers the stroke and the
   marks that touch it (the letters of a name it crosses, their accents); a stamp pressed on the
   signature joins it.
 - Vector (text pages of a PDF): clusters of curved stroked paths near a keyword or a signature
-  line, or long and curly enough to be one by themselves.
+  line, or long and curly enough to be one by themselves; closed convex outlines (rings, ovals,
+  rounded boxes: seals, radio buttons) are never part of one. Pages whose text reads vertically
+  in PDF space (a landscape page stored as portrait plus /Rotate) are analyzed transposed.
 
 Every finding is doubtful (``DOUBT_SIGNATURE``): the reviewer checks it against the original.
 Regions are rectangles in the frame of the line that anchors them, so tilted photos and pages
@@ -227,6 +232,12 @@ class _Page:
         self.printed = (covered >= 0.6 * area) & (self.extent <= 1.8 * tallest)
         self.printed[0] = False
         self.in_line = covered / np.maximum(area, 1)  # share of each mark inside a confident OCR line
+        any_map = np.zeros((self.h, self.w), np.uint8)
+        for ln in lines:
+            cv2.fillPoly(any_map, [np.round(ln.polygon).astype(np.int32)], 1)
+        # Share inside any line OCR read, however unsure: a stroke OCR took for text.
+        self.in_any = np.bincount(self.labels[any_map > 0], minlength=n) / np.maximum(area, 1)
+        self.confident = confident
         keyword_map = np.zeros((self.h, self.w), np.uint8)
         for ln in lines:
             if is_keyword_line(ln.text):
@@ -310,7 +321,7 @@ class _Page:
         or a frame (stamps), a grid of squares (QR codes, tables) or part of a texture (a photo).
 
         ``lone``: no keyword or line anchors it, so it must be curlier and lie outside every line of
-        text that OCR read (letters run together by blur or a bold font are not a stroke).
+        text that OCR read, however unsure (letters run together by blur, a bold or script font).
         """
         if self.printed[i] or self.face[i] or self.area[i] < _MIN_AREA:
             return False
@@ -326,7 +337,7 @@ class _Page:
             return False
         if straight > 0.5 or axis > 0.6:
             return False
-        if lone and (curly < 1.6 or self.in_line[i] >= 0.4):
+        if lone and (curly < 1.6 or self.in_any[i] >= 0.4):
             return False
         m = int(self.text_h)
         around = self.ink[max(0, y - m) : y + h + m, max(0, x - m) : x + w + m]
@@ -345,10 +356,21 @@ class _Page:
         )
 
     def zones_in(
-        self, frame: Frame, min_extent: float, max_extent: float, weak: bool, lone: bool = False
+        self,
+        frame: Frame,
+        min_extent: float,
+        max_extent: float,
+        weak: bool,
+        lone: bool = False,
+        signed: frozenset[int] | None = None,
     ) -> list[tuple[np.ndarray, float]]:
         """Signature zones inside ``frame``: clusters of unexplained ink that hold a stroke (or, with
-        ``weak``, look like handwriting), grown over the printed marks that touch them."""
+        ``weak``, look like handwriting), grown over the printed marks that touch them.
+
+        ``signed`` (a signature line): the sides of the line (-1, +1 across the frame) with a printed
+        line next to it (the signer's name or role). A stroke that OCR read as text only counts on the
+        side opposite such a line: a title in a script font over a decorative rule does not.
+        """
         st = frame.st(self.corners.reshape(-1, 2)).reshape(-1, 4, 2)
         s0, s1 = st[:, :, 0].min(axis=1), st[:, :, 0].max(axis=1)
         t0, t1 = st[:, :, 1].min(axis=1), st[:, :, 1].max(axis=1)
@@ -359,6 +381,9 @@ class _Page:
         if not ids.size:
             return []
         seeds = {int(i) for i in ids if self.is_stroke(int(i), min_extent, max_extent, lone)}
+        if signed is not None:
+            across = frame.st(self.centroids)[:, 1]
+            seeds = {i for i in seeds if self.in_any[i] < 0.4 or (-1 if across[i] > 0 else 1) in signed}
         if not seeds and not weak:
             return []
         # Large marks that are not strokes (stamp rings and frames, grids) do not join a signature, and
@@ -415,10 +440,11 @@ class _Page:
 
     # -- anchors ---------------------------------------------------------
 
-    def rule_frames(self) -> list[Frame]:
+    def rule_frames(self) -> list[tuple[Frame, frozenset[int]]]:
         """Signature lines: straight rules a few words long that are not part of a table grid, on a
-        page or a card (in a photo, the straight edges of things are not lines)."""
-        frames: list[Frame] = []
+        page or a card (in a photo, the straight edges of things are not lines), each with the sides
+        that have a printed line next to it (``zones_in``)."""
+        frames: list[tuple[Frame, frozenset[int]]] = []
         if not self.doclike:
             return frames
         for rules, across, horizontal in ((self.rules_h, self.rules_v, True), (self.rules_v, self.rules_h, False)):
@@ -431,10 +457,23 @@ class _Page:
                 if across[max(0, y - 4) : y + h + 4, max(0, x - 4) : x + w + 4].any():
                     continue  # crossed by a rule the other way: a table
                 u = np.array([1.0, 0.0]) if horizontal else np.array([0.0, 1.0])
-                frames.append(
-                    Frame(np.array([x + w / 2, y + h / 2]), u, 0.6 * length, min(5 * self.text_h, 0.6 * length))
-                )
+                frame = Frame(np.array([x + w / 2, y + h / 2]), u, 0.6 * length, min(5 * self.text_h, 0.6 * length))
+                frames.append((frame, self._signed_sides(frame, length / 2)))
         return frames
+
+    def _signed_sides(self, frame: Frame, half: float) -> frozenset[int]:
+        """Sides of a rule with a confident printed line within two and a half letters of it."""
+        sides = set()
+        for ln in self.confident:
+            st = frame.st(ln.polygon)
+            if st[:, 0].max() < -half or st[:, 0].min() > half:
+                continue
+            t0, t1 = st[:, 1].min(), st[:, 1].max()
+            if 0 < t0 <= 2.5 * self.text_h:
+                sides.add(1)
+            elif -2.5 * self.text_h <= t1 < 0:
+                sides.add(-1)
+        return frozenset(sides)
 
     def keyword_frames(self, lines: list[_Line]) -> list[Frame]:
         frames: list[Frame] = []
@@ -526,13 +565,14 @@ def _column_frame(corners: np.ndarray, reach: float) -> Frame:
 
 
 def detect_raster(
-    bgr: np.ndarray, lines: Sequence[Any] = (), *, faces: Sequence[Any] = (), whole: bool = False
+    bgr: np.ndarray, lines: Sequence[Any] = (), *, faces: Sequence[Any] = (), whole: bool = False, lone: bool = True
 ) -> list[Zone]:
     """Signature zones of a BGR image, in its pixels.
 
     ``lines``: OCR lines (``ocr.OcrLine``: polygon, text, score, turn), plus any text-layer line of a
     PDF mapped to these pixels (score 1, turn 0). ``faces``: polygons of the faces found, left out.
     ``whole``: the image itself may be a signature (a small image placed on a text page).
+    ``lone=False``: a stroke needs a keyword, a line or a column (an image repeated on every page).
     """
     h0, w0 = bgr.shape[:2]
     if min(h0, w0) < 16:
@@ -552,12 +592,12 @@ def detect_raster(
     # Keyword labels and table columns allow a signature in separate letters; a bare line needs a stroke.
     for frame in page.keyword_frames(work) + columns:
         found += page.zones_in(frame, anchored, largest, weak=True)
-    for frame in page.rule_frames():
-        found += page.zones_in(frame, anchored, largest, weak=False)
+    for frame, signed in page.rule_frames():
+        found += page.zones_in(frame, anchored, largest, weak=False, signed=signed)
     if whole and page.paper:
         frame = Frame(np.array([page.w / 2, page.h / 2]), np.array([1.0, 0.0]), page.w / 2, page.h / 2)
         found += page.zones_in(frame, max(12.0, 0.25 * min(page.w, page.h)), float("inf"), weak=True)
-    if page.paper:  # a large curly stroke on its own, on a sheet of paper
+    if lone and page.paper:  # a large curly stroke on its own, on a sheet of paper
         lone = max(40.0, 4 * page.text_h)
         taken = merge(found)
         for i in np.flatnonzero(page.extent >= lone):
@@ -583,7 +623,7 @@ def detect_raster(
 # ---------------------------------------------------------------------------
 
 
-def _path_shape(items) -> tuple[int, int, float, float, int]:
+def path_shape(items) -> tuple[int, int, float, float, int]:
     """Curves, line segments, drawn length, the share of axis-parallel segments and how many times
     the pen turns back left or right (handwriting does it at every letter; a chart never does)."""
     curves = lines = 0
@@ -612,12 +652,109 @@ def _path_shape(items) -> tuple[int, int, float, float, int]:
     return curves, lines, length, straight / max(1, lines), turns
 
 
-def detect_vector(drawings: list[dict], lines: Sequence[Any], width: float, height: float) -> list[tuple[float, ...]]:
+def _closed_convex(items) -> bool:
+    """Every subpath is a closed outline that bulges out everywhere: a ring, an oval or a rounded box
+    (seals, stamps, radio buttons), never a pen's stroke."""
+    subpaths: list[list[tuple[float, float]]] = []
+    for item in items:
+        if item[0] == "l":
+            pts = [item[1], item[2]]
+        elif item[0] == "c":
+            p0, p1, p2, p3 = item[1:5]
+            pts = [
+                ((1 - t) ** 3 * p0.x + 3 * (1 - t) ** 2 * t * p1.x + 3 * (1 - t) * t**2 * p2.x + t**3 * p3.x,
+                 (1 - t) ** 3 * p0.y + 3 * (1 - t) ** 2 * t * p1.y + 3 * (1 - t) * t**2 * p2.y + t**3 * p3.y)
+                for t in np.linspace(0, 1, 9)
+            ]  # fmt: skip
+            pts = [type(p0)(x, y) for x, y in pts]
+        else:
+            return False
+        if not subpaths or np.hypot(pts[0].x - subpaths[-1][-1][0], pts[0].y - subpaths[-1][-1][1]) > 0.5:
+            subpaths.append([])
+        subpaths[-1] += [(p.x, p.y) for p in pts]
+    for sub in subpaths:
+        poly = np.asarray(sub, np.float64)
+        size = float(np.ptp(poly, axis=0).max()) if len(poly) else 0.0
+        if len(poly) < 6 or size <= 0 or np.hypot(*(poly[0] - poly[-1])) > max(0.5, 0.05 * size):
+            return False
+        hull = cv2.convexHull(poly.astype(np.float32)).reshape(-1, 2).astype(np.float64)
+        if _area(hull) <= 0 or _area(poly) / _area(hull) < 0.9:
+            return False
+    return bool(subpaths)
+
+
+def _reads_vertically(lines: Sequence[Any]) -> bool:
+    """Most of the text runs top to bottom in this space (a page turned by /Rotate, a sideways table)."""
+    across = along = 0
+    for ln in lines:
+        n = len(ln.text.strip())
+        if n < 3:
+            continue
+        if ln.y1 - ln.y0 > ln.x1 - ln.x0 and not getattr(ln, "horizontal", False):
+            along += n
+        else:
+            across += n
+    return along > across
+
+
+def _transposed(d: dict) -> dict:
+    """A path of ``get_drawings`` with x and y swapped."""
+    import pymupdf
+
+    def swap(p):
+        return pymupdf.Point(p.y, p.x)
+
+    items = []
+    for item in d.get("items") or []:
+        if item[0] in ("l", "c"):
+            items.append((item[0], *(swap(p) for p in item[1:])))
+        elif item[0] == "re":
+            r = item[1]
+            items.append(("re", pymupdf.Rect(r.y0, r.x0, r.y1, r.x1), *item[2:]))
+        else:
+            items.append(item)
+    r = d["rect"]
+    return {**d, "rect": pymupdf.Rect(r.y0, r.x0, r.y1, r.x1), "items": items}
+
+
+def _text_columns(lines: Sequence[Any], width: float, height: float) -> list[tuple[float, ...]]:
+    """The column under a "Firma" header of a table of the text layer (``_column_zones``)."""
+    work = [
+        _Line(np.array([[ln.x0, ln.y0], [ln.x1, ln.y0], [ln.x1, ln.y1], [ln.x0, ln.y1]], np.float64), ln.text, 1.0, 0)
+        for ln in lines
+    ]
+    out = []
+    for corners, score in _column_zones(work, round(width), round(height)):
+        (x0, y0), (x1, y1) = corners.min(axis=0), corners.max(axis=0)
+        out.append((float(x0), float(y0), float(x1), float(y1), score))
+    return out
+
+
+def detect_vector(
+    drawings: list[dict], lines: Sequence[Any], width: float, height: float, *, columns: bool = False
+) -> list[tuple[float, ...]]:
     """Signature zones ``(x0, y0, x1, y1, score)`` among the vector paths of a text page.
 
     ``drawings``: ``page.get_drawings()``; ``lines``: the text layer's lines (``context.Line``) in the
-    same space; ``width``/``height``: the page size in that space.
+    same space; ``width``/``height``: the page size in that space. ``columns``: also the column under
+    a "Firma" header of a table (the context rule for names finds it when that group is on). When
+    most of the text reads vertically in this space, the page is analyzed transposed, where it reads
+    across, and the zones are turned back.
     """
+    if _reads_vertically(lines):
+        from anonymizer.engine.context import Line
+
+        turned = [Line(ln.text, ln.y0, ln.x0, ln.y1, ln.x1, True) for ln in lines]
+        found = _detect_vector([_transposed(d) for d in drawings if d.get("rect") is not None], turned, height,
+                               width, columns)  # fmt: skip
+        return [(y0, x0, y1, x1, score) for x0, y0, x1, y1, score in found]
+    return _detect_vector(drawings, lines, width, height, columns)
+
+
+def _detect_vector(
+    drawings: list[dict], lines: Sequence[Any], width: float, height: float, columns: bool
+) -> list[tuple[float, ...]]:
+    out: list[tuple[float, ...]] = _text_columns(lines, width, height) if columns else []
     heights = [ln.y1 - ln.y0 for ln in lines if getattr(ln, "horizontal", True) and ln.y1 > ln.y0]
     text_h = float(np.clip(np.median(heights), 4, 40)) if heights else 10.0
     paths = []
@@ -627,7 +764,7 @@ def detect_vector(drawings: list[dict], lines: Sequence[Any], width: float, heig
         items = d.get("items") or []
         if r is None or not items:
             continue
-        curves, segments, length, straight, turns = _path_shape(items)
+        curves, segments, length, straight, turns = path_shape(items)
         if not curves and segments == 1 and r.height <= 2 and 5 * text_h <= r.width <= 0.7 * width:
             rules.append((r.x0, r.y0, r.x1, r.y1))  # a signature line
         boxes = sum(1 for item in items if item[0] in ("re", "qu"))
@@ -639,10 +776,12 @@ def detect_vector(drawings: list[dict], lines: Sequence[Any], width: float, heig
             continue
         if not (curves >= 2 or (segments >= 6 and straight < 0.6)) or max(r.width, r.height) < 0.3 * text_h:
             continue
+        if _closed_convex(items):
+            continue
         stroked = "s" in (d.get("type") or "") and d.get("color") is not None
         paths.append((r.x0, r.y0, r.x1, r.y1, curves, segments, length, stroked, float(d.get("width") or 0), turns))
     if not paths:
-        return []
+        return out
     regions = []
     for ln in lines:
         if is_keyword_line(ln.text):
@@ -677,7 +816,6 @@ def detect_vector(drawings: list[dict], lines: Sequence[Any], width: float, heig
     clusters: dict[int, list[int]] = {}
     for i in range(len(paths)):
         clusters.setdefault(find(i), []).append(i)
-    out = []
     for members in clusters.values():
         b = box[members]
         x0, y0, x1, y1 = b[:, 0].min(), b[:, 1].min(), b[:, 2].max(), b[:, 3].max()

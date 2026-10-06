@@ -30,7 +30,6 @@ from anonymizer.engine.common import (
     Cancelled,
     FileError,
     StageClock,
-    bbox_of,
     disable_power_throttling,
     now_iso,
     publish,
@@ -104,6 +103,11 @@ def missing_requirements() -> list[str]:
             missing.append(module)
     if not ocr.available():
         missing.append("rapidocr/onnxruntime")
+    if not missing:
+        from anonymizer.engine import strokes
+
+        if not strokes.self_test():  # private PyMuPDF bindings: a PyMuPDF update could break them
+            missing.append("pymupdf (content filter that removes strokes)")
     if not faces.available():
         missing.append(str(faces.YUNET_MODEL))
     else:
@@ -256,8 +260,9 @@ class RealEngine:
                     for tp in text_pages:
                         if tp.scanned:
                             continue
+                        report(0.2, f"Buscando firmas dibujadas: página {tp.index + 1} de {count}")
                         with waiting_for(PDF_LOCK):
-                            zones += pdf.vector_signatures(doc[tp.index], tp)
+                            zones += pdf.vector_signatures(doc[tp.index], tp, columns=not options.names_context)
             cache: dict = {}
             share = 0.75 / count
             for n, tp in enumerate(text_pages):
@@ -424,14 +429,13 @@ class RealEngine:
     def _export_pdf(file: AnalyzedFile, active: list[Finding], staged: Path) -> None:
         import pymupdf
 
-        from anonymizer.engine import pdf
+        from anonymizer.engine import pdf, strokes
 
         with PDF_LOCK:
             with pymupdf.open(file.path, filetype="pdf") as doc:
                 to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
-        rects: dict[int, list[pymupdf.Rect]] = {}
-        for f in active:
-            if 0 <= f.page < len(to_page):
-                x0, y0, x1, y1 = bbox_of(f.polygon)
-                rects.setdefault(f.page, []).append((pymupdf.Rect(x0, y0, x1, y1) * to_page[f.page]).normalize())
-        pdf.redact(file.path, str(staged), rects)
+        # The leak check (strokes.leaks) uses these same rectangles.
+        zones = strokes.zones_by_page(active, to_page)
+        rects = {n: [r for r, _ in items] for n, items in zones.items()}
+        drawn = {n: [r for r, f in items if f.type in strokes.DRAWN_TYPES] for n, items in zones.items()}
+        pdf.redact(file.path, str(staged), rects, drawn)

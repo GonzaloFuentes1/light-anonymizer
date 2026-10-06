@@ -58,6 +58,7 @@ def detect_in_image(
     signatures_enabled: bool = True,
     signature_lines: list | None = None,
     signature_whole: bool = False,
+    signature_lone: bool = True,
 ) -> list[Zone]:
     """Zones with personal data in an RGB image.
 
@@ -69,7 +70,8 @@ def detect_in_image(
     skipped, so with OCR off the image gets no text-based zone at all.
     ``signatures_enabled=False`` skips signatures here (the QR pass over a whole text page);
     ``signature_lines``: text-layer lines of a PDF near this image, in its pixels (signature
-    keywords); ``signature_whole``: the image itself may be a signature (``signatures.detect_raster``).
+    keywords); ``signature_whole``: the image itself may be a signature; ``signature_lone=False``: a
+    stroke needs a keyword or a line (``signatures.detect_raster``).
 
     A line whose only data are URLs that are not personal is an optional zone (D12), except in
     ``all_text`` mode, where every line is redacted.
@@ -114,6 +116,7 @@ def detect_in_image(
                 [*lines, *(signature_lines or [])],
                 faces=[z.polygon for z in zones if z.type == "face"],
                 whole=signature_whole,
+                lone=signature_lone,
             )
     if qr_enabled:
         if step is not None:

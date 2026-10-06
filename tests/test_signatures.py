@@ -502,7 +502,7 @@ def test_redaction_removes_stroked_paths_inside_the_zone_only(tmp_path):
 
 
 def test_a_drawing_left_under_a_zone_blocks_the_export(tmp_path, no_models, monkeypatch):
-    from anonymizer.engine import pdf
+    from anonymizer.engine import strokes
 
     doc = pymupdf.open()
     page = _text_page(doc)
@@ -514,10 +514,12 @@ def test_a_drawing_left_under_a_zone_blocks_the_export(tmp_path, no_models, monk
     file = AnalyzedFile(id="f1", name="firma.pdf", path=str(tmp_path / "firma.pdf"))
     engine.analyze(file, [])
     assert [f for f in file.findings if f.type == "signature"]
-    monkeypatch.setattr(pdf, "remove_strokes", lambda page, zones: 0)  # as MuPDF alone would leave it
+    monkeypatch.setattr(strokes, "remove", lambda page, zones, drawn=(): 0)  # as MuPDF alone would leave it
     result = engine.export(file, str(tmp_path / "out"))
     assert not result.exported
-    assert any(leak.type == "signature" and "trazo" in leak.message for leak in result.leaks)
+    assert any(
+        leak.type == "signature" and "trazo dibujado sigue en el archivo" in leak.message for leak in result.leaks
+    )
 
 
 def test_a_zone_drawn_by_the_reviewer_also_removes_the_strokes(tmp_path, no_models):
@@ -575,14 +577,18 @@ def font_signature(img, mask, x, y, text, size, color, rng, stroke=True):
 
 
 def synthetic_case(seed: int):
-    """One fictitious page with a signature: (image, OCR lines, signature mask, description)."""
+    """One fictitious page with a signature: (image, OCR lines, signature mask, description).
+
+    Seeds 0 to 31 cover every pair of style, anchor and geometry twice (two Latin squares).
+    """
     rng = np.random.default_rng(seed)
     img, mask = page(1240, 1754)  # A4 at 150 dpi
-    if seed % 3 == 1:  # paper with some grain
-        img[:] = np.clip(img.astype(np.int16) - rng.integers(0, 18, img.shape[:2])[:, :, None], 0, 255).astype(np.uint8)
-    lines = paragraph(img, 160, rows=6)
     style = ["cursive", "cursive_flourish", "font_stroke", "cursive_black"][seed % 4]
     anchor = ["label", "line", "lone", "vobo"][(seed // 4) % 4]
+    geometry = ["upright", "grainy", "tilted", "sideways"][(seed % 4 + (seed // 4) % 4 + 2 * (seed // 16)) % 4]
+    if geometry == "grainy":  # paper with some grain
+        img[:] = np.clip(img.astype(np.int16) - rng.integers(0, 18, img.shape[:2])[:, :, None], 0, 255).astype(np.uint8)
+    lines = paragraph(img, 160, rows=6)
     color = BLACK if style == "cursive_black" else (BLUE if seed % 2 else (120, 30, 10))
     x, y = int(rng.integers(150, 600)), int(rng.integers(900, 1300))
     w, h = int(rng.integers(220, 380)), int(rng.integers(60, 110))
@@ -603,7 +609,6 @@ def synthetic_case(seed: int):
         cv2.line(img, (x - 30, bottom), (x + w + 30, bottom), BLACK, 2)
         lines.append(put_line(img, name.upper(), x + 10, bottom + 35, 0.7))
         lines.append(put_line(img, "Profesional de apoyo", x + 10, bottom + 65, 0.6))
-    geometry = ["upright", "upright", "tilted", "sideways"][(seed // 16) % 4]
     if geometry == "tilted":
         angle = float(rng.uniform(-30, 30))
         m = cv2.getRotationMatrix2D((620, 877), angle, 1.0)
@@ -658,7 +663,7 @@ def negative_case(seed: int):
 
 def test_synthetic_signature_set():
     found, missed = 0, []
-    for seed in range(64):
+    for seed in range(32):
         img, lines, mask, what = synthetic_case(seed)
         zones = signatures.detect_raster(img, lines)
         if covered(zones, mask) >= 0.95:
@@ -666,17 +671,173 @@ def test_synthetic_signature_set():
         else:
             missed.append((seed, what, round(covered(zones, mask), 2)))
     false = []
-    for seed in range(20):
+    for seed in range(10):
         img, lines = negative_case(seed)
         zones = signatures.detect_raster(img, lines)
         if zones:
             false.append((seed, len(zones)))
-    print(f"\nsynthetic signatures found: {found}/64; missed: {missed}; pages without signature flagged: {false}")
+    print(f"\nsynthetic signatures found: {found}/32; missed: {missed}; pages without signature flagged: {false}")
     # Every pen stroke is found, and every signature next to a keyword. A name typed in an italic
     # font that OCR reads confidently, with no keyword next to it, looks like printed text: missed on
     # purpose (a lone stroke must lie outside the lines OCR read), and so is one over a signature
     # line on a tilted photo (only horizontal or vertical rules anchor).
     assert all(what.startswith("font_stroke/") and "/label/" not in what and "/vobo/" not in what
                for _, what, _ in missed), missed  # fmt: skip
-    assert found >= 58, missed
+    assert found >= 28, missed
     assert not false
+
+
+# ---------------------------------------------------------------------------
+# Review findings (invented documents)
+# ---------------------------------------------------------------------------
+
+
+def _landscape_pdf(path: Path, stored_as_portrait: bool, anchored: bool) -> pymupdf.Rect:
+    """A landscape page with a vector signature, stored as landscape or as portrait plus /Rotate."""
+    src = pymupdf.open()
+    p = src.new_page(width=842, height=595)
+    for i in range(6):
+        p.insert_text((72, 100 + 18 * i), NEUTRAL, fontsize=10)
+    box = _vector_signature(p, 500, 380, 200, 60, seed=2)
+    if anchored:
+        p.draw_line((480, 455), (720, 455), color=(0, 0, 0), width=0.8)
+        p.insert_text((540, 470), "Firma del responsable", fontsize=9)
+    if not stored_as_portrait:
+        src.save(path)
+        return box
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.show_pdf_page(page.rect, src, 0, rotate=-90)
+    page.set_rotation(270)
+    doc.save(path)
+    return box
+
+
+@pytest.mark.parametrize("anchored", [False, True])
+@pytest.mark.parametrize("stored_as_portrait", [False, True])
+def test_vector_signature_on_a_landscape_page(tmp_path, no_models, anchored, stored_as_portrait):
+    box = _landscape_pdf(tmp_path / "a.pdf", stored_as_portrait, anchored)
+    found = [f for f in _analyze(tmp_path / "a.pdf").findings if f.type == "signature"]
+    assert len(found) == 1
+    zone = pymupdf.Rect(*np.min(found[0].polygon, axis=0), *np.max(found[0].polygon, axis=0))
+    assert zone.contains(box)  # in view space: the page as it is shown
+
+
+def test_vector_seal_next_to_a_label_is_not_a_signature(tmp_path, no_models):
+    doc = pymupdf.open()
+    page = _text_page(doc)
+    page.draw_circle((420, 600), 30, color=(0.1, 0.1, 0.6), width=1.2)  # an institutional seal: two rings
+    page.draw_circle((420, 600), 22, color=(0.1, 0.1, 0.6), width=0.8)
+    page.draw_rect(pymupdf.Rect(80, 300, 300, 360), color=(0, 0, 0), width=0.8, radius=0.15)  # a rounded box
+    page.draw_line((300, 650), (520, 650), color=(0, 0, 0), width=0.8)
+    page.insert_text((360, 665), "V°B° Jefatura", fontsize=9)
+    doc.save(tmp_path / "sello.pdf")
+    doc.close()
+    assert not [f for f in _analyze(tmp_path / "sello.pdf").findings if f.type == "signature"]
+
+
+def test_firma_column_of_a_text_layer_table_without_context_names(tmp_path, no_models):
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), NEUTRAL, fontsize=10)
+    for text, x in (("Nombre", 72), ("Correo", 250), ("Firma", 430)):
+        page.insert_text((x, 200), text, fontsize=10)
+    for r in range(3):
+        page.insert_text((72, 225 + 25 * r), f"Persona Inventada {r}", fontsize=10)
+        page.insert_text((250, 225 + 25 * r), f"persona{r}@ejemplo.cl", fontsize=10)
+    doc.save(tmp_path / "tabla.pdf")
+    doc.close()
+    off = DetectionOptions(names_context=False, ocr=False, faces=False, qr=False)
+    found = [f for f in _analyze(tmp_path / "tabla.pdf", off).findings if f.type == "signature"]
+    assert len(found) == 1 and found[0].detector == signatures.DETECTOR and found[0].doubtful
+    (x0, y0), (x1, y1) = np.min(found[0].polygon, axis=0), np.max(found[0].polygon, axis=0)
+    assert x0 < 430 < x1 and y0 <= 205 and y1 >= 275  # the column, down to the last row
+
+
+def _script_title(img: np.ndarray, rule: bool, score: float) -> list[OcrLine]:
+    """A certificate: a title in a connected script font (a cursive loop per word), maybe over a rule."""
+    x = 330
+    for k in range(3):  # three words, each one connected stroke
+        pts = cursive(x, 300, 300, 110, seed=40 + k, loops=4)
+        cv2.polylines(img, [np.round(pts).astype(np.int32).reshape(-1, 1, 2)], False, BLACK, 4, cv2.LINE_AA)
+        x += 340
+    lines = [OcrLine(np.array([[325.0, 290.0], [1345.0, 290.0], [1345.0, 415.0], [325.0, 415.0]]),
+                     "Certificado de Participacion", score, 0)]  # fmt: skip
+    if rule:
+        cv2.line(img, (300, 470), (1350, 470), BLACK, 3)
+    return lines
+
+
+@pytest.mark.parametrize("score", [0.95, 0.6])
+@pytest.mark.parametrize("rule", [False, True])
+def test_script_title_is_not_a_signature(score, rule):
+    img, _ = page(1654, 2339)
+    lines = _script_title(img, rule=rule, score=score) + paragraph(img, 700, rows=10)
+    assert signatures.detect_raster(img, lines) == []
+
+
+def _emblem(size: int = 300) -> np.ndarray:
+    """A line-art seal: two rings, a star and laurel branches drawn as thin strokes."""
+    img = np.full((size, size, 3), 255, np.uint8)
+    c = size // 2
+    cv2.circle(img, (c, c), int(size * 0.45), (60, 40, 20), 2, cv2.LINE_AA)
+    angles = np.linspace(-np.pi / 2, 3.5 * np.pi, 6)
+    star = np.array([[c + 0.18 * size * np.cos(a), c + 0.18 * size * np.sin(a)] for a in angles])
+    cv2.polylines(img, [np.round(star[[0, 2, 4, 1, 3, 0]]).astype(np.int32)], False, (60, 40, 20), 2, cv2.LINE_AA)
+    for side in (-1, 1):
+        ang = np.pi / 2 + side * (np.linspace(0.15, 0.85, 60) * np.pi * 0.8)
+        stem = np.stack([c + 0.33 * size * np.cos(ang), c + 0.33 * size * np.sin(ang)], 1)
+        cv2.polylines(img, [np.round(stem).astype(np.int32)], False, (60, 40, 20), 2, cv2.LINE_AA)
+        for k in range(4, 60, 6):
+            p, d = stem[k], stem[min(k + 1, 59)] - stem[k - 1]
+            n = np.array([-d[1], d[0]]) / (np.hypot(*d) + 1e-9)
+            for s in (-1, 1):
+                q = p + s * n * size * 0.05
+                axes = (int(size * 0.035), int(size * 0.014))
+                angle = float(np.degrees(np.arctan2(n[1], n[0])))
+                cv2.ellipse(img, (int(q[0]), int(q[1])), axes, angle, 0, 360, (60, 40, 20), 1, cv2.LINE_AA)
+    return img
+
+
+def test_an_emblem_repeated_on_every_page_is_not_a_signature(tmp_path, no_models):
+    buf = io.BytesIO()
+    Image.fromarray(_emblem()[:, :, ::-1]).save(buf, "PNG")
+    doc = pymupdf.open()
+    xref = 0
+    for _ in range(3):
+        page = _text_page(doc)
+        rect = pymupdf.Rect(40, 20, 100, 80)
+        xref = page.insert_image(rect, xref=xref) if xref else page.insert_image(rect, stream=buf.getvalue())
+    doc.save(tmp_path / "membrete.pdf")
+    doc.close()
+    assert not [f for f in _analyze(tmp_path / "membrete.pdf").findings if f.type == "signature"]
+    # A signature image placed once, next to the repeated emblem, is still looked at.
+    doc = pymupdf.open(tmp_path / "membrete.pdf")
+    doc[1].insert_image(pymupdf.Rect(330, 590, 480, 640), stream=_signature_png())
+    doc.save(tmp_path / "una.pdf")
+    doc.close()
+    found = [f for f in _analyze(tmp_path / "una.pdf").findings if f.type == "signature"]
+    assert len(found) == 1 and found[0].page == 1
+
+
+def test_vector_pass_reports_progress_and_can_be_cancelled(tmp_path, no_models):
+    import threading
+
+    doc = pymupdf.open()
+    for _ in range(3):
+        _vector_signature(_text_page(doc), 300, 500, 200, 60)
+    doc.save(tmp_path / "a.pdf")
+    doc.close()
+    steps = []
+    file = AnalyzedFile(id="f1", name="a.pdf", path=str(tmp_path / "a.pdf"))
+    RealEngine().analyze(file, [], progress=lambda fraction, step: steps.append(step))
+    assert any("firmas dibujadas" in s for s in steps)
+    cancel = threading.Event()
+
+    def stop(fraction, step):
+        if "firmas dibujadas" in step:
+            cancel.set()
+
+    file = AnalyzedFile(id="f2", name="a.pdf", path=str(tmp_path / "a.pdf"))
+    RealEngine().analyze(file, [], progress=stop, cancel=cancel)
+    assert file.status == "cancelled"

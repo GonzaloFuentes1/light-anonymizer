@@ -334,8 +334,13 @@ permissive training data.
   `p.p.`, in any orientation, also in the text layer next to an image), over a straight
   signature line of a document that is not part of a table grid, or inside a small image of a
   text page (a scanned signature pasted into a Word document). Next to a keyword, letters
-  written apart count too. On a plain sheet of paper (light, even background, sparse ink), a
-  large curly stroke outside every OCR line counts by itself. In a table, the column under a
+  written apart count too. Over a signature line, a stroke that OCR read as part of a line of text
+  (however unsure) counts only on the side opposite a printed line next to the rule (the signer's
+  name or role): a title in a script font over a decorative rule does not. On a plain sheet of
+  paper (light, even background, sparse ink), a large curly stroke outside every line OCR read
+  counts by itself. An image repeated at the same place on several pages (a letterhead's emblem)
+  is never a signature by itself, and in it a lone stroke does not count; a keyword or a line next
+  to it still does. In a table, the column under a
   "Firma" header is a zone down to the last row (rows must have cells under two or more
   headers, which also rejects the same table read upside down by the 180° classifier). A zone
   covers the stroke and the marks that touch it (the letters of a name it crosses and their
@@ -346,16 +351,46 @@ permissive training data.
   counts next to a keyword or a drawn or typed signature line (curliness ≥ 1.5, the pen turns
   back left or right), or by itself when it is long and curly (≥ 12 curves, length ≥ 1.8 times
   its extent, ≥ 6 turn-backs: a chart never turns back); filled outlines only next to a keyword
-  or a line.
+  or a line. Closed convex outlines (rings, ovals, rounded boxes: seals, radio buttons) are never
+  part of one. A page whose text runs vertically in PDF space (a landscape page stored as
+  portrait plus /Rotate, a table printed sideways) is analyzed transposed. With the context rule
+  for names off, the "Firma" column of a text-layer table is found here too.
 - *Annotations and digital signatures*: ink annotations, stamps and signature fields are removed
   with every annotation and form field on export (section 6); they are not findings.
 
-**Real redaction of drawn signatures.** MuPDF's redaction removes the *filled* paths a zone
-covers but keeps *stroked* ones: a signature drawn with a pen tool stayed in the file under the
-black box (and its option to remove every path a zone *touches* also removed page frames and
-background bands). `pdf.remove_strokes` now removes, through a content-stream filter, the
-stroked paths drawn entirely inside an applied zone (any zone, also one drawn by the reviewer),
-and the leak check reports any curved path left entirely inside an applied zone.
+**Real redaction of drawn signatures** (`anonymizer/engine/strokes.py`). MuPDF's redaction
+removes the *filled* paths a zone covers but keeps *stroked* ones: a signature drawn with a pen
+tool stayed in the file under the black box; and its option to remove every path a zone
+*touches* also removes page frames, cell shading and background bands. So stroked paths are
+handled apart, with the drawn extent of each one (its box grown by half the line width, cut to
+the clip that shows it):
+
+- A stroked path drawn entirely inside an applied zone leaves the file. A pen stroke (a curve, or
+  a polyline that is not a grid) that crosses the edge of a signature zone or of a zone drawn by
+  the reviewer leaves whole when at least 60 % of its visible length lies inside the zones;
+  otherwise the export is blocked: "un trazo dibujado cruza el borde de la zona…; agranda la
+  zona para cubrirlo entero". Across the zones of other types (text data), only what lies inside
+  goes.
+- Removal goes through MuPDF's content filter, whose callback only sees the box of each painted
+  path (grown by its stroke) in content order. A first pass records those calls and lines them up
+  with `page.get_drawings()` (same order; a fill must have the same box, a stroke the same box
+  grown evenly on every side); the second pass drops only the calls matched to a planned path,
+  only stroke kinds or the fill half of a planned fill-and-stroke path. The filter does not enter
+  Type3 glyph procedures, which every page using the font shares; each use of a form is filtered
+  as its own copy. Afterwards the page's drawings, text and images must be exactly the expected
+  ones; otherwise the page is put back as it was, nothing is removed, and the leak check blocks
+  the export ("…no se pudo quitar sin alterar el resto de la página…").
+- The leak check plans again over the exported file with the same rectangles as the redaction
+  (no margin of its own) and blocks the export when a pen stroke that should have left is still
+  there, or crosses the edge of a signature or drawn zone.
+- The filter uses private PyMuPDF bindings: at startup `strokes.self_test()` removes a stroke from
+  a small page and checks a frame around it stays; if not, the real engine refuses to start.
+
+Found in an independent review (2026-10-05) with invented documents, before this design: the
+first version matched the filter's boxes loosely, removed a frame 3 pt outside a zone, a filled
+panel around a signature, a table cell's shading under a highlighted name, and could enter
+Type3 glyph procedures; strokes partly under a zone stayed in the file silently. Each case is now
+a regression test (`tests/test_strokes.py`).
 
 **Results** (test set of 102 files, prototype baseline, 3 processes; before = the same engine
 without signatures):
@@ -378,15 +413,22 @@ neutral texts are under the zone of the signature with a stamp pressed on it (th
 signature, and the zone reaches the signer's role line). Time: about 0.006 s per text page
 (vector paths), 0.2 s per scanned page and 0.13 s per image on the development machine; during
 the bench run, with the machine loaded by other work (OCR itself took 2.2 times longer than in
-the run before), the stage was 29.5 s of 2 526 s of analysis (1.2 %).
+the run before), the stage was 29.5 s of 2 526 s of analysis (1.2 %). After the review fixes the
+bench gives exactly the same detections and no export is blocked; on a quieter machine the stage
+was 9.7 s of 938 s of analysis (1.0 %), and export took 60.4 s for the 95 files against 56.8 s
+without signatures (the stroke plan and its leak check).
 
-Beyond the 12 signatures of the set, `tests/test_signatures.py` builds a synthetic set: 64
-fictitious signatures (pen strokes with loops and flourishes, or a name in an italic font crossed
-by a stroke; blue or black; under a label, over a signature line, alone, or with "V°B°"; upright,
-tilted up to 30° or scanned sideways; plain or grainy paper) and 20 pages without signatures
-(tables, stamps, charts, photo-like blocks, forms with "Firma:"). All 48 pen-stroke signatures
-are found, 11 of the 16 typed ones (all those next to a keyword), and no page without a
-signature gets a zone.
+Beyond the 12 signatures of the set, `tests/test_signatures.py` builds a synthetic set: 32
+fictitious signatures, every pair of style (pen strokes with loops and flourishes, or a name in
+an italic font crossed by a stroke; blue or black), anchor (under a label, over a signature line,
+alone, or with "V°B°") and geometry (upright, grainy paper, tilted up to 30°, scanned sideways)
+twice, and 10 pages without signatures (tables, stamps, charts, photo-like blocks, forms with
+"Firma:"). All 24 pen-stroke signatures are found, 6 of the 8 typed ones (all those next to a
+keyword or a signature line), and no page without a signature gets a zone. An earlier run of 64
+and 20 pages gave the same picture (48 of 48, 11 of 16, 0 of 20). The tests also hold the cases
+of the review: a landscape page stored as portrait plus /Rotate, a vector seal next to "V°B°", a
+script-font title over a rule, an emblem repeated on every page, a "Firma" column of a
+text-layer table with context names off.
 
 ## 6. Real redaction and cleanup
 
@@ -406,8 +448,8 @@ Regardless of the PDF engine chosen (D1), the contract is the same:
   annotation replies, deletes the OCR layer of scans and does not erase pixels when applying
   pending redactions, so it is called with explicit parameters and completed by hand; redacted
   images are left uncompressed unless the file is saved with `deflate=True`; `apply_redactions`
-  removes the filled paths a zone covers but not the stroked ones, which are removed by hand
-  (section 5.7).
+  removes the filled paths a zone covers but not the stroked ones, which are removed apart
+  (`strokes.py`, section 5.7).
 
 ---
 
@@ -776,5 +818,11 @@ the list still rules. Agreed?
   of a card); a name typed in a script font that OCR reads like text; a signature line on a
   tilted photo; a signature drawn as filled outlines with no label or line next to it. A stamp
   pressed on a signature joins its zone, which can then cover the signer's name and role.
-  Handwritten notes near a "Firma" label or alone on a sheet can be taken for signatures.
+  Handwritten notes near a "Firma" label or alone on a sheet can be taken for signatures. A
+  signature read by OCR as text (even unsure) with no keyword next to it, and a signature in an
+  image repeated at the same place on every page with no keyword or line next to it, are missed.
+- A drawn stroke that crosses the edge of a signature zone or of a zone drawn by the reviewer,
+  with most of it outside, blocks the export until the zone is enlarged. A stroke under a zone
+  that cannot be removed without touching the rest of the page (unusual content: patterns,
+  Type3 fonts drawing it) also blocks the export.
 - Human review of every document before publishing is mandatory.
