@@ -137,5 +137,13 @@ def test_old_viewer_is_gone():
     for s in ('id="thumbs"', 'id="rfiles"', 'id="pagebox"', "Ver como quedará"):
         assert s not in html, f"index.html still has {s!r}"
     js = read("app.js")
-    for s in ("renderThumbs", "thumbCache", "setPage(", "rv.result"):
+    for s in ("renderThumbs", "thumbCache", "setPage(", "rv.result",
+              "rv.page", "pagebox", "pageinner", "setView", "lastImageKey", "scaleNow"):
         assert s not in js, f"app.js still has {s!r}"
+
+
+def test_page_leak_button_label_contains_its_text():
+    """A voice user says what they see: the accessible name of "Ver página" starts with those words."""
+    js = read("app.js")
+    assert '"aria-label": `Ver página ${l.page + 1}`' in js
+    assert "Ver la página" not in js

@@ -1520,6 +1520,7 @@
     const vp = $("#viewport");
     if (!anchor || !S.rv.rows.length) return;
     if (!vp.clientWidth) { pendingView = { anchor }; return; }
+    smoothTo = null; // an instant jump ends any smooth scroll on its way
     vp.scrollTop = ReviewCore.scrollTopFor(anchor, rowMetrics(), visibleHeight(), headerHeight());
   }
   /** Leaving Revisar: keep the anchor for when it shows again (unless one is still waiting). */
@@ -1532,6 +1533,7 @@
   function showStart() {
     const vp = $("#viewport");
     if (!vp.clientWidth) { pendingView = { start: true }; return; }
+    smoothTo = null;
     if (S.rv.sel) revealFinding(S.rv.sel, { instant: true });
     else vp.scrollTop = 0;
   }
@@ -1982,6 +1984,7 @@
     const vp = $("#viewport");
     const top = clamp(y, 0, Math.max(0, vp.scrollHeight - vp.clientHeight));
     const jump = instant || reducedMotion() || ReviewCore.isLongScroll(vp.scrollTop, top, vp.clientHeight);
+    // An instant jump ends any smooth scroll on its way, so nothing measures against its target.
     smoothTo = jump || Math.abs(top - vp.scrollTop) < 1 ? null : top;
     vp.scrollTo({ top, behavior: jump ? "instant" : "smooth" });
   }
@@ -2136,7 +2139,7 @@
         if (l.page != null && rv.rows[l.page]) {
           return h("button", {
             type: "button", class: "btn ghost small", text: "Ver página",
-            "aria-label": `Ver la página ${l.page + 1}`, onclick: () => showRow(l.page),
+            "aria-label": `Ver página ${l.page + 1}`, onclick: () => showRow(l.page),
           });
         }
         return null;
@@ -2291,14 +2294,14 @@
     const note = $("#dlg-note").value.trim();
     const btn = $("#dlg-remove-yes");
     btn.disabled = true;
-    const fileId = S.rv.id; // an answer for a file left meanwhile is not put in the open one's list
+    const fileId = S.rv.id, opened = S.rv.file; // see stillOpen
     try {
       const body = { action: "remove", reason };
       if (note) body.note = note;
       const updated = await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: body });
       $("#dlg-remove").close();
       toast("Censura quitada. Queda registrada en el informe de auditoría.");
-      if (S.rv.id === fileId) {
+      if (stillOpen(fileId, opened)) {
         replaceFinding(updated);
         focusFinding(id);
       }
@@ -2311,11 +2314,11 @@
     }
   }
   async function restoreFinding(id) {
-    const fileId = S.rv.id;
+    const fileId = S.rv.id, opened = S.rv.file;
     try {
       const updated = await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: { action: "restore" } });
       toast("Censura restaurada.");
-      if (S.rv.id === fileId) {
+      if (stillOpen(fileId, opened)) {
         replaceFinding(updated);
         focusFinding(id);
       }
@@ -2329,13 +2332,13 @@
     const f = findingById(id);
     if (!f || !f.optional) return;
     const action = f.status === "suggested" ? "apply" : "skip";
-    const fileId = S.rv.id;
+    const fileId = S.rv.id, opened = S.rv.file;
     try {
       const updated = await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: { action } });
       toast(action === "apply"
         ? "Este enlace se censurará."
         : "Este enlace quedará visible. Queda registrado en el informe de auditoría.");
-      if (S.rv.id === fileId) {
+      if (stillOpen(fileId, opened)) {
         replaceFinding(updated);
         focusFinding(id);
       }
@@ -2345,14 +2348,14 @@
     }
   }
   async function applyAllOptional() {
-    const fileId = S.rv.id;
+    const fileId = S.rv.id, opened = S.rv.file;
     try {
       const res = await api(`/api/files/${enc(fileId)}/findings/apply-optional`, { method: "POST" });
       const applied = (res && res.applied) || [];
       toast(applied.length
         ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${plural(applied.length, "enlace más", "enlaces más")}.`
         : "No quedaban otros enlaces sin censurar.");
-      if (S.rv.id === fileId && S.rv.file) { // not when the reviewer moved to another file meanwhile
+      if (stillOpen(fileId, opened)) {
         const list = S.rv.file.findings;
         for (const u of applied) {
           const i = list.findIndex((f) => f.id === u.id);
@@ -2371,6 +2374,10 @@
     }
   }
 
+  /** An edit's answer goes into the open list only while the load it was made on is still open: not
+   *  after a switch to another file, nor after this one was processed again and loaded afresh (its
+   *  findings are new). A reload in place drops it too: that reload brings the server's list. */
+  function stillOpen(fileId, opened) { return !!opened && S.rv.id === fileId && S.rv.file === opened; }
   function replaceFinding(updated) {
     if (!updated || !S.rv.file) return;
     const list = S.rv.file.findings;
@@ -2491,11 +2498,11 @@
     });
   }
   async function addZone(page, polygon) {
-    const fileId = S.rv.id; // an answer for a file left meanwhile is not put in the open one's list
+    const fileId = S.rv.id, opened = S.rv.file; // see stillOpen
     try {
       const f = await api(`/api/files/${enc(fileId)}/findings`, { method: "POST", json: { page, polygon } });
       toast("Zona agregada.");
-      if (S.rv.id === fileId) {
+      if (stillOpen(fileId, opened)) {
         setDraw(false);
         replaceFinding(f);
         select(f.id);
