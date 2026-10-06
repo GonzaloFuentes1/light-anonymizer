@@ -74,7 +74,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from anonymizer import about
 from anonymizer.engine import audit, estimate, exceptions
-from anonymizer.engine.common import HEIC_SUFFIXES, is_heic
+from anonymizer.engine.common import HEAD_BYTES, HEIC_SUFFIXES, is_heic
 from anonymizer.engine.model import (
     DETECTION_GROUPS,
     ERROR_MESSAGES,
@@ -214,7 +214,7 @@ def is_heic_file(path: Path) -> bool:
         return True
     try:
         with open(path, "rb") as fh:
-            return is_heic(fh.read(12))
+            return is_heic(fh.read(HEAD_BYTES))
     except OSError:
         return False
 

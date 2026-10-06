@@ -610,7 +610,8 @@ recommendation), or use pi-heif (LGPL-3.0, read-only).
 > instead of a generic "not a PDF or image" message.
 >
 > **Implemented (2026-10-05).** HEIC/HEIF photos are recognized by extension (`.heic`, `.heif`,
-> `.hif`) and by content (an ISO-BMFF `ftyp` box with a HEIC brand: `common.is_heic`), and get
+> `.hif`) and by content (an ISO-BMFF `ftyp` box with a HEIC brand, or a generic HEIF brand with a
+> HEIC one among its compatible brands, so an AVIF is not taken for one: `common.is_heic`), and get
 > the message "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir. Conviértelas a
 > JPG y vuelve a agregarlas.": in the browser upload (`uploadFiles` counts them apart from the
 > other skipped files), in `POST /api/files/from-paths` (a chosen HEIC file is skipped with that

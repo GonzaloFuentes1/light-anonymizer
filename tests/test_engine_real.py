@@ -140,6 +140,11 @@ def test_errors_by_content(tmp_path):
     expected = {"empty.pdf": "empty", "doc.pdf": "format", "bad.pdf": "corrupt", "bad.jpg": "corrupt"}
     expected["locked.pdf"] = "password"
     expected["foto.heic"] = "heic"  # D5: not supported, with its own message
+    # A generic HEIF brand counts only with a HEIC brand among the compatible ones; an AVIF does not.
+    (tmp_path / "foto.heif").write_bytes(b"\x00\x00\x00\x1cftypmif1\x00\x00\x00\x00mif1heicmiaf" + b"\x00" * 64)
+    (tmp_path / "foto.avif").write_bytes(b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf" + b"\x00" * 64)
+    (tmp_path / "otra.avif").write_bytes(b"\x00\x00\x00\x1cftypmif1\x00\x00\x00\x00mif1avifmiaf" + b"\x00" * 64)
+    expected |= {"foto.heif": "heic", "foto.avif": "format", "otra.avif": "format"}
     for name, code in expected.items():
         file = analyzed(tmp_path / name)
         assert (file.status, file.error) == ("error", code), name
