@@ -433,7 +433,8 @@ def raster_zones(
         zones += faces.merge(found_faces)
         for x0, y0, x1, y1 in _pixel_boxes(drawn, to_pix, width, height):  # D8: text only, no faces
             crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
-            key = (crop.shape, hashlib.blake2b(crop.tobytes(), digest_size=16).digest())
+            # Its own key: an image with the same pixels is also searched for faces.
+            key = ("drawn", crop.shape, hashlib.blake2b(crop.tobytes(), digest_size=16).digest())
             if key not in cache:
                 cache[key] = raster.detect_in_image(
                     crop, name_list, face_regions=[], qr_enabled=False, ocr_min_side=736, step=step, options=options
