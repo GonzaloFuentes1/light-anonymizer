@@ -639,8 +639,8 @@ or as a per-file option. What does "volteadas" mean to you?
 > **Measured (2026-10-05, test set, `results/details/decisions`).** Mirrored text: 10 of 10
 > elements found (was 1 of 10); rotated images 100 % recall (was 89.3 %), 0 leaks (was 9); overall
 > recall 96.5 % (was 95.6 %), leaks 34 (was 43), still 0 critical and 0 metadata leaks; every other
-> category unchanged. The neutral lines of the two mirrored images are now covered too (neutral
-> text covered 296 of 1 862, was 287). Cost, measured in one instrumented run over the faces, cédula,
+> category unchanged. The 9 neutral lines of the two mirrored images are now covered too, since
+> OCR zones are whole lines (neutral text covered 296 of 1 862, was 287). Cost, measured in one instrumented run over the faces, cédula,
 > scanned and text-PDF files and the two mirrored images (63 files): a mirrored pass ran on 3 of
 > them, the two mirrored images and one crowd photo with stray letters, for 20 s against 572 s of
 > normal OCR (3.5 %); none on scanned pages, cédulas or PDF images. The other images (EXIF,
@@ -680,7 +680,8 @@ you prefer to fix it now.
 > 0 leaks, including the vector-path check (V). It found 3 areas of drawn text (two in the header,
 > one in the body) and the analysis went from 0.2 s to 17.5 s on the loaded machine, about the OCR
 > of a scanned page. Pages without drawn text are not rendered: listing their drawings cost 0.06 s
-> over the 24 text-PDF pages of the test set (about 3 ms a page), and no other page got an area.
+> for the 19 pages of the 12 text PDFs of the test set (about 3 ms a page), and no other page of
+> the test set got an area.
 
 **D9. Output of scans.** I propose rebuilding the page only as an image, without a text layer.
 Adding an invisible OCR layer would make the PDF searchable, but it reintroduces text (and OCR
