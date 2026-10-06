@@ -248,15 +248,18 @@
     rv: {
       id: null,
       file: null, // full AnalyzedFile
-      page: 0,
+      gen: 0, // load generation: increased by every teardown, carried by every image request
       sel: null,
       hidden: new Set(), // finding types hidden by the filter chips
-      scale: null, // CSS px per view unit; null = fit to width
+      zoom: 1, // factor over "fit to the column width"
       rot: 0,
       draw: false,
-      result: false,
+      after: true, // the after column is shown (V); kept across files
       seen: new Map(), // file id -> Set of finding ids the reviewer opened
       loadingId: null,
+      rows: [], // one per page of the open file (see buildRows)
+      versions: [], // per page: hash of its active findings (ReviewCore.pageVersions)
+      pan: 0, // shared horizontal offset, as a fraction of the overflow
     },
     exp: { dest: "", results: new Map(), busy: false, last: null },
   };
@@ -300,7 +303,10 @@
     $$(".screen").forEach((s) => s.classList.toggle("on", s.dataset.screen === String(n)));
     if (n !== 3) { setDraw(false); }
     renderSteps();
-    if (n === 3) renderReview();
+    if (n === 3) {
+      renderReview(); // loads nothing when a file is open: the rows and the anchor stay
+      relayout();
+    }
     if (n === 4) enterExport();
     schedulePoll();
     if (focus) {
@@ -345,7 +351,6 @@
     }
     S.loaded = true;
     setFatal("");
-    const before = new Map(S.files.map((f) => [f.id, f.status]));
     S.files = Array.isArray(data.files) ? data.files : [];
     S.namesCount = data.names_count || 0;
     S.engine = data.engine || "";
@@ -365,17 +370,25 @@
     $("#engine-chip").hidden = S.engine !== "fake";
     renderAll();
 
-    // Keep the open review file in sync (for example after processing again or exporting).
+    // Keep the open review file in sync, on any screen. Processed again, removed or failed: the
+    // review forgets it. Between reviewable statuses (first edit after confirming, an export):
+    // reloaded keeping the view.
     const rv = S.rv;
     if (rv.id) {
       const sum = fileById(rv.id);
-      if (!sum) {
-        closeReviewFile();
+      if (!sum || !REVIEWABLE.has(sum.status)) {
+        const why = sum && sum.status === "error"
+          ? `${sum.name} necesita tu ayuda. ${sum.error_message || "Este archivo no se pudo procesar."}`
+          : "";
+        dropReviewFile();
+        showReviewStatus(why);
+        renderFileBar();
         if (S.screen === 3) renderReview();
-      } else if (rv.file && sum.status !== rv.file.status && before.get(rv.id) !== undefined) {
-        if (REVIEWABLE.has(sum.status)) loadReviewFile(rv.id, { keepView: true });
-        else if (S.screen === 3) renderReview();
+      } else if (rv.file && sum.status !== rv.file.status) {
+        openFile(rv.id, { keepView: true });
       }
+    } else if (S.screen === 3 && S.files.some((f) => REVIEWABLE.has(f.status))) {
+      renderReview(); // Revisar showed no file and one became reviewable: open it
     }
     schedulePoll();
   }
@@ -390,28 +403,32 @@
     renderSteps();
     renderHome();
     renderJobs();
-    if (S.screen === 3) renderReviewFiles();
+    renderFileBar();
     if (S.screen === 4) renderExport();
   }
 
   // ---------------------------------------------------------------------------------------------
   // Screen 1: choose files
   // ---------------------------------------------------------------------------------------------
-  function statusChip(f) {
+  /** The text of a file's status chip, except "Procesando" instead of the percentage. */
+  function statusText(f) {
     const c = f.counts || {};
     switch (f.status) {
-      case "processing": return h("span", { class: "state run", text: `${Math.round((f.progress || 0) * 100)} %` });
-      case "queued": return h("span", { class: "state wait", text: S.requested.has(f.id) ? "En espera" : "Sin procesar" });
-      case "ready":
-        return c.doubtful
-          ? h("span", { class: "state warn", text: `${c.doubtful} por revisar` })
-          : h("span", { class: "state ok", text: "Listo para revisar" });
-      case "confirmed": return h("span", { class: "state ok", text: "Confirmado" });
-      case "exported": return h("span", { class: "state ok", text: "Exportado" });
-      case "error": return h("span", { class: "state bad", text: "Necesita tu ayuda" });
-      case "cancelled": return h("span", { class: "state wait", text: "Cancelado" });
-      default: return h("span", { class: "state wait", text: f.status || "" });
+      case "processing": return "Procesando";
+      case "queued": return S.requested.has(f.id) ? "En espera" : "Sin procesar";
+      case "ready": return c.doubtful ? `${c.doubtful} por revisar` : "Listo para revisar";
+      case "confirmed": return "Confirmado";
+      case "exported": return "Exportado";
+      case "error": return "Necesita tu ayuda";
+      case "cancelled": return "Cancelado";
+      default: return f.status || "";
     }
+  }
+  const STATUS_TONE = { processing: "run", confirmed: "ok", exported: "ok", error: "bad" };
+  function statusChip(f) {
+    const tone = f.status === "ready" ? ((f.counts || {}).doubtful ? "warn" : "ok") : STATUS_TONE[f.status] || "wait";
+    const text = f.status === "processing" ? `${Math.round((f.progress || 0) * 100)} %` : statusText(f);
+    return h("span", { class: `state ${tone}`, text });
   }
 
   function fileMeta(f) {
@@ -1060,87 +1077,198 @@
     ];
   }
 
+  // --- opening and closing a file: every way in goes through openFile ---
+  /** Procesar's "Revisar" and "Revisar los listos". The open file only shows Revisar again. */
   function openReview(id) {
-    if (id && id !== S.rv.id) {
-      const sum = fileById(id);
-      if (sum && REVIEWABLE.has(sum.status)) {
-        S.rv.id = id;
-        S.rv.file = null;
-      }
-    }
+    if (id && id !== S.rv.id) openFile(id);
     go(3);
   }
 
-  function closeReviewFile() {
-    S.rv.id = null;
-    S.rv.file = null;
-    S.rv.sel = null;
+  // Stubs of the scrolling viewer, each replaced by the task that builds that part.
+  function buildRows() {} // replaced in Task 9
+  function relayout() {} // replaced in Task 9
+  function anchorNow() { return null; } // replaced in Task 9
+  function restoreAnchor() {} // replaced in Task 9
+  function stopObserver() {} // replaced in Task 10
+  function clearQueue() {} // replaced in Task 10
+  function releaseRow() {} // replaced in Task 10
+  function refreshVersions() {} // replaced in Task 11
+  function renderZonesAll() {} // replaced in Task 12
+  function revealFinding() {} // replaced in Task 12
+
+  function focusViewport() { $("#viewport").focus({ preventScroll: true }); }
+
+  /** Empty the viewport. The new generation makes every image response still on its way stale. */
+  function teardownRows() {
+    S.rv.gen += 1;
+    stopObserver();
+    clearQueue();
+    for (const row of S.rv.rows) releaseRow(row, { all: true });
+    S.rv.rows = [];
+    $("#rows").replaceChildren();
   }
 
-  async function loadReviewFile(id, { keepView = false } = {}) {
+  /** The open file can no longer be reviewed (processed again, removed, failed): forget it. */
+  function dropReviewFile() {
+    const id = S.rv.id;
+    teardownRows();
+    if (id) S.rv.seen.delete(id);
+    S.rv.id = null; S.rv.file = null; S.rv.sel = null; S.rv.versions = [];
+  }
+
+  /** Under the file bar: why the review closed a file ("" hides the line). */
+  function showReviewStatus(text) {
+    const el = $("#rv-status");
+    el.hidden = !text;
+    el.textContent = text || "";
+  }
+
+  /** Opens a file for review: fit zoom, no rotation, every type shown, draw mode off; V is kept.
+   *  ``keepView`` reloads the open file in place. ``focus``: the viewport takes the focus once the
+   *  file is loaded (an open from the select). ``auto``: the automatic choice, which keeps the
+   *  status line and a choice still pending in the select. */
+  async function openFile(id, { keepView = false, focus = false, auto = false } = {}) {
+    const sum = fileById(id);
+    if (!sum || !REVIEWABLE.has(sum.status)) return;
+    if (!keepView || id !== S.rv.id) {
+      teardownRows();
+      Object.assign(S.rv, { id, file: null, sel: null, zoom: 1, rot: 0, pan: 0, versions: [] });
+      S.rv.hidden.clear();
+      setDraw(false);
+      $("#review-loading").hidden = false;
+      if (!auto) {
+        clearTimeout(fileSwitchTimer);
+        fileSwitchTimer = null;
+        showReviewStatus("");
+      }
+    }
+    renderFileBar();
+    await loadReviewFile(id, { keepView, focus });
+  }
+
+  let loadSeq = 0; // only the latest load is applied
+  async function loadReviewFile(id, { keepView = false, focus = false } = {}) {
     const rv = S.rv;
+    const seq = ++loadSeq;
     rv.loadingId = id;
     let file;
     try {
       file = await api(`/api/files/${enc(id)}`);
     } catch (err) {
-      if (rv.loadingId === id) rv.loadingId = null;
+      if (seq !== loadSeq) return;
+      rv.loadingId = null;
+      if (rv.id !== id) return;
+      $("#review-loading").hidden = true;
       showError(err);
       return;
     }
-    if (rv.loadingId === id) rv.loadingId = null;
+    if (seq !== loadSeq) return;
+    rv.loadingId = null;
     if (rv.id !== id) return; // the user moved on to another file
-    const same = !!rv.file && rv.file.id === id;
-    rv.id = id;
+    const keep = keepView && !!rv.file && rv.file.id === id;
+    const pages = file.pages || [];
+    const samePages = keep && rv.rows.length === pages.length
+      && rv.rows.every((row, i) => row.page.width === pages[i].width && row.page.height === pages[i].height);
     rv.file = file;
-    clearThumbCache(id);
-    if (!(keepView && same)) {
-      rv.page = 0;
-      rv.scale = null;
-      rv.rot = 0;
-      rv.result = false;
-      rv.hidden.clear();
-      setDraw(false);
+    $("#review-loading").hidden = true;
+    if (keep) {
+      if (rv.sel && !findingById(rv.sel)) rv.sel = null;
+    } else {
       // The first finding (doubtful ones come first) starts selected and highlighted.
       const first = orderedVisible()[0];
       rv.sel = first ? first.id : null;
-      if (first) { rv.page = first.page; seenSet(id).add(first.id); }
-    } else {
-      if (rv.sel && !findingById(rv.sel)) rv.sel = null;
-      rv.page = clamp(rv.page, 0, Math.max(0, (file.pages || []).length - 1));
+      if (first) seenSet(id).add(first.id);
     }
-    lastImageKey = "";
+    let anchor = null;
+    if (samePages) {
+      // Same pages: the rows, the anchor and the loaded befores stay; only the afters may change.
+      rv.rows.forEach((row, i) => { row.page = pages[i]; });
+      refreshVersions();
+      renderZonesAll();
+    } else {
+      if (keep && rv.rows.length) anchor = anchorNow();
+      if (rv.rows.length) teardownRows();
+      rv.versions = ReviewCore.pageVersions(file.findings, pages.length);
+      buildRows();
+    }
     if (S.screen === 3) renderReview();
+    if (anchor) restoreAnchor(anchor); // the page list changed: back to the same page, clamped
+    else if (!keep) {
+      if (rv.sel) revealFinding(rv.sel, { instant: true });
+      else $("#viewport").scrollTop = 0;
+    }
+    // Unless the reviewer moved the focus elsewhere meanwhile.
+    const active = document.activeElement;
+    if (focus && S.screen === 3 && (!active || active === document.body || active.id === "rv-file")) focusViewport();
   }
 
   function renderReview() {
-    const reviewable = S.files.filter((f) => REVIEWABLE.has(f.status));
     const rv = S.rv;
-    if (rv.id) {
-      const sum = fileById(rv.id);
-      if (!sum || !REVIEWABLE.has(sum.status)) closeReviewFile();
-    }
-    if (!rv.id && reviewable.length) {
+    if (!rv.id) {
+      // Automatic choice: the first file ready for review, else any reviewable one.
+      const reviewable = S.files.filter((f) => REVIEWABLE.has(f.status));
       const next = reviewable.find((f) => f.status === "ready") || reviewable[0];
-      rv.id = next.id;
-      rv.file = null;
+      if (next) openFile(next.id, { auto: true });
+    } else if (!rv.file && rv.loadingId !== rv.id) {
+      openFile(rv.id, { auto: true }); // its last load failed: try again
     }
     $("#review-empty").hidden = !!rv.id || S.files.some((f) => REVIEWABLE.has(f.status));
     $("#review").hidden = !rv.id;
     if (!rv.id) return;
-    renderReviewFiles();
-    if (!rv.file || rv.file.id !== rv.id) {
-      $("#pagebox").hidden = true;
-      $("#zones").replaceChildren();
+    renderFileBar();
+    if (!rv.file) {
       $("#findlist").replaceChildren(h("p", { class: "nofind", text: "Cargando el archivo…" }));
-      if (rv.loadingId !== rv.id) loadReviewFile(rv.id);
       return;
     }
-    renderThumbs();
-    layoutPage();
     renderSkipped();
     renderFindings();
     renderVerify();
+  }
+
+  // --- the file bar ---
+  let fileSwitchTimer = null; // a choice in the select, waiting for its pause
+  /** The reviewable file before (-1) or after (1) the open one, in list order, without wrapping. */
+  function neighbourFile(delta) {
+    const i = S.files.findIndex((f) => f.id === S.rv.id);
+    if (i < 0) return null;
+    for (let k = i + delta; k >= 0 && k < S.files.length; k += delta) {
+      if (REVIEWABLE.has(S.files[k].status)) return S.files[k];
+    }
+    return null;
+  }
+
+  /** Runs on every poll, on any screen. The select and its options are never replaced, only
+   *  updated where they changed, so an open dropdown stays open. */
+  function renderFileBar() {
+    const rv = S.rv;
+    const select = $("#rv-file");
+    const byId = new Map([...select.options].map((o) => [o.value, o]));
+    S.files.forEach((f, i) => {
+      let opt = byId.get(f.id);
+      if (opt) byId.delete(f.id);
+      else opt = h("option", { value: f.id });
+      if (select.options[i] !== opt) select.insertBefore(opt, select.options[i] || null);
+      const text = `${f.name} · ${statusText(f)}`;
+      if (opt.textContent !== text) opt.textContent = text;
+      const off = !REVIEWABLE.has(f.status);
+      if (opt.disabled !== off) opt.disabled = off;
+    });
+    for (const gone of byId.values()) gone.remove();
+    if (!fileSwitchTimer && select.value !== (rv.id || "")) select.value = rv.id || "";
+    const sum = rv.id ? fileById(rv.id) : null;
+    select.title = sum ? sum.name : "";
+    const box = $("#rv-chip");
+    const chip = sum ? statusChip(sum) : null;
+    const old = box.firstElementChild;
+    if (!chip) box.replaceChildren();
+    else if (!old || old.className !== chip.className || old.textContent !== chip.textContent) box.replaceChildren(chip);
+    for (const [delta, btn] of [[-1, $("#rv-prev")], [1, $("#rv-next")]]) {
+      const off = !neighbourFile(delta);
+      if (btn.disabled === off) continue;
+      const focused = document.activeElement === btn;
+      btn.disabled = off;
+      if (off && focused) focusViewport();
+    }
   }
 
   /** Banner when the file was analyzed with detection groups off: what was not searched. */
@@ -1162,35 +1290,6 @@
       }
     }
     box.replaceChildren(...parts);
-  }
-
-  function renderReviewFiles() {
-    const box = $("#rfiles");
-    keepFocus(box, () => {
-      box.replaceChildren(
-        ...S.files.map((f) => {
-          const ok = REVIEWABLE.has(f.status);
-          return h("button", {
-            type: "button",
-            class: "fbtn",
-            dataset: { fk: `rf:${f.id}` },
-            "aria-current": f.id === S.rv.id ? "true" : null,
-            "aria-disabled": ok ? null : "true",
-            onclick: () => {
-              if (!ok) {
-                toast(f.status === "error" ? f.error_message || "Este archivo no se pudo procesar." : "Este archivo todavía no está listo para revisar.");
-                return;
-              }
-              if (f.id !== S.rv.id) {
-                S.rv.id = f.id;
-                S.rv.file = null;
-                renderReview();
-              }
-            },
-          }, h("span", { class: "fname" }, nameNode(f.name)), statusChip(f));
-        }),
-      );
-    });
   }
 
   // --- thumbnails (real page renders, loaded lazily, two at a time) ---
@@ -1656,7 +1755,7 @@
       if (nextReady) {
         btns.push(h("button", {
           type: "button", class: "btn", text: "Siguiente archivo por revisar",
-          onclick: () => { S.rv.id = nextReady.id; S.rv.file = null; renderReview(); },
+          onclick: () => { openFile(nextReady.id); if (S.screen !== 3) go(3); },
         }));
       }
       btns.push(h("button", { type: "button", class: "btn primary", text: "Ir a Exportar", onclick: () => go(4) }));
@@ -1827,21 +1926,15 @@
     const rv = S.rv;
     if (rv.draw === on) return;
     rv.draw = on;
-    if (on && rv.result) rv.result = false;
     $("#b-draw").setAttribute("aria-pressed", String(on));
-    $("#b-view").setAttribute("aria-pressed", String(rv.result));
     $("#pageinner").classList.toggle("drawing", on);
-    $("#pageinner").classList.toggle("result", rv.result);
     if (!on) cancelGhost();
     if (on) toast("Arrastra sobre el documento para agregar una zona. Esc para salir.");
   }
-  function setView(on) {
-    const rv = S.rv;
-    rv.result = on;
-    if (on) setDraw(false);
+  function setView(on) { // replaced by setAfter in Task 9
+    S.rv.after = on;
     $("#b-view").setAttribute("aria-pressed", String(on));
-    $("#pageinner").classList.toggle("result", on);
-    if (on) toast("Así se verán las censuras en el archivo exportado.");
+    relayout();
   }
 
   // --- draw a manual zone (screen coordinates -> view space) ---
@@ -1925,15 +2018,14 @@
         askRemove((item && item.dataset.id) || S.rv.sel);
       }
       else if (k === "d") setDraw(!S.rv.draw);
-      else if (k === "v") setView(!S.rv.result);
+      else if (k === "v") setView(!S.rv.after);
       else if (k === "r") rotate();
       else if (k === "+" || k === "=" || k === "Add") zoomBy(1.2);
       else if (k === "-" || k === "Subtract" || k === "−") zoomBy(1 / 1.2);
       else if (k === "Escape") {
         if (drag) cancelGhost();
         else if (S.rv.draw) setDraw(false);
-        else if (S.rv.result) setView(false);
-        else handled = false;
+        else handled = false; // Esc never hides the after column
       } else handled = false;
       if (handled) e.preventDefault();
     });
@@ -2217,6 +2309,19 @@
     });
 
     // Screen 3
+    $("#rv-file").addEventListener("change", () => {
+      // A closed select fires "change" on every arrow key: open only the file the reviewer stops on.
+      clearTimeout(fileSwitchTimer);
+      fileSwitchTimer = setTimeout(() => {
+        fileSwitchTimer = null;
+        const id = $("#rv-file").value;
+        if (id === S.rv.id && (S.rv.file || S.rv.loadingId === id)) return; // already open
+        openFile(id, { focus: true });
+        if (S.rv.id !== id) renderFileBar(); // it could not be opened: show the open file again
+      }, 300);
+    });
+    $("#rv-prev").addEventListener("click", () => { const f = neighbourFile(-1); if (f) openFile(f.id); });
+    $("#rv-next").addEventListener("click", () => { const f = neighbourFile(1); if (f) openFile(f.id); });
     $("#b-prev").addEventListener("click", () => move(-1));
     $("#b-next").addEventListener("click", () => move(1));
     $("#b-zin").addEventListener("click", () => zoomBy(1.2));
@@ -2224,7 +2329,7 @@
     $("#b-zfit").addEventListener("click", zoomFit);
     $("#b-rot").addEventListener("click", rotate);
     $("#b-draw").addEventListener("click", () => setDraw(!S.rv.draw));
-    $("#b-view").addEventListener("click", () => setView(!S.rv.result));
+    $("#b-view").addEventListener("click", () => setView(!S.rv.after));
     $("#dlg-remove-form").addEventListener("submit", doRemove);
     $("#dlg-remove-no").addEventListener("click", () => $("#dlg-remove").close());
     $("#dlg-remove").addEventListener("close", () => { pendingRemove = null; });
@@ -2238,10 +2343,10 @@
     let resizeTimer = null;
     window.addEventListener("resize", () => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => { if (S.screen === 3 && S.rv.file && S.rv.scale == null) layoutPage(); }, 150);
+      resizeTimer = setTimeout(() => { if (S.screen === 3 && S.rv.file) relayout(); }, 150);
     });
     // Zone labels use the UI font: re-layout once the bundled fonts are ready.
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (S.screen === 3 && S.rv.file) renderZones(); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (S.screen === 3 && S.rv.file) renderZonesAll(); });
 
     go(1, { focus: false });
     loadGroups();
