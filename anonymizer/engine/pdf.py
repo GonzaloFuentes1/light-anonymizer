@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pymupdf
 
-from anonymizer.engine import context, faces, raster
+from anonymizer.engine import context, faces, raster, vectors
 from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, stage, waiting_for
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import DetectionOptions
@@ -346,6 +346,23 @@ def image_regions(
     return [(x0, y0, x1, y1) for x0, y0, x1, y1 in boxes if x1 - x0 >= 24 and y1 - y0 >= 24]
 
 
+def _pixel_boxes(
+    rects: list[pymupdf.Rect], to_pix: pymupdf.Matrix, width: int, height: int
+) -> list[tuple[int, int, int, int]]:
+    """Pixel boxes of the page render for areas in page space (clipped; those under 24 px skipped)."""
+    boxes = []
+    for rect in rects:
+        r = (rect * to_pix).normalize()
+        x0, y0, x1, y1 = max(0, int(r.x0)), max(0, int(r.y0)), min(width, int(r.x1) + 1), min(height, int(r.y1) + 1)
+        if x1 - x0 >= 24 and y1 - y0 >= 24:
+            boxes.append((x0, y0, x1, y1))
+    return boxes
+
+
+# Detectors of the zones read from text in pixels (OCR lines and the rules applied to them).
+_TEXT_DETECTORS = ("ocr", "context", "name_list")
+
+
 def raster_zones(
     doc: pymupdf.Document,
     tp: TextPage,
@@ -359,15 +376,23 @@ def raster_zones(
 
     Scanned pages (no text layer): OCR and faces over the whole page. Pages with text: OCR and
     faces only inside each embedded image, however small (a phone in a 2 % image is still a
-    leak), and QR codes over the whole page. ``cache`` (shared by the pages of a document) reads
-    the same image region, rendered identically on several pages, only once. ``options``: the
-    detection groups that run; with OCR, faces and QR off the page is not even rendered.
+    leak), OCR inside the areas with text drawn as paths (D8, ``vectors.text_regions``), and QR
+    codes over the whole page. A page with text and neither images nor drawn text is not rendered.
+    ``cache`` (shared by the pages of a document) reads the same image region, rendered
+    identically on several pages, only once. ``options``: the detection groups that run; with OCR,
+    faces and QR off the page is not even rendered.
     """
     options = options or DetectionOptions()
     with waiting_for(PDF_LOCK):
         page = doc[tp.index]
         info = page.get_image_info()
-        if not (tp.scanned or info) or not options.raster:
+        glyphs: list[pymupdf.Rect] = []
+        drawn: list[pymupdf.Rect] = []
+        if options.ocr:  # D8: letters drawn as paths, which only OCR can read
+            with stage("text"):
+                glyphs = vectors.glyph_paths(page)
+                drawn = [] if tp.scanned else vectors.text_regions(page, tp.boxes, glyphs)
+        if not (tp.scanned or info or drawn) or not options.raster:
             return []
         with stage("render"):
             zoom = dpi / 72
@@ -406,10 +431,20 @@ def raster_zones(
                 moved = z._replace(polygon=z.polygon + [x0, y0])
                 (found_faces if z.type == "face" else zones).append(moved)
         zones += faces.merge(found_faces)
+        for x0, y0, x1, y1 in _pixel_boxes(drawn, to_pix, width, height):  # D8: text only, no faces
+            crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
+            key = (crop.shape, hashlib.blake2b(crop.tobytes(), digest_size=16).digest())
+            if key not in cache:
+                cache[key] = raster.detect_in_image(
+                    crop, name_list, face_regions=[], qr_enabled=False, ocr_min_side=736, step=step, options=options
+                )
+            zones += [z._replace(polygon=z.polygon + [x0, y0]) for z in cache[key]]
     output = []
     for z in raster.dedup(zones):
         (x0, y0), (x1, y1) = np.asarray(z.polygon).min(axis=0), np.asarray(z.polygon).max(axis=0)
         r = (pymupdf.Rect(float(x0), float(y0), float(x1), float(y1)) * inverse) + (-1, -1, 1, 1)
+        if glyphs and z.detector in _TEXT_DETECTORS:
+            r = vectors.snap(r, glyphs)  # a path is only removed when the zone covers all of it
         output.append(PageZone(tp.index, r, z.type, z.text, z.detector, z.score, z.doubt, "raster", z.optional))
     return output
 

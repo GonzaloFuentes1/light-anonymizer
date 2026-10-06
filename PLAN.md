@@ -179,8 +179,9 @@ report mentions it.
    like any other.
 3. Patterns and names on the normalized text, with the geometry of each character.
 4. Every embedded image: OCR and faces; the areas are mapped to page coordinates.
-5. Pages with text converted to paths (no extractable text but with ink): they are rendered
-   and OCR is applied. When to do it is a trade-off between time and recall (D8).
+5. Text converted to paths: a page with almost no text layer is read whole by OCR, like a scan;
+   on a page with a text layer, only the areas with many letter-like paths and few characters
+   are rendered and read (D8).
 6. Export: real removal of the content under each area (text, image pixels, paths),
    structural cleanup and a full rewrite of the file.
 
@@ -643,6 +644,21 @@ mode. Agreed?
 is only visible with OCR. Options: OCR every text page (more recall, a few seconds per page) or
 OCR only pages with suspicious paths (faster). I will decide with figures in phase 1, unless
 you prefer to fix it now.
+
+> **Decided (2026-10-05): OCR only the pages with suspicious vector paths**, not every page.
+>
+> **Implemented (2026-10-05).** `anonymizer/engine/vectors.py`. On every PDF page, when OCR is on,
+> the drawings are listed (`get_cdrawings`, a few milliseconds per page): letter-like paths are
+> filled, at most 40 pt on each side, and not a plain rectangle (bullets, table cells, QR
+> modules). They are grouped when closer than about one letter height; a group of 8 or more with
+> fewer characters of the text layer than half its paths is an area of drawn text. A page with a
+> text layer is rendered only if it has images or such areas, and only those areas are read (OCR,
+> no faces), like the images inside a page; a page with almost no text layer was already read
+> whole as a scan. What OCR finds is mapped to page space as usual, and each OCR zone on a page with
+> letter-like paths is grown to cover every such path it covers at least a quarter of
+> (`vectors.snap`): MuPDF removes a path only when the redaction covers all of it, so a box a
+> little tighter than a letter would have left that letter's path in the file under the black
+> box. The time estimate counts those areas as OCR regions.
 
 **D9. Output of scans.** I propose rebuilding the page only as an image, without a text layer.
 Adding an invisible OCR layer would make the PDF searchable, but it reintroduces text (and OCR

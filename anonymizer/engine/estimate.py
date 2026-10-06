@@ -20,6 +20,7 @@ import os
 import threading
 from pathlib import Path
 
+from anonymizer.engine import vectors
 from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, sniff
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import DETECTION_GROUPS, DetectionOptions
@@ -32,8 +33,9 @@ STAGE_GROUP = {"text": "patterns", "ocr": "ocr", "faces": "faces", "qr": "qr"}
 STAGES = ("text", "render", "ocr", "faces", "qr")
 
 # Seconds per unit of work, per stage. Units (see ``units``): every PDF page (pdf_page), PDF pages
-# that are rendered (raster_page: scanned, or with images), scanned pages (scanned_page), distinct
-# images placed on text pages (region) and their megapixels at OCR resolution (region_mp), frames
+# that are rendered (raster_page: scanned, with images or with text drawn as paths), scanned pages
+# (scanned_page), distinct images placed on text pages and areas of text drawn as paths (region,
+# D8; the latter only for OCR) and their megapixels at OCR resolution (region_mp), frames
 # of an image file (image_frame) and their megapixels (image_mp). OCR of an image is per frame,
 # not per megapixel: the text detector scales every image to the same size, and a 12 MP photo
 # usually has less text than a screenshot (measured: photos about 2 s, screenshots about 10 s).
@@ -63,6 +65,9 @@ def empty_profile(kind: str | None = None) -> dict:
         "raster_pages": 0,
         "regions": 0,
         "regions_mp": 0.0,
+        # D8: areas of text pages with text drawn as paths, read by OCR (not by faces).
+        "drawn_regions": 0,
+        "drawn_regions_mp": 0.0,
         "frames": 0,
         "megapixels": 0.0,
     }
@@ -84,7 +89,8 @@ def profile(path: str, kind: str | None = None) -> dict:
 
 
 def _pdf_profile(path: str) -> dict:
-    """Pages, scanned pages (same rule as ``pdf.TextPage.scanned``) and the images of the text pages.
+    """Pages, scanned pages (same rule as ``pdf.TextPage.scanned``), the images of the text pages and
+    their areas with text drawn as paths (D8, ``vectors.text_regions``).
 
     No page is rendered: the text comes from PyMuPDF and the images from ``get_image_info``. An
     image placed with the same size on several pages counts once (the engine reads it once).
@@ -110,13 +116,20 @@ def _pdf_profile(path: str) -> dict:
                 text = page.get_textpage(clip=pymupdf.INFINITE_RECT(), flags=flags).extractText()
                 scanned = len(text.strip()) < SCANNED_MAX_CHARS
                 info = [] if scanned else page.get_image_info(xrefs=True)
+                # Without the characters of the text layer (cheaper): at worst an area is counted that
+                # the engine skips because it is real text.
+                drawn = [] if scanned else vectors.text_regions(page, [])
                 to_pix = page.rotation_matrix * pymupdf.Matrix(zoom, zoom)
                 page_rect = pymupdf.Rect(page.rect)
             if scanned:
                 facts["scanned_pages"] += 1
                 facts["raster_pages"] += 1
                 continue
-            if not info:
+            for rect in drawn:
+                r = rect * to_pix
+                facts["drawn_regions"] += 1
+                facts["drawn_regions_mp"] += abs(r.width * r.height) / 1e6
+            if not (info or drawn):
                 continue
             facts["raster_pages"] += 1
             for item in info:
@@ -134,6 +147,7 @@ def _pdf_profile(path: str) -> dict:
         with PDF_LOCK:
             doc.close()
     facts["regions_mp"] = round(facts["regions_mp"], 3)
+    facts["drawn_regions_mp"] = round(facts["drawn_regions_mp"], 3)
     return facts
 
 
@@ -161,8 +175,8 @@ def units(facts: dict) -> dict[str, dict[str, float]]:
         "render": {"raster_page": facts["raster_pages"], "image_mp": facts["megapixels"]},
         "ocr": {
             "scanned_page": facts["scanned_pages"],
-            "region": facts["regions"],
-            "region_mp": facts["regions_mp"],
+            "region": facts["regions"] + facts.get("drawn_regions", 0),
+            "region_mp": facts["regions_mp"] + facts.get("drawn_regions_mp", 0.0),
             "image_frame": facts["frames"],
         },
         "faces": {"scanned_page": facts["scanned_pages"], "region": facts["regions"], "image_mp": facts["megapixels"]},
