@@ -350,6 +350,16 @@ Phase 2 in detail, with a mockup first for your approval. In short:
   changed and the result of the leak check. The JSON follows the contract used by the test
   bench evaluator, so the app can be evaluated as-is.
 
+The review screen is one continuous vertical scroll of every page, in rows, with the original
+("Antes") on the left and the result as it will be exported ("Después") on the right (stacked
+under it when a column is narrower than 420 px). The "after" is rendered by the engine with the
+export's own redaction (`render_result`), served by
+`GET /api/files/{id}/pages/{n}.png?redacted=true`; it answers 409 `not_ready` while the file is
+being processed. Only the rows near the viewport hold images, and an edit refreshes only the
+"after" of the page it touches. "Ver como quedará" (V) shows or hides the "after" column. Spec:
+`docs/superpowers/specs/2026-10-02-review-scroll-before-after-design.md`; the measured timings
+are in its section 7.
+
 ### 8.1 Choosing what to search for, and how long it takes
 
 Implemented (2026-10-01). Before processing, the user chooses which groups of detections run

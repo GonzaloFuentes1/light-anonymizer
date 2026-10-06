@@ -26,8 +26,9 @@ Contract
     (1.0 = 1 pixel per point for PDFs, 1 pixel per pixel for images).
 
 ``render_result(file, page, zoom, findings) -> bytes``
-    PNG of one page as it will be exported (the "after" of the review): the engine keeps the
-    findings of ``findings`` on that page that are active (neither "removed" nor "suggested"),
+    PNG of one page as it will be exported (the "after" of the review): ``findings`` may span
+    several pages; the engine keeps those of ``page`` that are active (neither "removed" nor
+    "suggested"),
     the same selection ``export`` makes, and applies them with the export's own redaction to an
     in-memory copy. Nothing is written to disk. Same view space and zoom as ``render_page``.
 

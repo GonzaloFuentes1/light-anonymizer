@@ -1,8 +1,8 @@
 # Review screen: continuous scroll and a real before/after
 
-Date: 2026-10-02. Status: design approved in conversation, then checked against the code by
-three reviews (engine parity, UI behaviour, tests/accessibility/performance); this written spec
-awaits the user's review. Mockup: `docs/mockup.html` (Revisar screen).
+Date: 2026-10-02. Status: approved by the user on 2026-10-05 and implemented on branch
+`review-scroll`. The design was checked against the code by three reviews (engine parity, UI
+behaviour, tests/accessibility/performance) before approval. Mockup: `docs/mockup.html` (Revisar screen).
 
 ## 1. Goal
 
@@ -367,6 +367,17 @@ Measured on the development machine (i7-13620H) with invented documents and PyMu
 - Target, on the development machine with nothing else processing: on a 60-page scanned PDF,
   after scrolling stops or after a J/K jump of more than 30 pages, the visible row shows both
   sides within about 2 s. A text PDF shows both sides as fast as the wheel turns.
+- Measured in the app on invented documents (real engine, headless Edge at 1366x900), after
+  the last wheel event or the jump, until the row at the center shows both sides painted:
+
+  | Document | Wheel burst | Long J/K jump | One zoom step |
+  |---|---|---|---|
+  | 120-page text PDF | 0.48 s | 0.58 s (118 pages) | 0.54 s |
+  | 60-page scanned PDF | 0.34 s | 0.48 s (58 pages) | 0.46 s |
+  | 30-frame TIFF | 0.25 s | 0.33 s (29 frames) | 0.34 s |
+
+  The target holds with a wide margin (about 4x on the scan). At most 5 rows held images at any
+  time, far below the limit of about 20 in 9.5.
 
 ## 8. Error handling
 

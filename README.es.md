@@ -33,6 +33,8 @@ models/          modelos ONNX (no se versionan; se descargan con un script)
 results/         salidas de las corridas locales (no se versiona)
 ```
 
+La pantalla de revisión muestra todas las páginas en un solo desplazamiento continuo, con el original a la izquierda y el resultado tal como se exportará a la derecha.
+
 ## Para empezar (desarrollo)
 
 Requiere [uv](https://docs.astral.sh/uv/) y Python 3.12.

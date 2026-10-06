@@ -33,6 +33,8 @@ models/          ONNX models (not versioned; downloaded by script)
 results/         outputs of local runs (not versioned)
 ```
 
+The review screen shows every page in one continuous scroll, with the original on the left and the result as it will be exported on the right.
+
 ## Quick start (development)
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12.
