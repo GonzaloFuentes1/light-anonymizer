@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import time
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Iterable
 from typing import NamedTuple
@@ -439,6 +439,7 @@ def _match(
         return best
 
     used: set[int] = set()  # clip entries already taken
+    painted = sorted(entry.seq for entry in found)  # positions of the painted paths in the listing
     match: dict[int, int] = {}
     j = (0, 0)  # position after the last match
     for n, (kind, box) in enumerate(calls):
@@ -453,6 +454,13 @@ def _match(
             best = first(call, box, j, lambda o: o >= 0)
         else:
             best = first(call, box, j, lambda o: o >= 0 or o not in used)
+            if best is not None and info[best[2]][0] < 0:
+                # A clip with the box of the next painted path (a form's bounding-box clip around
+                # its filled and stroked frame) is not a pattern's clip: that path takes the call.
+                path = first(call, box, j, lambda o: o >= 0)
+                after = bisect_right(painted, best[0])
+                if path is not None and (after == len(painted) or painted[after] >= path[0]):
+                    best = path
         if best is None:
             continue
         seq, sub, key = best

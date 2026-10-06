@@ -696,3 +696,22 @@ def test_a_signature_clipped_to_a_box_with_a_ring_border_is_removed(tmp_path):
     result, _ = export_with(content_pdf(tmp_path / "x.pdf", body), [("signature", SIG_ZONE)], tmp_path)
     assert result.exported, [leak.message for leak in result.leaks]
     assert not curves(Path(result.output_path))
+
+
+def test_a_form_frame_inside_its_bounding_box_clip_is_matched_to_its_path(tmp_path):
+    # A letterhead placed as a form: the form's bounding-box clip has the box of the filled and
+    # stroked frame drawn in it. The frame's call belongs to the frame, not to the clip: otherwise
+    # it looked like a shape painted with a pattern under the zone.
+    with pymupdf.open() as src:
+        head = src.new_page(width=400, height=80)
+        head.draw_rect(pymupdf.Rect(0, 0, 400, 80), color=(0, 0, 0), fill=(0.8, 0.8, 0.9))
+        src.save(tmp_path / "head.pdf")
+    with pymupdf.open() as doc, pymupdf.open(tmp_path / "head.pdf") as head_doc:
+        doc.new_page(width=400, height=300).show_pdf_page(pymupdf.Rect(0, 0, 400, 80), head_doc, 0)
+        page = doc[0]
+        found, clips = strokes.paths(page)
+        probe = strokes._Culler()
+        strokes._filter(page, probe, update=False)
+        match = strokes._match(probe.calls, found, ~page.transformation_matrix, None, clips)
+        assert sorted(match.values()) == [0]
+        assert not strokes._unlisted(page, probe.calls, match, [pymupdf.Rect(10, 10, 200, 70)])
