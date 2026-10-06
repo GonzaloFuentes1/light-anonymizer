@@ -133,6 +133,45 @@ def in_list(text: str, name_list: tuple[str, ...]) -> bool:
     return any(p.search(normalized) for _, p in names.list_patterns(name_list))
 
 
+# Decided 2026-10-06: a RUT whose check digit does not match, written as a bare run of digits (no
+# dots, no dash) and with no RUT label right before it, is often not a RUT (a folio, a code): it is
+# an optional finding that starts unapplied, like the other URLs (D12).
+OPTIONAL_RUT = "rut"
+RUT_LABEL = re.compile(r"(?<![a-zñ])(?:r\.?\s?u\.?\s?[tn]\.?(?![a-zñ])|rol\s+[uú]nico)", re.IGNORECASE)
+RUT_LABEL_REACH = 30  # characters before the number, on the same line, where a label counts
+_BARE = re.compile(r"\d{6,9}[\dkKxX]")
+
+
+def rut_suggested(text: str, a: int, b: int, value: str | None = None) -> bool:
+    """The RUT at ``text[a:b]`` is only suggested (``OPTIONAL_RUT``): its check digit does not match,
+    it is a bare run of digits and no "RUT", "RUN", "R.U.T." or "Rol Único" comes within
+    ``RUT_LABEL_REACH`` characters before it on its line. ``value``: the number as read (an OCR
+    variant of ``text[a:b]``, same length), if not ``text[a:b]``."""
+    value = (text[a:b] if value is None else value).strip()
+    if not _BARE.fullmatch(value) or rut_is_valid(value):
+        return False
+    start = max(text.rfind(chr(10), 0, a) + 1, a - RUT_LABEL_REACH)
+    return not RUT_LABEL.search(text[start:a])
+
+
+def has_rut_number(text: str, ocr: bool = False) -> bool:
+    """``text`` holds a number shaped like a RUT (what a finding of type "rut" must contain)."""
+    for t in (text, ocr_variant(text)) if ocr else (text,):
+        if any(rut_valid_by_shape(m) for m in RUT.finditer(t)) or (ocr and RUT_OCR.search(t)):
+            return True
+    return False
+
+
+def context_type(type_: str, value: str, name_list: tuple[str, ...], ocr: bool = False) -> str | None:
+    """The type of a value a context rule found under ``type_`` ("RUT: ..." or a RUT column). A
+    "rut" must hold a RUT-shaped number: otherwise the value keeps the type of another datum it
+    holds (an e-mail, a phone, a name...), or is no finding (None: an empty value, a dash)."""
+    if type_ != "rut" or has_rut_number(value, ocr):
+        return type_
+    others = [s[0] for s in dedup_spans(detect_spans(value, name_list, ocr=ocr)) if s[0] != "rut"]
+    return min(others, key=TYPE_PRIORITY.index) if others else None
+
+
 def rut_doubt(text: str | None) -> str | None:
     """``DOUBT_RUT`` when ``text`` has RUTs and none of them has a valid check digit."""
     if not text:

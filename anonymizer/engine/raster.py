@@ -16,15 +16,19 @@ import numpy as np
 from anonymizer.engine import context, faces, names, ocr, qr, signatures
 from anonymizer.engine.common import Zone, stage
 from anonymizer.engine.model import DetectionOptions
-from anonymizer.engine.patterns import TYPE_PRIORITY, normalize_1to1
+from anonymizer.engine.patterns import RUT, RUT_OCR, TYPE_PRIORITY, normalize_1to1, ocr_variant, rut_is_valid
 from anonymizer.engine.text import (
     DOUBT_CONTEXT_NAME,
+    DOUBT_RUT,
+    OPTIONAL_RUT,
+    context_type,
     dedup_spans,
     detect_spans,
     in_list,
     is_personal_url,
     ocr_doubt,
     rut_doubt,
+    rut_suggested,
 )
 
 # Stage names passed to the ``step`` callback.
@@ -157,12 +161,25 @@ def _text_zones(
             detectors = {s[3] for s in spans if s[0] == type_}
             detector = "context" if detectors == {"context"} else "ocr"
             doubt = _line_doubt(type_, line.text, line.score, detector, name_list)
+            read = ocr_variant(line.text)  # same length: the spans of the OCR pass are on it
+            ruts = [(a, b) for t, a, b, _ in spans if t == "rut"]
+            if type_ == "rut" and doubt is None and not any(rut_is_valid(read[a:b]) for a, b in ruts):
+                doubt = DOUBT_RUT  # the RUTs of the line decide, not another number on it
             optional = (
                 not all_text
                 and all(s[0] == "url" for s in found)
                 and not any(is_personal_url(line.text[a:b], name_list) for _, a, b, _ in found)
             )
-            zones.append(Zone(type_, line.polygon, line.text, "ocr", line.score, doubt, optional))
+            reason = "url" if optional else None
+            # Decided 2026-10-06: a line whose only data are doubtful bare RUTs with no label.
+            if (
+                not all_text
+                and type_ == "rut"
+                and types == {"rut"}
+                and all(rut_suggested(line.text, a, b, read[a:b]) for a, b in ruts)
+            ):
+                optional, reason = True, OPTIONAL_RUT
+            zones.append(Zone(type_, line.polygon, line.text, "ocr", line.score, doubt, optional, reason))
         elif all_text and line.text.strip():
             zones.append(Zone("text", line.polygon, line.text, "ocr", line.score, ocr_doubt(line.score)))
     # Context: table columns (Nombre, Correo, Teléfono, Firma...) and label-value pairs.
@@ -170,9 +187,13 @@ def _text_zones(
     if upright:
         objects = [context.Line(ln.text, *ln.polygon.min(axis=0), *ln.polygon.max(axis=0)) for ln in upright]
         spans, rects = context.context_rules(objects, w, h, names=options.names_context)
-        for type_, i, _a, _b in spans:
+        for type_, i, a, b in spans:
             ln = upright[i]
-            doubt = _line_doubt(type_, ln.text, ln.score, "context", name_list)
+            # A "rut" value must hold a RUT-shaped number (an empty "RUT:" field is no finding).
+            type_ = context_type(type_, ln.text[a:b], name_list, ocr=True)
+            if type_ is None:
+                continue
+            doubt = _line_doubt(type_, ln.text[a:b] if type_ == "rut" else ln.text, ln.score, "context", name_list)
             zones.append(Zone(type_, ln.polygon, ln.text, "context", ln.score, doubt))
         for type_, x0, y0, x1, y1 in rects:
             doubt = {"name": DOUBT_CONTEXT_NAME, "signature": signatures.DOUBT_SIGNATURE}.get(type_)
@@ -188,6 +209,19 @@ def _text_zones(
 
 
 _TEXT_DETECTORS = ("ocr", "context", "name_list")
+
+
+def _settles_doubt(z: Zone) -> bool:
+    """A reading without doubt clears the doubt of the zone it joins; for a RUT, only a reading that
+    holds a RUT with a valid check digit (a line read without the number says nothing of it)."""
+    if z.type != "rut":
+        return True
+    text = z.text or ""
+    return any(
+        rut_is_valid(m.group(0)) for t in (text, ocr_variant(text)) for m in (*RUT.finditer(t), *RUT_OCR.finditer(t))
+    )
+
+
 # Which type a zone keeps when several rules found the same box: the first in this order.
 _MERGE_ORDER = (*TYPE_PRIORITY[:3], "signature", *TYPE_PRIORITY[3:])
 
@@ -285,9 +319,9 @@ def dedup(zones: list[Zone]) -> list[Zone]:
                 )
             kept = kept._replace(polygon=polygon, text=best.text, score=best.score)
             boxes[i] = _box(polygon)
-        if z.doubt is None:
+        if z.doubt is None and (kept.doubt != DOUBT_RUT or _settles_doubt(z)):
             kept = kept._replace(doubt=None)
         if not z.optional:
-            kept = kept._replace(optional=False)
+            kept = kept._replace(optional=False, optional_reason=None)
         output[i] = kept
     return output

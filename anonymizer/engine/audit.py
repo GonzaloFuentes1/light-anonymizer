@@ -29,6 +29,7 @@ from anonymizer.engine.model import (
     ExportResult,
     Finding,
 )
+from anonymizer.engine.text import OPTIONAL_RUT
 
 TITLE = "Informe de auditoría de anonimización"
 CLOSING = (
@@ -187,6 +188,9 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
         "other_urls": _optional_record(_other_urls(file)),
         # D10: the list in effect when the file was processed, and what it left unapplied.
         "exceptions": {"entries": list(file.exceptions), **_optional_record(_exceptions(file))},
+        # Decided 2026-10-06: bare RUTs with a check digit that does not match and no label, not
+        # censored by default.
+        "doubtful_ruts": _optional_record(_doubtful_ruts(file)),
         # D8: zones that also took whole letters drawn as paths under them (small rectangles, view space).
         "letters_covered": [
             {**g, "page_number": g["page"] + 1} for g in (result.grown if result and result.exported else [])
@@ -219,7 +223,12 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
 
 def _other_urls(file: AnalyzedFile) -> list[Finding]:
     """Optional findings of D12: URLs that are not personal."""
-    return [f for f in file.findings if f.optional and f.optional_reason != EXCEPTION]
+    return [f for f in file.findings if f.optional and f.optional_reason not in (EXCEPTION, OPTIONAL_RUT)]
+
+
+def _doubtful_ruts(file: AnalyzedFile) -> list[Finding]:
+    """Optional findings decided 2026-10-06: bare RUTs whose check digit does not match, with no label."""
+    return [f for f in file.findings if f.optional and f.optional_reason == OPTIONAL_RUT]
 
 
 def _exceptions(file: AnalyzedFile) -> list[Finding]:
@@ -304,6 +313,7 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
     added = [f for f in active if _is_added(f)]
     optional = _other_urls(file)
     listed = _exceptions(file)
+    doubtful_ruts = _doubtful_ruts(file)
     if result is None:
         parts.append("<p class='muted'>No se intentó exportar este archivo.</p>")
     elif result.exported:
@@ -373,6 +383,21 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
         parts.append(
             f"<p>{_count(len(applied), 'enlace censurado', 'enlaces censurados')} · "
             f"{_count(len(visible), 'enlace queda visible', 'enlaces quedan visibles')}.</p>"
+        )
+        if visible:
+            parts.append(_table(["Página", "Queda visible"], [[f.page + 1, f.text or "—"] for f in visible]))
+
+    if doubtful_ruts:
+        parts.append("<h3>RUT dudosos sin puntos ni guion</h3>")
+        parts.append(
+            "<p>Números escritos sin puntos ni guion, sin la palabra «RUT» antes, cuyo dígito verificador no "
+            "coincide: pueden ser folios o códigos. No se censuran a menos que quien revisa lo decida.</p>"
+        )
+        applied = [f for f in doubtful_ruts if f.active]
+        visible = [f for f in doubtful_ruts if f.status == "suggested"]
+        parts.append(
+            f"<p>{_count(len(applied), 'número censurado', 'números censurados')} · "
+            f"{_count(len(visible), 'número queda visible', 'números quedan visibles')}.</p>"
         )
         if visible:
             parts.append(_table(["Página", "Queda visible"], [[f.page + 1, f.text or "—"] for f in visible]))

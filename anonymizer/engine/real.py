@@ -230,7 +230,10 @@ class RealEngine:
     def _finding(self, file: AnalyzedFile, options: DetectionOptions, page: int, zone, polygon, source: str):
         # D12: a URL that is not personal is shown but starts unapplied, unless the user asked to
         # redact the other URLs too.
-        status = "suggested" if zone.optional and not options.urls_other else "proposed"
+        reason = (zone.optional_reason or "url") if zone.optional else None
+        # A doubtful bare RUT (decided 2026-10-06) always starts unapplied; "censurar también los
+        # otros enlaces" is about URLs only.
+        status = "suggested" if zone.optional and (reason != "url" or not options.urls_other) else "proposed"
         finding = Finding(
             id=uuid.uuid4().hex[:12],
             file_id=file.id,
@@ -245,7 +248,7 @@ class RealEngine:
             status=status,
             optional=bool(zone.optional),
             history=[HistoryEntry(at=now_iso(), action=status)],
-            optional_reason="url" if zone.optional else None,
+            optional_reason=reason,
         )
         self._sources[finding.id] = source
         return finding

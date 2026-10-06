@@ -27,13 +27,16 @@ from anonymizer.engine.patterns import normalize_1to1
 from anonymizer.engine.text import (
     DETECTOR_PRIORITY,
     DOUBT_CONTEXT_NAME,
+    OPTIONAL_RUT,
     Span,
+    context_type,
     dedup_spans,
     detect_spans,
     in_list,
     is_personal_url,
     needle,
     rut_doubt,
+    rut_suggested,
     strong_needle,
 )
 
@@ -65,7 +68,8 @@ class PageZone:
     score: float | None
     doubt: str | None
     source: str  # "text" (text layer) or "raster" (pixels: OCR, faces, QR; and vector signatures)
-    optional: bool = False  # D12: it only covers a URL that is not personal
+    optional: bool = False  # it starts unapplied: a URL that is not personal (D12), a doubtful bare RUT
+    optional_reason: str | None = None  # "url" (D12) or "rut" (``text.rut_suggested``); None: "url"
 
 
 @dataclass
@@ -82,6 +86,8 @@ class TextPage:
     # Where data other than URLs was found (also inside a URL, before ``dedup_spans``): a URL that
     # touches one of these ranges is never optional (D12).
     data_ranges: list[tuple[int, int]] = field(default_factory=list)
+    # Values a context rule took as RUTs ("RUT: ...", a cell of a "RUT" column): labelled RUTs.
+    rut_context: list[tuple[int, int]] = field(default_factory=list)
 
     @property
     def scanned(self) -> bool:
@@ -231,7 +237,14 @@ def read_text_page(page: pymupdf.Page, name_list: tuple[str, ...], options: Dete
     ctx, tp.rects = context.context_rules(
         [ln for _, _, ln in tp.lines], page.rect.width, page.rect.height, names=options.names_context
     )
-    spans += [(type_, tp.lines[i][0] + a, tp.lines[i][0] + b, "context") for type_, i, a, b in ctx]
+    for type_, i, a, b in ctx:
+        start = tp.lines[i][0]
+        # A "rut" value must hold a RUT-shaped number; otherwise it keeps another datum's type, or
+        # is no finding (an empty "RUT:" field).
+        type_ = context_type(type_, text[start + a : start + b], name_list)
+        if type_ is not None:
+            spans.append((type_, start + a, start + b, "context"))
+    tp.rut_context = [(a, b) for type_, a, b, det in spans if det == "context" and type_ == "rut"]
     tp.list_ranges = [(a, b) for _, a, b, det in spans if det == "name_list"]
     tp.data_ranges = [(a, b) for type_, a, b, _ in spans if type_ != "url"]
     tp.spans = dedup_spans(spans)
@@ -315,9 +328,14 @@ def text_zones(tp: TextPage, name_list: tuple[str, ...]) -> list[PageZone]:
             and not is_personal_url(value, name_list)
             and not any(da < b and a < db for da, db in tp.data_ranges)
         )
+        reason = "url" if optional else None
+        if type_ == "rut" and rut_suggested(tp.text, a, b) and not any(ra < b and a < rb for ra, rb in tp.rut_context):
+            optional, reason = True, OPTIONAL_RUT
         for r in span_rects(tp.boxes, a, b):
             r = clip_against_neighbors(r, a, b, tp.lines)
-            zones.append(PageZone(tp.index, r, type_, value, detector, 0.6 if doubt else 1.0, doubt, "text", optional))
+            zones.append(
+                PageZone(tp.index, r, type_, value, detector, 0.6 if doubt else 1.0, doubt, "text", optional, reason)
+            )
     for type_, x0, y0, x1, y1 in tp.rects:
         doubt = {"name": DOUBT_CONTEXT_NAME, "signature": signatures.DOUBT_SIGNATURE}.get(type_)
         zones.append(PageZone(tp.index, pymupdf.Rect(x0, y0, x1, y1), type_, "", "context", None, doubt, "raster"))
@@ -614,7 +632,9 @@ def raster_zones(
     for z in raster.dedup(zones):
         (x0, y0), (x1, y1) = np.asarray(z.polygon).min(axis=0), np.asarray(z.polygon).max(axis=0)
         r = (pymupdf.Rect(float(x0), float(y0), float(x1), float(y1)) * inverse) + (-1, -1, 1, 1)
-        output.append(PageZone(tp.index, r, z.type, z.text, z.detector, z.score, z.doubt, "raster", z.optional))
+        output.append(
+            PageZone(tp.index, r, z.type, z.text, z.detector, z.score, z.doubt, "raster", z.optional, z.optional_reason)
+        )
     return output
 
 

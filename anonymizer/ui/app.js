@@ -1025,7 +1025,10 @@
       case "exported": {
         const parts = [`${plural(c.total || 0, "zona propuesta", "zonas propuestas")}`];
         if (c.doubtful) parts.push(`${plural(c.doubtful, "dudosa", "dudosas")} para revisar primero`);
-        if (c.suggested) parts.push(unappliedText(c.suggested - (c.suggested_exceptions || 0), c.suggested_exceptions || 0));
+        if (c.suggested) {
+          const listed = c.suggested_exceptions || 0, ruts = c.suggested_ruts || 0;
+          parts.push(unappliedText(c.suggested - listed - ruts, listed, ruts));
+        }
         return parts.join(" · ");
       }
       case "error": return "No se pudo procesar";
@@ -2128,17 +2131,24 @@
   }
 
   // --- findings column ---
-  // Why an optional finding is not censored by default: another URL (D12) or a value of the
-  // user's exceptions list (D10).
+  // Why an optional finding is not censored by default: another URL (D12), a value of the user's
+  // exceptions list (D10) or a doubtful RUT: a bare number whose check digit does not match, with
+  // no "RUT" before it (decided 2026-10-06).
   function isException(f) { return f.optional_reason === "exception"; }
-  function optionalWhy(f) { return isException(f) ? "en tu lista de excepciones" : "otro enlace"; }
-  /** "2 otros enlaces y 1 excepción sin censurar": the suggestions left unapplied. */
-  function unappliedText(urls, listed) {
+  function isDoubtfulRut(f) { return f.optional_reason === "rut"; }
+  function optionalKind(f) { return isException(f) ? "exception" : isDoubtfulRut(f) ? "rut" : "url"; }
+  function optionalWhy(f) {
+    return isException(f) ? "en tu lista de excepciones" : isDoubtfulRut(f) ? "RUT dudoso sin puntos ni guion" : "otro enlace";
+  }
+  /** "2 otros enlaces, 1 excepción y 1 RUT dudoso sin censurar": the suggestions left unapplied. */
+  function unappliedText(urls, listed, ruts) {
     const parts = [];
     if (urls) parts.push(plural(urls, "otro enlace", "otros enlaces"));
     if (listed) parts.push(plural(listed, "excepción", "excepciones"));
+    if (ruts) parts.push(plural(ruts, "RUT dudoso", "RUT dudosos"));
     return parts.length ? `${joinEs(parts)} sin censurar` : "";
   }
+  function suggestedOf(all, kind) { return all.filter((f) => f.status === "suggested" && optionalKind(f) === kind).length; }
 
   function findingItem(f) {
     const rv = S.rv;
@@ -2156,7 +2166,7 @@
     let action;
     if (f.optional) {
       // D12, D10: an optional finding is censored or left visible with one click, without a reason.
-      const what = isException(f) ? findingValue(f) : `el enlace ${findingValue(f)}`;
+      const what = optionalKind(f) === "url" ? `el enlace ${findingValue(f)}` : findingValue(f);
       action = h("button", {
         type: "button", class: "btn ghost small", dataset: { fk: `fa:${f.id}` },
         "aria-label": suggested ? `Censurar ${what}` : `No censurar ${what}`,
@@ -2252,8 +2262,9 @@
     const rest = vis.filter((f) => !f.doubtful && !f.optional);
     const other = vis.filter((f) => f.optional);
     const anyOther = all.some((f) => f.optional);
-    const unappliedUrls = all.filter((f) => f.status === "suggested" && !isException(f)).length;
-    const unappliedListed = all.filter((f) => f.status === "suggested" && isException(f)).length;
+    const unappliedUrls = suggestedOf(all, "url");
+    const unappliedListed = suggestedOf(all, "exception");
+    const unappliedRuts = suggestedOf(all, "rut");
     const list = $("#findlist");
     keepFocus(list, () => {
       const parts = [];
@@ -2271,14 +2282,17 @@
           : h("p", { class: "nofind", text: "No hay hallazgos con el filtro actual." }));
       }
       if (anyOther) {
-        // Not censored by default: other URLs (D12) and values of the exceptions list (D10).
-        const anyUrl = all.some((f) => f.optional && !isException(f));
+        // Not censored by default: other URLs (D12), values of the exceptions list (D10) and doubtful
+        // bare RUTs (decided 2026-10-06).
+        const anyUrl = all.some((f) => f.optional && optionalKind(f) === "url");
         const anyListed = all.some((f) => f.optional && isException(f));
+        const anyRut = all.some((f) => f.optional && isDoubtfulRut(f));
         // With "Censurar también los otros enlaces" on, this file's other URLs started censored.
         const startedApplied = !!(rv.file && rv.file.options && rv.file.options.urls_other);
         const urlsApplied = anyUrl && startedApplied;
         // The heading never says "not censored" about URLs that started censored.
-        const heading = !urlsApplied ? "No se censuran por defecto" : anyListed ? "Otros enlaces y excepciones" : "Otros enlaces";
+        const kinds = ["Otros enlaces", anyListed ? "excepciones" : null, anyRut ? "RUT dudosos" : null].filter(Boolean);
+        const heading = !urlsApplied ? "No se censuran por defecto" : joinEs(kinds);
         parts.push(h("h3", { class: "group", id: "g-other" },
           h("span", { text: heading }), h("span", { text: String(other.length) })));
         const notes = [];
@@ -2288,8 +2302,9 @@
             : "Otros enlaces: sitios institucionales o documentos públicos.");
         }
         if (anyListed) notes.push("Excepciones: valores de tu lista de excepciones, como el RUT de tu institución o sus números 600 y 800.");
+        if (anyRut) notes.push("RUT dudosos: números sin puntos ni guion, sin la palabra «RUT» antes, cuyo dígito verificador no coincide; pueden ser folios o códigos. Revisa el original.");
         if (!urlsApplied) notes.push("No se censuran a menos que tú lo decidas.");
-        else if (anyListed) notes.push("Las excepciones no se censuran a menos que tú lo decidas.");
+        else if (anyListed || anyRut) notes.push(`${anyListed && anyRut ? "Las excepciones y los RUT dudosos" : anyListed ? "Las excepciones" : "Los RUT dudosos"} no se censuran a menos que tú lo decidas.`);
         parts.push(h("p", { class: "group-note", text: notes.join(" ") }));
         const acts = [];
         if (anyUrl) {
@@ -2306,6 +2321,14 @@
             disabled: !unappliedListed || undefined,
             text: "Censurar todas las excepciones",
             onclick: () => applyAllOptional("exception"),
+          }));
+        }
+        if (anyRut) {
+          acts.push(h("button", {
+            type: "button", class: "btn small", dataset: { fk: "apply-ruts" },
+            disabled: !unappliedRuts || undefined,
+            text: "Censurar todos los RUT dudosos",
+            onclick: () => applyAllOptional("rut"),
           }));
         }
         parts.push(h("div", { class: "group-acts" }, acts));
@@ -2325,10 +2348,7 @@
     const all = rvFindings();
     const active = all.filter(isApplied).length;
     const removed = all.filter((f) => f.status === "removed").length;
-    const unapplied = unappliedText(
-      all.filter((f) => f.status === "suggested" && !isException(f)).length,
-      all.filter((f) => f.status === "suggested" && isException(f)).length,
-    );
+    const unapplied = unappliedText(suggestedOf(all, "url"), suggestedOf(all, "exception"), suggestedOf(all, "rut"));
     const added = all.filter((f) => f.type === "manual" || f.detector === "reviewer").length;
     const seen = seenSet(file.id);
     const unseen = all.filter((f) => f.doubtful && !seen.has(f.id)).length;
@@ -2397,7 +2417,7 @@
     if (f.optional) {
       // D12, D10: an optional finding is left visible with "No censurar" (no reason needed).
       if (f.status === "suggested") {
-        toast(`${isException(f) ? "Este dato" : "Este enlace"} no está censurado. Usa «Censurar» si quieres censurarlo.`);
+        toast(`${optionalKind(f) === "url" ? "Este enlace" : "Este dato"} no está censurado. Usa «Censurar» si quieres censurarlo.`);
       }
       else toggleOptional(f.id);
       return;
@@ -2460,7 +2480,7 @@
     const fileId = S.rv.id, opened = S.rv.file;
     try {
       const updated = await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: { action } });
-      const what = isException(f) ? "Este dato" : "Este enlace";
+      const what = optionalKind(f) === "url" ? "Este enlace" : "Este dato";
       toast(action === "apply"
         ? `${what} se censurará.`
         : `${what} quedará visible. Queda registrado en el informe de auditoría.`);
@@ -2473,17 +2493,21 @@
       showError(err);
     }
   }
-  /** Applies every suggestion of one kind: "url" (other URLs) or "exception" (exceptions list). */
+  /** Applies every suggestion of one kind: "url" (other URLs), "exception" (exceptions list) or
+   *  "rut" (doubtful bare RUTs). */
   async function applyAllOptional(reason) {
-    const listed = reason === "exception";
     const fileId = S.rv.id, opened = S.rv.file;
     try {
       const res = await api(`/api/files/${enc(fileId)}/findings/apply-optional`, { method: "POST", json: { reason } });
       const applied = (res && res.applied) || [];
-      const more = listed ? plural(applied.length, "excepción más", "excepciones más") : plural(applied.length, "enlace más", "enlaces más");
+      const words = {
+        exception: ["excepción más", "excepciones más", "No quedaban excepciones sin censurar."],
+        rut: ["RUT dudoso más", "RUT dudosos más", "No quedaban RUT dudosos sin censurar."],
+        url: ["enlace más", "enlaces más", "No quedaban otros enlaces sin censurar."],
+      }[reason] || ["enlace más", "enlaces más", "No quedaban otros enlaces sin censurar."];
       toast(applied.length
-        ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${more}.`
-        : listed ? "No quedaban excepciones sin censurar." : "No quedaban otros enlaces sin censurar.");
+        ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${plural(applied.length, words[0], words[1])}.`
+        : words[2]);
       if (stillOpen(fileId, opened)) {
         const list = S.rv.file.findings;
         for (const u of applied) {

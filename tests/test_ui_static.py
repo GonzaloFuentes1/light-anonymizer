@@ -100,7 +100,7 @@ def test_js_syntax(name):
                 "No se censuran por defecto",
                 "en tu lista de excepciones",
                 "Censurar todas las excepciones",
-                "Otros enlaces y excepciones",  # the heading when the other URLs started censored
+                "Censurar todos los RUT dudosos",  # doubtful bare RUTs (decided 2026-10-06)
                 "Censurar todos los otros enlaces",
                 "No censurar",
                 "sin censurar",

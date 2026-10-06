@@ -24,7 +24,7 @@ Routes (JSON unless noted)::
     GET    /api/files/{id}/pages/{n}.png?zoom=1.5&redacted=true  image/png (the page as it will be exported)
     POST   /api/files/{id}/findings        {page, polygon, note?}
     PATCH  /api/files/{id}/findings/{fid}  {action: remove|restore|apply|skip, reason?, note?}
-    POST   /api/files/{id}/findings/apply-optional   {reason?: url|exception}   apply the suggested findings
+    POST   /api/files/{id}/findings/apply-optional   {reason?: url|exception|rut}   apply the suggested findings
     POST   /api/files/{id}/confirm
     GET    /api/default-export-dir
     POST   /api/export                     {dest_dir, file_ids?, audit_pdf, audit_json}
@@ -411,6 +411,7 @@ class Session:
                 "suggested_exceptions": sum(
                     1 for f in findings if f.status == "suggested" and f.optional_reason == exceptions.REASON
                 ),
+                "suggested_ruts": sum(1 for f in findings if f.status == "suggested" and f.optional_reason == "rut"),
             },
             "pages": pages,
             "size": self.sizes.get(file.id, 0),
@@ -568,7 +569,7 @@ class ExceptionsBody(BaseModel):
 
 
 class ApplyOptionalBody(BaseModel):
-    reason: Literal["url", "exception"] | None = None  # None: every suggested finding
+    reason: Literal["url", "exception", "rut"] | None = None  # None: every suggested finding
 
 
 class ProcessBody(BaseModel):
@@ -1018,7 +1019,7 @@ def create_app(
             reason = (body.reason or "").strip() or None
             note = (body.note or "").strip() or None
             # D12 (other URLs) and D10 (exceptions list): applied or skipped, never "removed".
-            what = "este dato" if finding.optional_reason == exceptions.REASON else "este enlace"
+            what = "este enlace" if (finding.optional_reason or "url") == "url" else "este dato"
             if body.action == "remove":
                 if finding.optional:
                     raise ApiError(409, "optional", f"Para dejar visible {what}, usa «No censurar».")
@@ -1055,7 +1056,7 @@ def create_app(
     def apply_optional(file_id: str, body: ApplyOptionalBody | None = None):
         """Applies the suggested findings of the file: every one, or those of one ``reason``
         ("url", D12: "Censurar todos los otros enlaces"; "exception", D10: "Censurar todas las
-        excepciones")."""
+        excepciones"; "rut", the doubtful bare RUTs: "Censurar todos los RUT dudosos")."""
         file = session.get(file_id)
         only = body.reason if body else None
         with session.lock:

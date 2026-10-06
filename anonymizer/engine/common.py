@@ -155,7 +155,8 @@ class Zone(NamedTuple):
     detector: str
     score: float
     doubt: str | None = None
-    optional: bool = False  # D12: it only covers URLs that are not personal
+    optional: bool = False  # it starts unapplied: URLs that are not personal (D12), a doubtful bare RUT
+    optional_reason: str | None = None  # "url" (D12) or "rut" (``text.rut_suggested``); None: "url"
 
 
 # ---------------------------------------------------------------------------
