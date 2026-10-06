@@ -384,8 +384,8 @@
         showReviewStatus(why);
         renderFileBar();
         if (S.screen === 3) renderReview();
-      } else if (rv.file && sum.status !== rv.file.status) {
-        openFile(rv.id, { keepView: true });
+      } else if (rv.file && sum.status !== rv.file.status && rv.loadingId !== rv.id) {
+        openFile(rv.id, { keepView: true }); // not while one is on its way: a slow one would never land
       }
     } else if (S.screen === 3 && S.files.some((f) => REVIEWABLE.has(f.status))) {
       renderReview(); // Revisar showed no file and one became reviewable: open it
@@ -1128,22 +1128,36 @@
    *  file is loaded (an open from the select). ``auto``: the automatic choice, which keeps the
    *  status line and a choice still pending in the select. */
   async function openFile(id, { keepView = false, focus = false, auto = false } = {}) {
-    const sum = fileById(id);
-    if (!sum || !REVIEWABLE.has(sum.status)) return;
-    if (!keepView || id !== S.rv.id) {
-      teardownRows();
-      Object.assign(S.rv, { id, file: null, sel: null, zoom: 1, rot: 0, pan: 0, versions: [] });
-      S.rv.hidden.clear();
-      setDraw(false);
-      $("#review-loading").hidden = false;
-      if (!auto) {
-        clearTimeout(fileSwitchTimer);
-        fileSwitchTimer = null;
-        showReviewStatus("");
+    try {
+      const sum = fileById(id);
+      if (!sum || !REVIEWABLE.has(sum.status)) return;
+      const fresh = !keepView || id !== S.rv.id;
+      if (fresh) {
+        teardownRows();
+        Object.assign(S.rv, { id, file: null, sel: null, zoom: 1, rot: 0, pan: 0, versions: [] });
+        S.rv.hidden.clear();
+        setDraw(false);
+        $("#review-loading").hidden = false;
+        if (!auto) {
+          clearTimeout(fileSwitchTimer);
+          fileSwitchTimer = null;
+          showReviewStatus("");
+        }
       }
+      renderFileBar();
+      const load = loadReviewFile(id, { keepView, focus }).catch(reportError); // sets rv.loadingId at once
+      // The findings column and the verify bar leave the previous file now, not when this one arrives.
+      if (fresh && S.screen === 3) renderReview();
+      await load;
+    } catch (err) {
+      reportError(err);
     }
-    renderFileBar();
-    await loadReviewFile(id, { keepView, focus });
+  }
+
+  /** A failure in a flow started without await (polls, clicks): one message, no unhandled rejection. */
+  function reportError(err) {
+    console.error(err);
+    showError(err instanceof ApiError ? err : null);
   }
 
   let loadSeq = 0; // only the latest load is applied
@@ -1159,6 +1173,11 @@
       rv.loadingId = null;
       if (rv.id !== id) return;
       $("#review-loading").hidden = true;
+      if (!rv.file && S.screen === 3) {
+        // Not renderReview(): it would try again at once, and again on every failure.
+        renderReviewPlaceholder("No se pudo cargar el archivo.");
+        $("#findlist").append(h("button", { type: "button", class: "btn small", text: "Reintentar", onclick: () => openFile(id) }));
+      }
       showError(err);
       return;
     }
@@ -1217,12 +1236,24 @@
     if (!rv.id) return;
     renderFileBar();
     if (!rv.file) {
-      $("#findlist").replaceChildren(h("p", { class: "nofind", text: "Cargando el archivo…" }));
+      renderReviewPlaceholder("Cargando el archivo…");
       return;
     }
     renderSkipped();
     renderFindings();
     renderVerify();
+  }
+
+  /** The findings column and the verify bar with no file in them (loading, or the load failed). */
+  function renderReviewPlaceholder(text) {
+    $("#fcount").textContent = "";
+    $("#chips").replaceChildren();
+    for (const id of ["#skipped", "#leaks"]) { $(id).hidden = true; $(id).replaceChildren(); }
+    $("#findlist").replaceChildren(h("p", { class: "nofind", text }));
+    $("#vdot").className = "dot";
+    $("#vtitle").textContent = "";
+    $("#vsum").textContent = "";
+    $("#vactions").replaceChildren();
   }
 
   // --- the file bar ---
