@@ -1507,12 +1507,14 @@
   const scaleOf = (row) => (row ? row.scale : 1);
 
   /** The point at the center of the visible area: row, relative y in it (fy) and x as a fraction of
-   *  its page width (fx). While Revisar is hidden, the anchor saved when it was left. */
+   *  its page width (fx). While a smooth scroll is on its way, the view it is going to (a zoom or a
+   *  resize right after J keeps the finding J went to). While Revisar is hidden, the anchor saved
+   *  when it was left. */
   function anchorNow() {
     const rv = S.rv, vp = $("#viewport");
     if (!vp.clientWidth) return (pendingView && pendingView.anchor) || null;
     if (!rv.rows.length) return null;
-    const anchor = ReviewCore.anchorOf(rowMetrics(), vp.scrollTop + headerHeight(), visibleHeight());
+    const anchor = ReviewCore.anchorOf(rowMetrics(), viewTop() + headerHeight(), visibleHeight());
     return { ...anchor, fx: ReviewCore.panCenter(rv.pan, rv.rows[anchor.row].w, rv.layout.colWidth) };
   }
   /** Scrolls back to an anchor (its row clamped to the rows that exist). */
@@ -1978,6 +1980,8 @@
   // Where a smooth programmatic scroll is going, until it ends: a selection made meanwhile (J held
   // down) is measured against where the view will be, not against a frame of the way there.
   let smoothTo = null;
+  /** The viewport's scrollTop, or where a smooth scroll on its way will leave it. */
+  function viewTop() { return smoothTo != null ? smoothTo : $("#viewport").scrollTop; }
   /** Scrolls the viewport, smoothly unless the motion is reduced, it is asked to be instant, or it is
    *  long (more than two viewport heights). Its scroll events hold the image loads as any scroll. */
   function scrollToY(y, { instant = false } = {}) {
@@ -2001,7 +2005,7 @@
       // The page box inside its row (stacked, below its caption); the zone clamped to that page.
       const boxTop = row.before.box.getBoundingClientRect().top - row.el.getBoundingClientRect().top;
       const y0 = clamp(z.y, 0, row.h), y1 = clamp(z.y + z.h, y0, row.h);
-      const view = { scrollTop: smoothTo != null ? smoothTo : vp.scrollTop, headerHeight: headerHeight(), height: vp.clientHeight };
+      const view = { scrollTop: viewTop(), headerHeight: headerHeight(), height: vp.clientHeight };
       const y = ReviewCore.scrollTarget({ y: boxTop + y0, h: y1 - y0 }, rowMetrics()[f.page], view, SEL_MARGIN);
       if (y != null) scrollToY(y, { instant });
       const pan = ReviewCore.panTarget(z, row.w, rv.layout.colWidth, rv.pan, SEL_MARGIN);
