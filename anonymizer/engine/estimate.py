@@ -42,7 +42,7 @@ DEFAULT_RATES: dict[str, dict[str, float]] = {
     "render": {"raster_page": 0.14, "image_mp": 0.02},
     "ocr": {"scanned_page": 10.0, "region": 1.45, "region_mp": 1.9, "image_frame": 3.5},
     "faces": {"scanned_page": 1.2, "region": 0.15, "image_mp": 0.35},
-    "signatures": {"pdf_page": 0.01, "scanned_page": 0.15, "region": 0.02, "image_mp": 0.03},
+    "signatures": {"pdf_page": 0.006, "scanned_page": 0.22, "region": 0.03, "image_mp": 0.12},
     "qr": {"raster_page": 0.1, "image_mp": 0.02},
 }
 SMOOTHING = 0.3  # weight of the newest measurement in the moving average

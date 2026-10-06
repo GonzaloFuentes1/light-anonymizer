@@ -296,6 +296,98 @@ is recognized by its shape in the OCR text. I propose always redacting the whole
 - Short install paths: with long paths (such as OneDrive's) Windows fails to load native
   libraries.
 
+## 5.7 Signatures
+
+Implemented (2026-10-05): detection group `signatures` ("Firmas", on by default, section 8.1),
+module `anonymizer/engine/signatures.py`, findings of type `signature` with detector `signatures`.
+**Every signature finding is doubtful** ("Posible firma: revisa el original"), including the
+"Firma" column zones of the context rule (D13), which were not doubtful before.
+
+**No model: rules.** The decision was "try and measure": our own rules, and an open pretrained
+model if one could run offline with onnxruntime under a license compatible with the AGPL. No
+model passed the license review, which covered the weights, the code they come from and the
+data they were trained on (primary sources: model and dataset cards, the IIT-CDIP paper):
+
+| Candidate | Weights / code | Training data | Verdict |
+|---|---|---|---|
+| tech4humans `yolov8s-signature-detector` (ONNX, 44.6 MB, gated) | AGPL-3.0 / Ultralytics AGPL-3.0 | tech4humans/signature-detection: Tobacco800 + Roboflow `signatures-xc8up` | rejected: Tobacco800 comes from the tobacco litigation documents (IIT-CDIP), whose copyright was never cleared; the Roboflow upload has no documented origin |
+| tech4humans `conditional-detr-50-signature-detector`, mdefrance `yolos-*-signature-detection` (and the onnx-community conversion) | Apache-2.0 | the same dataset | rejected, same reason |
+| Mels22 `Signature-Detection-Verification`, victordibia `signver` | Apache-2.0 / MIT (YOLO11 code is AGPL) | SignverOD (CC0, but built from Tobacco800, NIST forms, an unnamed cheque dataset, GSA leases) | rejected: Tobacco800 and an unnamed source |
+| liberty666 `yolo11n-chinese-signature` | MIT declared | ChiSig, no license found | rejected |
+| bluecopa `rf-detr-stamp-signature-detector` | Apache-2.0 | "~9 400 images merged from multiple sources", none named | rejected |
+| nutrientdocs `form-field-v1-nano` (ONNX, 3.7 MB) | Apache-2.0 | synthetic forms, provenance of templates and handwriting not documented | rejected; it also detects signature *fields*, not signatures |
+| A dozen community YOLO/DETR models on Hugging Face, Roboflow Universe models and datasets, the Ultralytics Signature dataset | various | not documented, or user uploads of unknown origin | rejected |
+| Layout models (DocLayout-YOLO, DocLayNet, PP-DocLayout) and open-vocabulary detectors | permissive | no signature class, or RVL-CDIP (tobacco documents); Grounding DINO's GoldG includes Flickr30k (non-commercial) | rejected |
+
+The only clean route to a model would be to train one on synthetic signatures over documents
+of known license; it can be revisited if someone publishes a detector with documented,
+permissive training data.
+
+**What the rules look for.**
+
+- *Raster* (scanned pages, photos, images placed on text pages): pen strokes, that is, ink that
+  printed text does not explain (not inside a line OCR read with confidence ≥ 0.8, or much
+  larger than its letters), at least three letter heights long, thin, curved, and neither a
+  straight rule, a hollow ring or frame (stamps), a grid of short axis-parallel runs (QR codes,
+  tables), a filled shape nor part of a texture (dense ink around it: photos). A stroke counts
+  near a short line with a keyword (`firma`, `firmado`, `firmante`, `V°B°`/`VºBº`/`Vo.Bo.`,
+  `p.p.`, in any orientation, also in the text layer next to an image), over a straight
+  signature line of a document that is not part of a table grid, or inside a small image of a
+  text page (a scanned signature pasted into a Word document). Next to a keyword, letters
+  written apart count too. On a plain sheet of paper (light, even background, sparse ink), a
+  large curly stroke outside every OCR line counts by itself. In a table, the column under a
+  "Firma" header is a zone down to the last row (rows must have cells under two or more
+  headers, which also rejects the same table read upside down by the 180° classifier). A zone
+  covers the stroke and the marks that touch it (the letters of a name it crosses and their
+  accents) but not the keyword label; overlapping zones are joined, also with the context
+  rule's column zones.
+- *Vector* (text pages of a PDF): clusters of curved paths (Bézier curves, or polylines of six
+  segments or more that are not axis-parallel) closer than a letter height. A stroked cluster
+  counts next to a keyword or a drawn or typed signature line (curliness ≥ 1.5, the pen turns
+  back left or right), or by itself when it is long and curly (≥ 12 curves, length ≥ 1.8 times
+  its extent, ≥ 6 turn-backs: a chart never turns back); filled outlines only next to a keyword
+  or a line.
+- *Annotations and digital signatures*: ink annotations, stamps and signature fields are removed
+  with every annotation and form field on export (section 6); they are not findings.
+
+**Real redaction of drawn signatures.** MuPDF's redaction removes the *filled* paths a zone
+covers but keeps *stroked* ones: a signature drawn with a pen tool stayed in the file under the
+black box (and its option to remove every path a zone *touches* also removed page frames and
+background bands). `pdf.remove_strokes` now removes, through a content-stream filter, the
+stroked paths drawn entirely inside an applied zone (any zone, also one drawn by the reviewer),
+and the leak check reports any curved path left entirely inside an applied zone.
+
+**Results** (test set of 102 files, prototype baseline, 3 processes; before = the same engine
+without signatures):
+
+| Measure | Before | After |
+|---|---|---|
+| Signature recall (12, all `out_of_scope`) | 0 % (0) | 91.7 % (11) |
+| Recall and leaks of every other type and level | — | identical |
+| Total leaks (critical) | 43 (0) | 32 (0) |
+| Signature zones on files without signatures | 0 | 0 |
+| Signature zones that touch no signature | 2 (context rule) | 2 (the same two) |
+| Neutral texts covered ≥ 50 % (all zones) | 287 of 1 862 | 290 |
+| Signature stage, whole set (one analysis at a time, cached OCR) | — | 12.1 s for 95 files |
+
+The miss is the card photographed with glare and motion blur: OCR does not read its "FIRMA DEL
+TITULAR" label, the signature is read as text, and a card on a table is not a plain sheet. The
+two zones that touch no signature are the context rule's "Firma" column read on a tilted photo
+and on a page scanned sideways; they existed before and are now doubtful. The three extra
+neutral texts are under the zone of the signature with a stamp pressed on it (the stamp joins the
+signature, and the zone reaches the signer's role line). Time: about 0.006 s per text page
+(vector paths), 0.2 s per scanned page and 0.13 s per image on the development machine; during
+the bench run, with the machine loaded by other work (OCR itself took 2.2 times longer than in
+the run before), the stage was 29.5 s of 2 526 s of analysis (1.2 %).
+
+Beyond the 12 signatures of the set, `tests/test_signatures.py` builds a synthetic set: 64
+fictitious signatures (pen strokes with loops and flourishes, or a name in an italic font crossed
+by a stroke; blue or black; under a label, over a signature line, alone, or with "V°B°"; upright,
+tilted up to 30° or scanned sideways; plain or grainy paper) and 20 pages without signatures
+(tables, stamps, charts, photo-like blocks, forms with "Firma:"). All 48 pen-stroke signatures
+are found, 11 of the 16 typed ones (all those next to a keyword), and no page without a
+signature gets a zone.
+
 ## 6. Real redaction and cleanup
 
 Regardless of the PDF engine chosen (D1), the contract is the same:
@@ -313,7 +405,9 @@ Regardless of the PDF engine chosen (D1), the contract is the same:
   rectangles are used instead); grow each area by 1–2 pt; `scrub()` with its defaults fails on
   annotation replies, deletes the OCR layer of scans and does not erase pixels when applying
   pending redactions, so it is called with explicit parameters and completed by hand; redacted
-  images are left uncompressed unless the file is saved with `deflate=True`.
+  images are left uncompressed unless the file is saved with `deflate=True`; `apply_redactions`
+  removes the filled paths a zone covers but not the stroked ones, which are removed by hand
+  (section 5.7).
 
 ---
 
@@ -365,17 +459,20 @@ Implemented (2026-10-01). Before processing, the user chooses which groups of de
 | `names_context` | names by context: given-name dictionary, signatures, tables, "Nombre:" (D13) | on |
 | `ocr` | text in scans, photos and images inside PDFs | on |
 | `faces` | faces | on |
+| `signatures` | handwritten and drawn signatures, always doubtful (section 5.7) | on |
 | `qr` | QR codes | on |
 
 - `patterns` cannot be turned off: the leak check runs those patterns again over every output
   and D2 requires zero base-level leaks of them (the API answers 400).
 - A group that is off **skips its work**, it does not just hide results: with OCR off there is
   no OCR pass, so scanned pages and images get no text-based finding at all (patterns, names
-  and URLs in pixels are not read); faces and QR off do not call their detectors; with OCR,
-  faces and QR off no page is rendered. `names_list` off: the entries are not searched (context
+  and URLs in pixels are not read); faces, signatures and QR off do not call their detectors;
+  with OCR, faces, signatures and QR off no page is rendered (signatures read pixels without
+  OCR: strokes and signature lines; with OCR off they lose the keyword labels of scans and
+  photos). `names_list` off: the entries are not searched (context
   names are still found, all of them doubtful). `names_context` off: no given-name dictionary
-  and no name or signature context rules; the context rules for RUT, email, phone and address
-  stay with the patterns. With every group on and the other URLs applied, the findings are
+  and no name or signature context rules (the `signatures` group still finds "Firma" columns);
+  the context rules for RUT, email, phone and address stay with the patterns. With every group on and the other URLs applied, the findings are
   exactly the ones of the engine before this change (checked on 16 files of the test set).
 - The choice lives only in the session: every start of the app goes back to the defaults
   (recall over precision; nobody finds a group off by surprise). Each file records the groups
@@ -383,8 +480,9 @@ Implemented (2026-10-01). Before processing, the user chooses which groups of de
   were off (and says plainly that nothing inside the images was searched when OCR was off), and
   the audit report lists the groups that were on and off.
 - The engine measures the real time of each stage (`AnalyzedFile.timings`): `text` (text layer,
-  patterns, names, context), `render` (rendering a page or decoding an image for OCR, faces or
-  QR), `ocr`, `faces`, `qr` and the total `analyze`. Time spent waiting for a lock held by
+  patterns, names, context), `render` (rendering a page or decoding an image for OCR, faces,
+  signatures or QR), `ocr`, `faces`, `signatures` (also the vector paths of text pages), `qr` and
+  the total `analyze`. Time spent waiting for a lock held by
   another analysis (OCR, faces, PyMuPDF) is left out of the stage; two analyses still share the
   processor, so a stage can be slower while another file runs, and that is not subtracted.
 - **Estimate.** `engine.profile(file)` reads cheap facts without rendering anything (pages,
@@ -410,7 +508,11 @@ of the whole set is 427 s against 486 s measured; per file, the median ratio est
 | ocr | distinct image on a text page / its megapixels at 200 dpi | 1.45 / 1.9 |
 | ocr | frame of an image file (photos about 2 s, screenshots about 10 s) | 3.5 |
 | faces | scanned page / image on a text page / megapixel of an image | 1.2 / 0.15 / 0.35 |
+| signatures | PDF page with text / scanned page / image on a text page / megapixel of an image | 0.006 / 0.22 / 0.03 / 0.12 |
 | qr | rendered PDF page / megapixel of an image | 0.1 / 0.02 |
+
+The signature rates were fitted the same way when the group was added (2026-10-05), on its own
+stage (12.1 s measured, 10.7 s estimated for the 95 files).
 
 ---
 
@@ -505,7 +607,8 @@ scales, QR, real redaction and full cleanup. Result on the test set:
 
 Metadata leaked: 0 of 44. Errors correctly rejected: 7 of 7. **Verdict on the phase 1
 criterion: PASSED.** Under stress: RUT 81 %, email 89 %, phone 93 %, faces 100 %. Out of scope,
-as expected: names not on the list and signatures.
+as expected: names not on the list and signatures. Since 2026-10-05 the engine finds signatures
+by rules: 11 of the 12 of the set (section 5.7), with no change in any other type.
 
 What is missing for it to be the phase 1 engine: redacting only the data item and not the whole
 OCR line (today it covers 13 % of the neutral text), its own leak check, the PDF engine per D1,
@@ -667,4 +770,11 @@ the list still rules. Agreed?
   signatures, cells, tables and email headers they are also detected by context (D13).
 - OCR can fail with handwriting, very small text or very low-resolution images.
 - Profile, very small or occluded faces may not be detected.
+- Signatures are found by rules, not by a trained model (section 5.7), and every one is marked
+  doubtful. They may be missed when nothing anchors them: no "Firma", "V°B°" or "p.p." label
+  that OCR can read, no straight signature line, not on a plain sheet (a blurred or tilted photo
+  of a card); a name typed in a script font that OCR reads like text; a signature line on a
+  tilted photo; a signature drawn as filled outlines with no label or line next to it. A stamp
+  pressed on a signature joins its zone, which can then cover the signer's name and role.
+  Handwritten notes near a "Firma" label or alone on a sheet can be taken for signatures.
 - Human review of every document before publishing is mandatory.

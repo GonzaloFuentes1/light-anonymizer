@@ -77,6 +77,17 @@ The models are not committed to the repository: `scripts/download_models.py` (ph
 downloads them for development and verifies their SHA-256; packaging bundles them inside the
 executable.
 
+**Signatures: no model ships.** Handwritten and drawn signatures are found by rules
+(`anonymizer/engine/signatures.py`). The open pretrained signature detectors reviewed in October
+2026 were all rejected because of their training data, whatever the license of their weights
+(details in PLAN.md, section 5.7): the tech4humans models (YOLOv8s under AGPL-3.0, Conditional
+DETR and the YOLOS fine-tunes under Apache-2.0) are trained on Tobacco800, documents from the
+tobacco litigation whose copyright was never cleared, plus a Roboflow upload of unknown origin;
+the SignverOD-based detectors include Tobacco800 and an unnamed cheque dataset; the others
+document no training data or use data without a license (ChiSig). A model is adopted only when
+its weights, its code and its training data all have licenses compatible with the AGPL and no
+non-commercial or field-of-use restriction.
+
 ## 3. Development and testing tools (not shipped)
 
 | Tool | License | Use |
