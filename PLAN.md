@@ -681,7 +681,11 @@ you prefer to fix it now.
 > it covers at least 2 % of, and the leak check (`verify.glyph_leaks`) reports any letter subpath
 > left under an applied zone (before, a drawn zone 0.6 pt short exported with its letters still in
 > the file and no leak). The grouping of shapes uses a grid, so 20 000 markers on a page take well
-> under a second instead of about 9 s.
+> under a second instead of about 9 s. Measured: the drawn-text page with a text layer, written
+> with one path for all its letters, went from 0 of 9 elements found (9 leaks, 6 critical) to 9 of
+> 9 and 0 leaks, including the vector-path check; the per-letter version stays 9 of 9. Over the 25
+> PDFs of the test set the elements found, the leaks and the neutral text covered are the same as
+> before these fixes, and no export was blocked by the new check.
 >
 > **Measured (2026-10-05).** The test set's drawn-text case is a page with no text layer at all,
 > already read whole as a scan (9 of 9, unchanged). For the case D8 is about, that page with two
