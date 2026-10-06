@@ -524,6 +524,17 @@ After exporting, the engine opens the output and goes over it:
    revisions, EXIF, thumbnail, XMP and the image's text chunks.
 4. Under each redacted area, that no image with the original pixels remains under the fill.
 
+What `verify.py` does today: (1) runs on the text layer extracted by PyMuPDF only (no second
+engine yet): every active finding read from the text layer must be gone, and the RUT, e-mail and
+phone patterns must find nothing on the page, including the pages exported as an image (their
+text layer after redaction is kept for this, D14); (2) `string_leaks` searches the value of every
+applied finding specific enough to be data anywhere (two words, a digit or an "@") in the strings
+of every object of the output and in its decompressed streams other than page content, images and
+fonts (the text of page content is the text layer of (1)); (3) metadata, XMP and attachments of
+the PDF, EXIF, XMP, comments and text chunks of images; (4) the inside of every active zone must be
+black in a render of the output (`uncovered`); plus the guard `vector_leaks` (D14). OCR and faces
+are not run again on the output.
+
 Anything that shows up is a **leak**: it is shown in red in the review, blocks the export of
 that file until the reviewer resolves it, and is recorded in the report. Since 2026-10-06 (D14)
 drawings left under a zone are not leaks: the page is exported as an image before the check, and
@@ -1154,15 +1165,54 @@ letters of an active zone).
 > no longer plans "enlarge the zone" blocks, and `strokes.leaks` and `verify.glyph_leaks` are gone
 > (their cases are leftovers now).
 >
-> **Measured (2026-10-06).** Every adversarial experiment of the signature and D8 reviews (81
-> scripts, run again against this code through a harness that records each export and checks the
-> output file on its own: text inside the zones, `leftovers.check`, black pixels, changes outside
-> the zones): 342 exports or redactions, 154 kept vector, 188 exported as an image (134 for letters
-> or shapes, 23 for strokes, 31 for patterns, gradients or clips), none blocked, and none with data
-> left in the output. Over the test set (102 files) one page of 35 PDF pages was exported as an
-> image on the first run, a stamp drawn as a tilted rectangle around the signer's name; tilted
-> rectangles and slanted rules now count as layout, and no page is. A zone that touches a line of the
-> text layer still removes that line's characters whole (MuPDF removes every character its box
+> **Fixed after a review (2026-10-06).** An adversarial review of this decision found silent
+> paths: an image inside a soft mask (the luminosity group of an ExtGState) survived a zone, since
+> the check never looked at images; data painted through a clip of small rectangles (a QR code, a
+> barcode, pixel text) survived, since rectangular clips and a page-wide fill are layout; a Type3
+> glyph drawn far from its own box survived; a page exported as an image lost its text layer, so
+> the leak check no longer saw data nobody marked (an e-mail and a RUT shipped in the image); and
+> an ordinary underlined URL made its page an image with a wrong reason (the listing joins `m l m
+> l` pieces, and the filter's calls for them did not line up). Now:
+> - `leftovers.check` ends with one catch-all render (`_ink_under`): on a copy of the redacted page,
+>   the redaction's own black boxes (one rectangle filled and stroked in black, as MuPDF paints
+>   them; a black fill is page content) and the page layout are dropped with the content filter,
+>   and the inside of each zone is rendered at 216 dpi. Sharp edges there, or anything not white
+>   once the backgrounds that hold the zone whole under rectangular clips (flat fills, when the
+>   document uses no soft mask) and smooth shadings are dropped too, make the page an image
+>   ("algo pintado bajo una zona…"). MuPDF's blanked image pixels render white, so ordinary pages
+>   are not affected. If a black box could not be dropped (the filter's calls did not line up),
+>   the page is an image.
+> - Drawings are judged where they show: their box cut to the clip that shows them (a path clipped
+>   away entirely hides nothing). A run of collinear segments (an underline drawn in pieces), an
+>   open run of horizontal and vertical lines (an L-shaped cell border) and a rounded frame are
+>   layout. A filter call drawn in the place of a listed layout path is that path, not a pattern.
+>   A shape painted with a pattern that holds the zone whole under rectangular clips (a page's
+>   background pattern) and its cells are judged by the render, not as a pattern.
+> - `pdf.redact_page` keeps the text layer the page had after its redaction
+>   (`PageOutcome.text_layer`) before it becomes an image, and the export's text leak check reads
+>   it for that page: unmarked data blocks the export exactly as on a page that stayed text. The
+>   drawings guard skips pages exported as an image (their boxes are pixels; `uncovered` checks
+>   them).
+> - The stroke stage and the check share one time budget (15 s), looked at per subpath; a page past
+>   it is rasterized at 200 dpi with a single encoding. The review's "after" keeps the last 8
+>   redacted pages (as one-page PDFs keyed by file, page and zones), so another zoom or a scroll
+>   back does not redact the page again.
+> - `verify.string_leaks` implements the search of section 7, item 2.
+> Every case of the review is a regression test (`tests/test_leftovers_review.py`).
+>
+> **Measured (2026-10-06, after the review fixes).** Every adversarial experiment of the signature
+> and D8 reviews (81 scripts, run again against this code through a harness that records each
+> export and checks the output file on its own: text inside the zones, `leftovers.check`, black
+> pixels, changes outside the zones): 341 exports or redactions, 171 kept vector, 170 exported as
+> an image (135 for letters or shapes, 24 for strokes, 10 for clips, 1 for ink), none blocked, and
+> none with data left in the output; a light hatched background under a signature zone, made an
+> image before the fixes, now stays vector with the signature removed. Every case of the D14 review
+> (images, soft masks, clips of modules, Type3 glyphs, underlines, frames, backgrounds, the leak
+> check of image pages) gives no secret pixel under a zone and no ordinary layout made an image.
+> Over the test set (102 files, 35 PDF pages) no page is exported as an image (two pages were in
+> intermediate runs: a stamp drawn as a tilted rectangle, and a name written outside a page's crop
+> box; both fixed); recall 97.6 %, 23 leaks, none critical. A zone that touches a line of the text
+> layer still removes that line's characters whole (MuPDF removes every character its box
 > touches): a generous OCR zone at single spacing over drawn text removed the real text line below
 > it in the review's experiment, as before.
 
@@ -1207,7 +1257,11 @@ letters of an active zone).
   readers cannot read it), is larger (about 0.4 MB for a text page, 1 to 2 MB with photos at
   300 dpi), and its content outside the zones is a 300 dpi picture of what it was. The audit report
   lists those pages and why. A stroke mostly under a signature or drawn zone is removed whole, also
-  its part outside the zone (listed in the audit report).
+  its part outside the zone (listed in the audit report). A hatched or patterned background, or a
+  photo, that shows with sharp edges inside a zone also makes the page an image.
+- On a page with a /UserUnit other than 1 (rare; some large-format drawings), MuPDF draws the black
+  box at that scale (twice the zone's size with /UserUnit 2): more than the zone is covered. Nothing
+  under the zone is left, but content around it is blacked out too.
 - HEIC/HEIF photos (iPhone) are not supported: they must be converted to JPG first (D5).
 - Text drawn as paths (D8) is found when its letters are filled shapes. Two kinds are not: letters
   drawn as a single rectangle (l, I, a hyphen, a period: they look like table cells or bullets,
