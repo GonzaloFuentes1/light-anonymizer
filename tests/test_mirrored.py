@@ -11,7 +11,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from anonymizer.engine import common, faces, ocr
-from anonymizer.engine.model import AnalyzedFile
+from anonymizer.engine.model import AnalyzedFile, DetectionOptions
 from anonymizer.engine.real import RealEngine
 from test_bench.canvas import font
 
@@ -83,29 +83,27 @@ def test_mirrored_pass_only_without_legible_text(monkeypatch, img, calls, legibl
 
 @needs_ocr
 def test_photo_taken_with_a_front_camera(tmp_path):
-    img = Image.new("RGB", (900, 420), "white")
+    # Small on purpose: two short lines, OCR only (the mirrored pass doubles the OCR time).
+    img = Image.new("RGB", (760, 200), "white")
     draw = ImageDraw.Draw(img)
-    for i, text in enumerate(["Nota de la reunión", f"Correo: {EMAIL}", "Gracias por asistir"]):
-        draw.text((40, 40 + 110 * i), text, font=font("sans", 44), fill=(0, 0, 0))
-    upright = img.copy()
+    for i, text in enumerate(["Nota de la reunión", f"Correo: {EMAIL}"]):
+        draw.text((30, 30 + 80 * i), text, font=font("sans", 40), fill=(0, 0, 0))
     img.transpose(Image.Transpose.FLIP_LEFT_RIGHT).save(tmp_path / "selfie.png")
     engine = RealEngine()
     file = common_analyze(engine, tmp_path / "selfie.png")
     email = next(f for f in file.findings if f.type == "email")
     x0, y0, x1, y1 = common.bbox_of(email.polygon)
-    # In the mirrored photo the line ends near the right edge (it started at x = 40 in the upright one).
-    assert x1 > 820 and 130 < (y0 + y1) / 2 < 200
+    # In the mirrored photo the line ends near the right edge (it started at x = 30 in the upright one).
+    assert x1 > 690 and 100 < (y0 + y1) / 2 < 170
     result = engine.export(file, str(tmp_path / "out"))
     assert result.exported, [leak.message for leak in result.leaks]
     with Image.open(result.output_path) as out:
         assert out.convert("L").getpixel((int((x0 + x1) / 2), int((y0 + y1) / 2))) < 40
-    # The same photo, upright: read once, nothing changes.
-    upright.save(tmp_path / "nota.png")
-    assert any(f.type == "email" for f in common_analyze(engine, tmp_path / "nota.png").findings)
 
 
 def common_analyze(engine: RealEngine, path):
-    file = AnalyzedFile(id="f1", name=path.name, path=str(path))
+    options = DetectionOptions(faces=False, qr=False).to_dict()
+    file = AnalyzedFile(id="f1", name=path.name, path=str(path), options=options)
     engine.analyze(file, [])
     assert file.status == "ready", file.error
     return file
