@@ -635,6 +635,19 @@ or as a per-file option. What does "volteadas" mean to you?
 > at 0.999 or more; the two mirrored ones none above 0.83; 28 of the 30 face photos had no line of
 > 4 letters at all, so a photo without text is not read twice. It applies to images, scanned
 > pages and the images inside PDF pages alike.
+>
+> **Measured (2026-10-05, test set, `results/details/decisions`).** Mirrored text: 10 of 10
+> elements found (was 1 of 10); rotated images 100 % recall (was 89.3 %), 0 leaks (was 9); overall
+> recall 96.5 % (was 95.6 %), leaks 34 (was 43), still 0 critical and 0 metadata leaks; every other
+> category unchanged. The neutral lines of the two mirrored images are now covered too (neutral
+> text covered 296 of 1 862, was 287). Cost, measured in one instrumented run over the faces, cédula,
+> scanned and text-PDF files and the two mirrored images (63 files): a mirrored pass ran on 3 of
+> them, the two mirrored images and one crowd photo with stray letters, for 20 s against 572 s of
+> normal OCR (3.5 %); none on scanned pages, cédulas or PDF images. The other images (EXIF,
+> screenshots, TIFF, rotated) all had legible lines in the normal pass, so they get no extra pass.
+> Each mirrored image took about twice its OCR time (9 s + 8 s). Comparing whole-run times with the
+> run of 2026-10-01 says nothing here: the machine was shared with other jobs, and files that get
+> no extra pass (screenshots) were up to twice as slow.
 
 **D7. QR, MRZ and cédulas.** I propose adding QR and MRZ detectors and, when an image looks
 like a cédula (an MRZ or labels such as "NÚMERO DOCUMENTO"), suggesting the "redact all text"
@@ -659,6 +672,15 @@ you prefer to fix it now.
 > (`vectors.snap`): MuPDF removes a path only when the redaction covers all of it, so a box a
 > little tighter than a letter would have left that letter's path in the file under the black
 > box. The time estimate counts those areas as OCR regions.
+>
+> **Measured (2026-10-05).** The test set's drawn-text case is a page with no text layer at all,
+> already read whole as a scan (9 of 9, unchanged). For the case D8 is about, that page with two
+> neutral lines of real text added at its foot (so it is no longer treated as a scan, same ground
+> truth): before, 0 of 9 elements found, 9 leaks (6 critical: RUT, e-mail, phone); after, 9 of 9 and
+> 0 leaks, including the vector-path check (V). It found 3 areas of drawn text (two in the header,
+> one in the body) and the analysis went from 0.2 s to 17.5 s on the loaded machine, about the OCR
+> of a scanned page. Pages without drawn text are not rendered: listing their drawings cost 0.06 s
+> over the 24 text-PDF pages of the test set (about 3 ms a page), and no other page got an area.
 
 **D9. Output of scans.** I propose rebuilding the page only as an image, without a text layer.
 Adding an invisible OCR layer would make the PDF searchable, but it reintroduces text (and OCR
@@ -790,7 +812,7 @@ the list still rules. Agreed?
 | Unusual PDF fonts break the text rebuild (option A of D1) | verification with two extractors and automatic rasterization of the page |
 | Profiles and occluded faces not detected | several scales, a second detector, flagging doubtful ones, human review |
 | OCR with small print or low resolution | upscaling before OCR and tiling; documented limit |
-| OCR time with 4 or 8 orientations | measure and decide with figures (section 9) |
+| OCR time with 4 or 8 orientations | the mirrored orientations only for images without legible text (D6); drawn text read only where the page has it (D8) |
 | Dependencies that bring network code | port the OCR inference, a network-traffic test, onnxruntime without telemetry |
 | URL changes in the face sources | catalog with SHA-256 and a local cache |
 | The repository lives in OneDrive | `.venv` and generated data get synced; better to move it or exclude folders |
@@ -801,6 +823,8 @@ the list still rules. Agreed?
 - Names and addresses in running text are only detected if they are on the list; in
   signatures, cells, tables and email headers they are also detected by context (D13).
 - OCR can fail with handwriting, very small text or very low-resolution images.
+- Mirrored text (a photo taken with a front camera) is read only when nothing in that image is
+  legible as it is (D6): a mirrored sign in a photo that also has legible text is not read.
 - Profile, very small or occluded faces may not be detected.
 - HEIC/HEIF photos (iPhone) are not supported: they must be converted to JPG first (D5).
 - Human review of every document before publishing is mandatory.
