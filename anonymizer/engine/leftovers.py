@@ -9,11 +9,12 @@ that is also a clip) would stay in the file under the black box. ``check`` looks
 its redaction and says whether anything of that kind is left; ``pdf.redact_page`` then exports the
 page as an image (``pdf.rasterize``), which removes it for certain.
 
-Everything drawn is suspect except page layout: a straight horizontal or vertical line stroked
-no wider than ``LAYOUT_WIDTH`` (a table rule, an underline) and an axis-aligned rectangle, filled
-or stroked no wider than that (a frame, a cell, a band, the black boxes of the redaction), unless
-the rectangle lies whole inside a zone and is not black: then it is a mark the zone should have
-removed (a QR module, a barcode bar). Any other path, clip or not, whose outline passes inside a
+Everything drawn is suspect except page layout: a single straight line stroked no wider than
+``LAYOUT_WIDTH`` (a table rule, an underline) and a rectangle, upright or tilted, filled or stroked
+no wider than that (a frame, a cell, a band, a tilted stamp's border, the black boxes of the
+redaction), unless it lies whole inside a zone and is not black: then it is a mark the zone should
+have removed (a QR module, a barcode bar). What such a line or rectangle hides under a zone is only
+where it goes on or ends. Any other path, clip or not, whose outline passes inside a
 zone (a fill's edge inside the zone, a stroke whose painted width reaches it) is a leftover; the
 inside of a filled shape that holds the zone whole, with no edge under it, hides nothing. Painted
 paths that ``get_drawings`` does not list (shapes filled or stroked with a pattern) and smooth
@@ -35,7 +36,7 @@ from anonymizer.engine import strokes
 LAYOUT_WIDTH = 3.0  # points: a straight stroke up to this wide is page layout (a rule, a frame edge)
 EDGE = 0.05  # points: an outline this close to a zone's edge (the black box's own edge) is not inside it
 SECONDS = 15.0  # time budget of the check of one page
-_AXIS = 0.5  # points: a line whose ends differ by less than this across is horizontal or vertical
+_RIGHT = 0.02  # cosine: corners this close to 90 degrees make a rectangle
 _BLACK = (0.0, 0.0, 0.0)
 
 # Why a page is exported as an image (Spanish: shown to the user and written in the audit report).
@@ -133,23 +134,25 @@ def subpaths(items) -> list[tuple[str, np.ndarray]]:
     return [(kind, np.asarray(pts, np.float64)) for kind, pts in out]
 
 
-def _axis_box(kind: str, pts: np.ndarray) -> bool:
-    """A rectangle with horizontal and vertical sides (a "re", or a quad or a closed run of four
-    lines that is one)."""
+def _frame(kind: str, pts: np.ndarray) -> bool:
+    """A rectangle, upright or tilted (a "re", or a quad or a closed run of four lines whose
+    corners are right angles): a frame, a cell, a band, a tilted stamp's border."""
     if kind == "box":
         return True
     if len(pts) != 5 or np.abs(pts[0] - pts[-1]).max() > 1e-3:
         return False
     d = np.diff(pts, axis=0)
-    return bool(np.all(np.minimum(np.abs(d[:, 0]), np.abs(d[:, 1])) < _AXIS))
+    length = np.hypot(d[:, 0], d[:, 1])
+    if length.min() <= 0:
+        return False
+    nxt = np.roll(d, -1, axis=0)
+    cos = np.abs((d * nxt).sum(axis=1)) / (length * np.roll(length, -1))
+    return bool(cos.max() < _RIGHT)
 
 
 def _rule(kind: str, pts: np.ndarray) -> bool:
-    """A single straight horizontal or vertical line."""
-    if kind != "line" or len(pts) != 2:
-        return False
-    dx, dy = np.abs(pts[1] - pts[0])
-    return bool(min(dx, dy) < _AXIS)
+    """A single straight line (a rule, an underline, a frame's edge drawn alone)."""
+    return kind == "line" and len(pts) == 2
 
 
 def _crosses(pts: np.ndarray, zone: tuple[float, float, float, float]) -> bool:
@@ -201,7 +204,7 @@ def _path_reason(d: dict, zones: np.ndarray) -> str | None:
     # The black boxes of the redaction (MuPDF paints them filled and stroked in black).
     black = tuple(d.get("fill") or ()) == _BLACK and (not stroked or tuple(d.get("color") or ()) == _BLACK)
     for sub_kind, pts in parts:
-        rule, box = _rule(sub_kind, pts), _axis_box(sub_kind, pts)
+        rule, box = _rule(sub_kind, pts), _frame(sub_kind, pts)
         if (rule or box) and width <= LAYOUT_WIDTH:  # page layout
             if kind == "clip" or black or (rule and not stroked):  # a rectangular clip, a black box, nothing painted
                 continue

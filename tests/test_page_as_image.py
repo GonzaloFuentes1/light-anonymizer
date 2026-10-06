@@ -103,6 +103,9 @@ def test_layout_lines_and_boxes_are_not_leftovers():
         page.draw_rect(pymupdf.Rect(120, 80, 260, 140), color=None, fill=(0.9, 0.9, 0.6))  # a cell cut by it
         page.draw_rect(pymupdf.Rect(100, 90, 300, 110), color=None, fill=(0, 0, 0))  # the black box itself
         page.draw_circle((200, 300), 80, color=(0, 0, 0), fill=(0.8, 0.8, 1))  # a disc far from it
+        page.draw_line((90, 80), (310, 120), width=0.5)  # a slanted rule across it
+        tilted = pymupdf.Rect(120, 60, 280, 140).quad.morph(pymupdf.Point(200, 100), pymupdf.Matrix(12))
+        page.draw_quad(tilted, color=(0.6, 0, 0), width=1.2)  # a tilted stamp's border crossing it
 
     assert _check(build, [(100, 90, 300, 110)]) == []
 
@@ -112,7 +115,7 @@ def test_layout_lines_and_boxes_are_not_leftovers():
     [
         (lambda page, doc: squiggle(page, 120, 80, 160, 40), "stroke"),  # a curve under the zone
         (lambda page, doc: page.draw_circle((200, 100), 30, color=None, fill=(0.2, 0.2, 0.2)), "shape"),
-        (lambda page, doc: page.draw_line((90, 80), (310, 120), width=0.5), "stroke"),  # a slanted line
+        (lambda page, doc: page.draw_polyline([(90, 80), (200, 120), (310, 80)], width=0.5), "stroke"),  # a V
         (lambda page, doc: page.draw_line((90, 100), (310, 100), width=8), "stroke"),  # a thick bar
         (lambda page, doc: page.draw_rect(pymupdf.Rect(150, 95, 156, 101), color=None, fill=(0.2, 0.2, 0.2)), "shape"),
     ],
