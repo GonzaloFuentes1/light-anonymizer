@@ -5,8 +5,8 @@
 the leak check over a temporary output and copies it to the destination only when it is clean.
 
 Detectors: patterns (``regex``), the user's list (``name_list``), context rules and the
-given-name dictionary (``context``), OCR at 0/90/270° (``ocr``), YuNet faces (``faces``) and QR
-codes (``qr``). See the modules of this package for each one. Which groups of detectors run is
+given-name dictionary (``context``), OCR at 0/90/270° (``ocr``), YuNet faces (``faces``), rules
+for handwritten and drawn signatures (``signatures``) and QR codes (``qr``). See the modules of this package for each one. Which groups of detectors run is
 decided per file (``AnalyzedFile.options``, see ``model.DetectionOptions``); a group that is off
 skips its work. The time of each stage is measured (``AnalyzedFile.timings``).
 """
@@ -57,10 +57,11 @@ log = logging.getLogger(__name__)
 _STAGE_TEXT = {
     "ocr": "Leyendo texto en imágenes (OCR)",
     "faces": "Buscando rostros",
+    "signatures": "Buscando firmas",
     "qr": "Buscando códigos QR",
 }
 # Where each stage starts inside the share of progress of one page or image.
-_STAGE_OFFSET = {"ocr": 0.0, "faces": 0.6, "qr": 0.9}
+_STAGE_OFFSET = {"ocr": 0.0, "faces": 0.6, "signatures": 0.85, "qr": 0.9}
 # Detectors whose text comes from the text layer of a PDF (checked again in the output).
 _TEXT_LAYER_DETECTORS = ("regex", "name_list", "context")
 # Types whose value, found again inside a URL, makes that URL personal (D12). A RUT, e-mail or
@@ -250,6 +251,13 @@ class RealEngine:
                 pdf.propagate(text_pages)
                 pdf.data_in_urls(text_pages)
                 zones = [z for tp in text_pages for z in pdf.text_zones(tp, names)]
+            if options.signatures:  # signatures drawn as vector paths on the pages with text
+                with stage("signatures"):
+                    for tp in text_pages:
+                        if tp.scanned:
+                            continue
+                        with waiting_for(PDF_LOCK):
+                            zones += pdf.vector_signatures(doc[tp.index], tp)
             cache: dict = {}
             share = 0.75 / count
             for n, tp in enumerate(text_pages):

@@ -438,9 +438,11 @@ def test_options_get_and_put(client):
         "names_context",
         "ocr",
         "faces",
+        "signatures",
         "qr",
     ]
     assert by_key["patterns"]["locked"] and by_key["patterns"]["enabled"]
+    assert by_key["signatures"]["label"] == "Firmas" and "dudosas" in by_key["signatures"]["description"]
     assert by_key["patterns"]["locked_reason"] == "Siempre activo: es la base de la verificación de fugas."
     assert by_key["urls_other"]["enabled"] is False and by_key["urls_other"]["detection"] is False
     assert by_key["ocr"]["label"] == "Texto en imágenes y escaneos (OCR)"
@@ -493,7 +495,7 @@ def test_estimate(client):
     assert set(body) == {"files", "groups", "render", "total", "calibrated"}
     assert {f["id"] for f in body["files"]} == {pdf_id, img_id}
     assert set(body["groups"]) == {"patterns", "urls_personal", "urls_other", "names_list", "names_context", "ocr",
-                                   "faces", "qr"}  # fmt: skip
+                                   "faces", "signatures", "qr"}  # fmt: skip
     assert body["groups"]["ocr"] > 1 and body["total"] > body["groups"]["ocr"] and body["calibrated"] is False
     one = client.get(f"/api/estimate?ids={pdf_id},desconocido").json()
     assert [f["id"] for f in one["files"]] == [pdf_id]
@@ -501,7 +503,7 @@ def test_estimate(client):
     lower = client.get("/api/estimate").json()
     assert lower["total"] < body["total"] - body["groups"]["ocr"] + 0.2
     assert lower["groups"]["ocr"] == body["groups"]["ocr"]  # the time saved is still reported
-    client.put("/api/options", json={"groups": {"ocr": False, "faces": False, "qr": False}})
+    client.put("/api/options", json={"groups": {"ocr": False, "faces": False, "signatures": False, "qr": False}})
     assert client.get("/api/estimate").json()["total"] < 1
     client.post("/api/process", json={})
     wait_status(client, pdf_id)

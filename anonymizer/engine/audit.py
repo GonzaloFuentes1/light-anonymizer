@@ -41,6 +41,7 @@ DETECTOR_LABELS = {
     "context": "contexto",
     "ocr": "texto en imagen (OCR)",
     "faces": "rostros",
+    "signatures": "firmas",
     "qr": "códigos QR",
     "reviewer": "agregada por quien revisó",
 }
@@ -50,6 +51,7 @@ STAGE_LABELS = {
     "render": "preparar imágenes",
     "ocr": "texto en imágenes",
     "faces": "rostros",
+    "signatures": "firmas",
     "qr": "códigos QR",
 }
 UNREAD_IMAGES = (

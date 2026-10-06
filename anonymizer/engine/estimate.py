@@ -27,9 +27,9 @@ from anonymizer.engine.model import DETECTION_GROUPS, DetectionOptions
 log = logging.getLogger(__name__)
 
 # Stage of the analysis -> detection group that pays for it. "render" (rendering a page or
-# decoding an image) is shared by OCR, faces and QR, and runs when any of them is on.
-STAGE_GROUP = {"text": "patterns", "ocr": "ocr", "faces": "faces", "qr": "qr"}
-STAGES = ("text", "render", "ocr", "faces", "qr")
+# decoding an image) is shared by OCR, faces, signatures and QR, and runs when any of them is on.
+STAGE_GROUP = {"text": "patterns", "ocr": "ocr", "faces": "faces", "signatures": "signatures", "qr": "qr"}
+STAGES = ("text", "render", "ocr", "faces", "signatures", "qr")
 
 # Seconds per unit of work, per stage. Units (see ``units``): every PDF page (pdf_page), PDF pages
 # that are rendered (raster_page: scanned, or with images), scanned pages (scanned_page), distinct
@@ -42,6 +42,7 @@ DEFAULT_RATES: dict[str, dict[str, float]] = {
     "render": {"raster_page": 0.14, "image_mp": 0.02},
     "ocr": {"scanned_page": 10.0, "region": 1.45, "region_mp": 1.9, "image_frame": 3.5},
     "faces": {"scanned_page": 1.2, "region": 0.15, "image_mp": 0.35},
+    "signatures": {"pdf_page": 0.01, "scanned_page": 0.15, "region": 0.02, "image_mp": 0.03},
     "qr": {"raster_page": 0.1, "image_mp": 0.02},
 }
 SMOOTHING = 0.3  # weight of the newest measurement in the moving average
@@ -166,6 +167,13 @@ def units(facts: dict) -> dict[str, dict[str, float]]:
             "image_frame": facts["frames"],
         },
         "faces": {"scanned_page": facts["scanned_pages"], "region": facts["regions"], "image_mp": facts["megapixels"]},
+        "signatures": {
+            # The vector paths of every page with text, and the pixels of scans, images and photos.
+            "pdf_page": facts["pages"] - facts["scanned_pages"] if facts.get("kind") == "pdf" else 0,
+            "scanned_page": facts["scanned_pages"],
+            "region": facts["regions"],
+            "image_mp": facts["megapixels"],
+        },
         "qr": {"raster_page": facts["raster_pages"], "image_mp": facts["megapixels"]},
     }
 

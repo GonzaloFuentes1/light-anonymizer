@@ -1,7 +1,8 @@
 """Detection over a raster: a standalone image, a scanned page or an image region of a page.
 
 OCR lines with personal data (patterns, name list, dictionary), context rules over the upright
-lines, identity-card name lines, faces and QR codes. Every zone is in pixels of the raster.
+lines, identity-card name lines, faces, signatures and QR codes. Every zone is in pixels of the
+raster.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from collections.abc import Callable
 import cv2
 import numpy as np
 
-from anonymizer.engine import context, faces, names, ocr, qr
+from anonymizer.engine import context, faces, names, ocr, qr, signatures
 from anonymizer.engine.common import Zone, stage
 from anonymizer.engine.model import DetectionOptions
 from anonymizer.engine.patterns import TYPE_PRIORITY, normalize_1to1
@@ -27,7 +28,7 @@ from anonymizer.engine.text import (
 )
 
 # Stage names passed to the ``step`` callback.
-STAGE_OCR, STAGE_FACES, STAGE_QR = "ocr", "faces", "qr"
+STAGE_OCR, STAGE_FACES, STAGE_SIGNATURES, STAGE_QR = "ocr", "faces", "signatures", "qr"
 
 
 def _line_doubt(type_: str, text: str, score: float, detector: str, name_list: tuple[str, ...]) -> str | None:
@@ -36,6 +37,8 @@ def _line_doubt(type_: str, text: str, score: float, detector: str, name_list: t
         doubt = rut_doubt(text)
     if doubt is None and type_ == "name" and detector == "context" and not in_list(text, name_list):
         doubt = DOUBT_CONTEXT_NAME
+    if type_ == "signature":
+        doubt = signatures.DOUBT_SIGNATURE
     return doubt
 
 
@@ -52,6 +55,9 @@ def detect_in_image(
     step: Callable[[str], None] | None = None,
     *,
     options: DetectionOptions | None = None,
+    signatures_enabled: bool = True,
+    signature_lines: list | None = None,
+    signature_whole: bool = False,
 ) -> list[Zone]:
     """Zones with personal data in an RGB image.
 
@@ -61,6 +67,9 @@ def detect_in_image(
     ``step(stage)`` is called before each stage and between OCR passes (it raises to cancel).
     ``options``: the detection groups that run (default: all of them); a group that is off is
     skipped, so with OCR off the image gets no text-based zone at all.
+    ``signatures_enabled=False`` skips signatures here (the QR pass over a whole text page);
+    ``signature_lines``: text-layer lines of a PDF near this image, in its pixels (signature
+    keywords); ``signature_whole``: the image itself may be a signature (``signatures.detect_raster``).
 
     A line whose only data are URLs that are not personal is an optional zone (D12), except in
     ``all_text`` mode, where every line is redacted.
@@ -96,12 +105,22 @@ def detect_in_image(
                     for z in faces.detect(np.ascontiguousarray(bgr[y0:y1, x0:x1]), face_threshold):
                         found.append(z._replace(polygon=z.polygon + [x0, y0]))
             zones += faces.merge(found)
+    if options.signatures and signatures_enabled:
+        if step is not None:
+            step(STAGE_SIGNATURES)
+        with stage(STAGE_SIGNATURES):
+            zones += signatures.detect_raster(
+                bgr,
+                [*lines, *(signature_lines or [])],
+                faces=[z.polygon for z in zones if z.type == "face"],
+                whole=signature_whole,
+            )
     if qr_enabled:
         if step is not None:
             step(STAGE_QR)
         with stage(STAGE_QR):
             zones += qr.detect(bgr)
-    return dedup(zones)
+    return signatures.merge_zones(dedup(zones))
 
 
 def _text_zones(
@@ -150,7 +169,7 @@ def _text_zones(
             doubt = _line_doubt(type_, ln.text, ln.score, "context", name_list)
             zones.append(Zone(type_, ln.polygon, ln.text, "context", ln.score, doubt))
         for type_, x0, y0, x1, y1 in rects:
-            doubt = DOUBT_CONTEXT_NAME if type_ == "name" else None
+            doubt = {"name": DOUBT_CONTEXT_NAME, "signature": signatures.DOUBT_SIGNATURE}.get(type_)
             zones.append(Zone(type_, np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]), "", "context", 1.0, doubt))
     # Identity documents: surnames and given names come in standalone lines under their labels.
     if any(re.search(r"apellido|nombres", normalize_1to1(ln.text)) for ln in lines):

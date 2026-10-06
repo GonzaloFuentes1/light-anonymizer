@@ -1,8 +1,9 @@
 """Leak check of an exported file, before it is copied to the destination folder.
 
 PDF: the text of every active finding read from the text layer must be gone from the output,
-the text-layer patterns (RUT, e-mail, phone) run again over the output must find nothing, and
-metadata, XMP and attachments must be empty. Images: no EXIF, XMP, comments or text chunks.
+the text-layer patterns (RUT, e-mail, phone) run again over the output must find nothing, no
+curved path (a drawn signature, text turned into outlines) may remain entirely inside an active
+zone, and metadata, XMP and attachments must be empty. Images: no EXIF, XMP, comments or text chunks.
 Both: the zone of every active finding must be solid black in the output (``uncovered``), which
 also checks what OCR, faces, QR and the reviewer marked, whose text is not in the text layer.
 
@@ -59,17 +60,19 @@ def pdf_leaks(
 ) -> list[Leak]:
     """Leaks of an exported PDF. ``kept``: findings left visible on purpose (removed or suggested).
     ``from_text_layer(f)`` says if the text of ``f`` was read from the text layer."""
-    leaks: list[Leak] = []
     with PDF_LOCK:
         with pymupdf.open(path) as doc:
             layers = [(*pdf.chars(page)[:2], pymupdf.Matrix(page.derotation_matrix)) for page in doc]
             metadata = {k: v for k, v in (doc.metadata or {}).items() if v and k not in ("format", "encryption")}
             xmp = doc.get_xml_metadata()
             attachments = doc.embfile_count()
+            drawn = _drawn_leaks(doc, active)
+    leaks: list[Leak] = []
     if metadata or xmp:
         leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene metadatos."))
     if attachments:
         leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene archivos adjuntos."))
+    leaks += drawn
     for n, (text, boxes, to_page) in enumerate(layers):
         chars = list(text)
         normalized = normalize_1to1(text)
@@ -113,6 +116,40 @@ def pdf_leaks(
                     message=f"Hay {_UNMARKED[type_]} legible en la página {n + 1} que no estaba marcado para censurar.",
                 )
             )
+    return leaks
+
+
+def _drawn_leaks(doc: pymupdf.Document, active: list[Finding]) -> list[Leak]:
+    """Curved paths still drawn entirely inside an active zone: the black box hides them on screen,
+    but they are still in the file (call with ``PDF_LOCK`` held)."""
+    leaks = []
+    by_page: dict[int, list[Finding]] = {}
+    for f in active:
+        by_page.setdefault(f.page, []).append(f)
+    for n in sorted(by_page):
+        if not 0 <= n < doc.page_count:
+            continue
+        page = doc[n]
+        to_page = pymupdf.Matrix(page.derotation_matrix)
+        zones = [((pymupdf.Rect(*bbox_of(f.polygon)) * to_page).normalize() + (-1, -1, 1, 1), f) for f in by_page[n]]
+        reported = set()
+        for d in page.get_drawings():
+            if not any(item[0] == "c" for item in d.get("items") or ()):
+                continue
+            w = float(d.get("width") or 0) / 2
+            drawn = pymupdf.Rect(d["rect"]) + (-w, -w, w, w)
+            for zone, f in zones:
+                if f.id not in reported and pdf.inside(drawn, zone):
+                    reported.add(f.id)
+                    label = TYPE_LABELS.get(f.type, f.type)
+                    leaks.append(
+                        Leak(
+                            page=n,
+                            type=f.type,
+                            message=f"{label}: quedó un trazo dibujado bajo la zona marcada en la página {n + 1}.",
+                            finding_id=f.id,
+                        )
+                    )
     return leaks
 
 

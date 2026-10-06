@@ -39,11 +39,12 @@
     context: "contexto",
     ocr: "OCR",
     faces: "rostros",
+    signatures: "firmas",
     qr: "código QR",
     reviewer: "agregada por ti",
   };
   // Stages of an analysis (summary "timings"), shown when a file is done.
-  const STAGE_LABELS = { text: "texto", ocr: "texto en imágenes", faces: "rostros", qr: "QR" };
+  const STAGE_LABELS = { text: "texto", ocr: "texto en imágenes", faces: "rostros", signatures: "firmas", qr: "QR" };
   const SUPPORTED_EXT = ["pdf", "jpg", "jpeg", "png", "webp", "tif", "tiff"];
   const REVIEWABLE = new Set(["ready", "confirmed", "exported"]);
   const MSG = {
