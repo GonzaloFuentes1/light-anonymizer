@@ -32,6 +32,16 @@
     return parts.map((p) => fnv(p.sort().join("\n")));
   }
 
+  /** What a page's after does when the versions are recomputed. ``shown``: the version of the image
+   *  it shows (null without one); ``busy``: an image is on its way or failed; ``was``/``now``: the
+   *  page's version before and after. "update": the image shown is out of date (dim it, load again);
+   *  "current": it is up to date (also an edit undone before its update arrived); "load": no image,
+   *  and the one on its way or failed was for another version; null: nothing to do. */
+  function afterChange({ shown, busy, was, now }) {
+    if (shown != null) return shown === now ? "current" : "update";
+    return busy && was !== now ? "load" : null;
+  }
+
   function columns({ areaWidth, gap, after, minColumn = 420 }) {
     if (!after) return { cols: 1, stacked: false, colWidth: areaWidth };
     const half = (areaWidth - gap) / 2;
@@ -229,7 +239,7 @@
   const isLongScroll = (from, to, viewHeight) => Math.abs(to - from) > 2 * viewHeight;
 
   const ReviewCore = {
-    isActive, pageVersions, columns, fitScales, effectiveScale, nextZoom, displaySize, innerTransform,
+    isActive, pageVersions, afterChange, columns, fitScales, effectiveScale, nextZoom, displaySize, innerTransform,
     overflow, panShift, panCenter, panFor, zoneRect, pointToPage, requestZoom, imageKey, acceptResponse,
     planQueue, releasePlan, rowsWithin, admits, currentRow, anchorOf, scrollTopFor, scrollTarget, isLongScroll,
   };

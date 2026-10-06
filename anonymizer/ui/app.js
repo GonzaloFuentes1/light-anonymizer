@@ -1103,7 +1103,6 @@
   }
 
   // Stubs of the scrolling viewer, each replaced by the task that builds that part.
-  function refreshVersions() {} // replaced in Task 11
   function renderZonesAll() {} // replaced in Task 12
   function renderRowZones() {} // replaced in Task 12
   function revealFinding() {} // replaced in Task 12
@@ -1218,7 +1217,7 @@
     if (samePages) {
       // Same pages: the rows, the anchor and the loaded befores stay; only the afters may change.
       rv.rows.forEach((row, i) => { row.page = pages[i]; });
-      refreshVersions();
+      refreshVersions(); // the afters whose findings changed load again
       renderZonesAll();
     } else {
       if (keep && rv.rows.length) anchor = anchorNow();
@@ -1375,6 +1374,14 @@
     // requested on the way to where showStart or restoreAnchor goes.
     startObserver();
     relayout({ keepAnchor: false });
+  }
+
+  /** The label under each row, from rowLabel: it follows the findings of that page. */
+  function renderRowLabels() {
+    for (const row of S.rv.rows) {
+      const text = rowLabel(row.i);
+      if (row.label.textContent !== text) row.label.textContent = text;
+    }
   }
 
   /** Columns, scales and reserved sizes from the viewport width, zoom and rotation. Keeps the
@@ -1581,8 +1588,13 @@
     const track = (set) => (entries, observer) => {
       if (observer !== L.observer && observer !== L.viewObserver) return; // disconnected meanwhile
       for (const e of entries) {
-        if (e.isIntersecting) set.add(Number(e.target.dataset.row));
-        else set.delete(Number(e.target.dataset.row));
+        const i = Number(e.target.dataset.row), row = S.rv.rows[i];
+        if (e.isIntersecting) set.add(i);
+        else {
+          set.delete(i);
+          // A before that failed is tried again when its row comes back near, never in a loop meanwhile.
+          if (observer === L.observer && row && row.el === e.target) row.before.failed = "";
+        }
       }
       scheduleLoads();
     };
@@ -1707,6 +1719,7 @@
     cell.pendingMp = mp;
     clearFail(cell);
     if (!cell.url) showCellState(cell, "Cargando…"); // the first image, or a retry
+    else if (side === "after" && cell.version !== version) showUpdating(cell); // a zoom alone keeps it as is
     L.inFlight += 1;
     let url = null, error = null;
     try {
@@ -1715,16 +1728,21 @@
       error = err;
     }
     L.inFlight -= 1;
-    const wanted = cell.pending === key && ReviewCore.acceptResponse(wantedKeyNow(row, side), key);
-    if (cell.pending === key) cell.pending = "";
-    if (!wanted) {
-      if (url) URL.revokeObjectURL(url);
-    } else if (url) {
-      showImage(row, side, { url, key, mp, version });
-    } else {
-      showFailure(row, side, key, error);
+    try {
+      const wanted = cell.pending === key && ReviewCore.acceptResponse(wantedKeyNow(row, side), key);
+      if (cell.pending === key) cell.pending = "";
+      if (!wanted) {
+        if (url) URL.revokeObjectURL(url);
+      } else if (url) {
+        showImage(row, side, { url, key, mp, version });
+      } else {
+        showFailure(row, side, key, error);
+      }
+    } catch (err) {
+      reportError(err); // started without await: no unhandled rejection
+    } finally {
+      pump(); // the slot is free whatever happened above
     }
-    pump();
   }
 
   function showImage(row, side, { url, key, mp, version }) {
@@ -1749,7 +1767,7 @@
       showCellState(cell, "No se pudo mostrar esta página");
       if (L.toastedGen !== S.rv.gen) {
         L.toastedGen = S.rv.gen;
-        showError(err);
+        showError(err instanceof ApiError ? err : null); // never a raw browser message
       }
       return;
     }
@@ -1778,6 +1796,41 @@
     const want = wantedKeyNow(row, "after");
     if (want && want !== cell.key && want !== cell.pending) L.queue.push({ row: row.i, side: "after", edited });
     pump();
+  }
+
+  /** The findings changed (an edit, a keepView reload): the page versions are recomputed. An after
+   *  shown with another version is dimmed with "Actualizando…" and loads again ahead of the other
+   *  jobs; one still on its way or failed loads the new version. A row with nothing loaded only
+   *  changes version: it loads the new one when it comes near. The type chips never come here: the
+   *  after always shows every active finding. */
+  function refreshVersions() {
+    const rv = S.rv;
+    if (!rv.file) return;
+    const was = rv.versions;
+    rv.versions = ReviewCore.pageVersions(rv.file.findings, (rv.file.pages || []).length);
+    for (const row of rv.rows) {
+      const cell = row.after;
+      const change = ReviewCore.afterChange({
+        shown: cell.url ? cell.version : null, busy: !!(cell.pending || cell.failed),
+        was: was[row.i], now: rv.versions[row.i],
+      });
+      if (change === "update") {
+        showUpdating(cell);
+        requestAfter(row, { edited: true });
+      } else if (change === "load") {
+        requestAfter(row, { edited: true });
+      } else if (change === "current" && cell.cell.classList.contains("updating")) {
+        // An edit undone before its update arrived: the image shown is right again.
+        cell.cell.classList.remove("updating");
+        cell.state.hidden = true;
+      }
+    }
+    renderRowLabels();
+  }
+  /** An after on screen is out of date: dimmed, with "Actualizando…", until the new one is shown. */
+  function showUpdating(cell) {
+    cell.cell.classList.add("updating");
+    showCellState(cell, "Actualizando…");
   }
 
   /** Frees a row's images and keeps its reserved size: no src, URLs revoked, keys forgotten (an
@@ -2224,6 +2277,7 @@
           const i = list.findIndex((f) => f.id === u.id);
           if (i >= 0) list[i] = u;
         }
+        refreshVersions();
       }
       renderZonesAll();
       renderFindings();
@@ -2244,6 +2298,7 @@
     const list = S.rv.file.findings;
     const i = list.findIndex((f) => f.id === updated.id);
     if (i >= 0) list[i] = updated; else list.push(updated);
+    refreshVersions(); // the after of its page loads again (remove, restore, an optional URL, a drawn zone)
     renderZonesAll();
     renderFindings();
     renderVerify();

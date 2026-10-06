@@ -198,3 +198,17 @@ test("current row, anchors and scroll targets", () => {
   assert.equal(C.isLongScroll(0, 900, 400), true);
   assert.equal(C.isLongScroll(0, 700, 400), false);
 });
+
+test("after change: an out-of-date image updates, an undone edit is current, a cell without one reloads only on change", () => {
+  // An image shown with another version: dimmed, "Actualizando…", loaded again.
+  assert.equal(C.afterChange({ shown: "v1", busy: false, was: "v1", now: "v2" }), "update");
+  assert.equal(C.afterChange({ shown: "v1", busy: true, was: "v2", now: "v3" }), "update"); // an update already on its way
+  // The image shown has this version (an edit undone before its update arrived, or nothing changed).
+  assert.equal(C.afterChange({ shown: "v1", busy: true, was: "v2", now: "v1" }), "current");
+  assert.equal(C.afterChange({ shown: "v1", busy: false, was: "v1", now: "v1" }), "current");
+  // No image: one on its way or failed loads the new version; nothing loaded only changes version.
+  assert.equal(C.afterChange({ shown: null, busy: true, was: "v1", now: "v2" }), "load");
+  assert.equal(C.afterChange({ shown: null, busy: true, was: "v1", now: "v1" }), null);
+  assert.equal(C.afterChange({ shown: null, busy: false, was: "v1", now: "v2" }), null);
+  assert.equal(C.afterChange({ shown: null, busy: true, was: undefined, now: "v2" }), "load");
+});
