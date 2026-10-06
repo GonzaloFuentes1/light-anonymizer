@@ -89,7 +89,9 @@ def page_image(lines: list[str], size: tuple[int, int], dpi: int) -> Image.Image
     draw = ImageDraw.Draw(img)
     px = dpi / 72  # pixels per point
     margin = int(54 * px)
-    draw.rectangle((margin // 2, margin // 2, size[0] - margin // 2, size[1] - margin // 2), outline=90, width=max(2, dpi // 100))
+    draw.rectangle(
+        (margin // 2, margin // 2, size[0] - margin // 2, size[1] - margin // 2), outline=90, width=max(2, dpi // 100)
+    )
     y = margin
     for i, line in enumerate(lines):
         pt = 15 if i == 0 else 10
@@ -135,7 +137,7 @@ def _zero_strip_padding(data: bytes) -> bytes:
     with Image.open(io.BytesIO(data)) as im:
         for frame in range(im.n_frames):
             im.seek(frame)
-            end = max(o + c for o, c in zip(im.tag_v2[273], im.tag_v2[279]))
+            end = max(o + c for o, c in zip(im.tag_v2[273], im.tag_v2[279], strict=True))
             if end % 2 and end < len(out):
                 out[end] = 0
     return bytes(out)

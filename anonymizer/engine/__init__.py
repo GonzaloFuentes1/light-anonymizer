@@ -28,9 +28,8 @@ Contract
 ``render_result(file, page, zoom, findings) -> bytes``
     PNG of one page as it will be exported (the "after" of the review): ``findings`` may span
     several pages; the engine keeps those of ``page`` that are active (neither "removed" nor
-    "suggested"),
-    the same selection ``export`` makes, and applies them with the export's own redaction to an
-    in-memory copy. Nothing is written to disk. Same view space and zoom as ``render_page``.
+    "suggested"), the same selection ``export`` makes, and applies them with the export's own
+    redaction to an in-memory copy. Nothing is written to disk. Same view space and zoom as ``render_page``.
 
 ``export(file, dest_dir) -> ExportResult``
     Apply every active finding (not "removed" nor "suggested") as real redaction, remove metadata,

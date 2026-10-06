@@ -248,6 +248,7 @@
     pollTimer: null,
     rv: {
       id: null,
+      statusText: "", // why the review closed a file (shown in the empty state too)
       file: null, // full AnalyzedFile
       gen: 0, // load generation: increased by every teardown, carried by every image request
       sel: null,
@@ -1132,6 +1133,7 @@
     const el = $("#rv-status");
     el.hidden = !text;
     el.textContent = text || "";
+    S.rv.statusText = text || "";
   }
 
   /** Opens a file for review: fit zoom, no rotation, every type shown, draw mode off; V is kept.
@@ -1240,6 +1242,11 @@
       openFile(rv.id, { auto: true }); // its last load failed: try again
     }
     $("#review-empty").hidden = !!rv.id || S.files.some((f) => REVIEWABLE.has(f.status));
+    // With no file left to review, #review is hidden: the reason the open file closed shows here.
+    const why = rv.statusText || "";
+    $("#review-empty-status").hidden = !why;
+    $("#review-empty-status").textContent = why;
+    $("#review-empty-hint").hidden = !!why;
     $("#review").hidden = !rv.id;
     if (!rv.id) return;
     renderFileBar();

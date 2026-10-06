@@ -628,7 +628,9 @@ def test_redaction_rects_move_view_boxes_to_the_unrotated_page(tmp_path):
 
     path = _boxed_pdf(tmp_path / "r.pdf", 90, "cropbox")
     with PDF_LOCK, pymupdf.open(path) as doc:
-        rects = pdf.redaction_rects(doc, {0: [common.rect_polygon(10, 20, 110, 60)], 5: [common.rect_polygon(0, 0, 1, 1)]})
+        rects = pdf.redaction_rects(
+            doc, {0: [common.rect_polygon(10, 20, 110, 60)], 5: [common.rect_polygon(0, 0, 1, 1)]}
+        )
         assert list(rects) == [0]
         expected = (pymupdf.Rect(10, 20, 110, 60) * pymupdf.Matrix(doc[0].derotation_matrix)).normalize()
         assert rects[0] == [expected]
@@ -773,8 +775,12 @@ def test_after_equals_export_with_a_resource_shared_by_two_pages(tmp_path, kind)
     for page in (0, 1):
         _assert_parity(engine, file, page, 1.0, tmp_path)
     # guard: the finding does change page 1, and only page 1
-    assert not (_pixels(engine.render_result(file, 1, 1.0, file.findings)) == _pixels(engine.render_page(file, 1, 1.0))).all()
-    assert (_pixels(engine.render_result(file, 0, 1.0, file.findings)) == _pixels(engine.render_page(file, 0, 1.0))).all()
+    assert not (
+        _pixels(engine.render_result(file, 1, 1.0, file.findings)) == _pixels(engine.render_page(file, 1, 1.0))
+    ).all()
+    assert (
+        _pixels(engine.render_result(file, 0, 1.0, file.findings)) == _pixels(engine.render_page(file, 0, 1.0))
+    ).all()
 
 
 def test_after_reveals_and_redacts_a_hidden_layer(tmp_path):
@@ -791,7 +797,9 @@ def test_after_reveals_and_redacts_a_hidden_layer(tmp_path):
 
 @pytest.mark.parametrize("mode", ["exif6", "rgba", "palette"])
 def test_after_equals_export_png(tmp_path, mode):
-    img = Image.new("RGBA" if mode == "rgba" else "RGB", (300, 200), (255, 255, 255, 255) if mode == "rgba" else "white")
+    img = Image.new(
+        "RGBA" if mode == "rgba" else "RGB", (300, 200), (255, 255, 255, 255) if mode == "rgba" else "white"
+    )
     ImageDraw.Draw(img).rectangle((20, 20, 120, 80), fill=(10, 10, 10) if mode != "rgba" else (10, 10, 10, 128))
     kwargs = {}
     if mode == "exif6":
@@ -854,7 +862,9 @@ def test_redacted_route_equals_export_and_writes_nothing(tmp_path, monkeypatch):
         assert wait_status(client, file_id)["status"] == "ready"
         file = client.get(f"/api/files/{file_id}").json()
         signer = next(f for f in file["findings"] if f["text"] == SIGNER)
-        client.patch(f"/api/files/{file_id}/findings/{signer['id']}", json={"action": "remove", "reason": "Otro motivo"})
+        client.patch(
+            f"/api/files/{file_id}/findings/{signer['id']}", json={"action": "remove", "reason": "Otro motivo"}
+        )
         session = app.state.session
         working = Path(session.get(file_id).path)
         digest = hashlib.sha256(working.read_bytes()).hexdigest()
@@ -874,3 +884,35 @@ def test_redacted_route_equals_export_and_writes_nothing(tmp_path, monkeypatch):
         client.post("/api/export", json={"dest_dir": str(dest), "audit_pdf": False, "audit_json": False})
         out = AnalyzedFile(id="o", name="informe.pdf", path=str(dest / "informe.pdf"), kind="pdf")
         assert np.array_equal(_pixels(after), _pixels(RealEngine().render_page(out, 0, 1.0)))
+
+
+def test_redacted_route_of_an_image_writes_nothing(tmp_path, monkeypatch):
+    import hashlib
+    import tempfile
+
+    from anonymizer.api.server import create_app
+    from tests.live_client import LiveClient
+    from tests.test_api import TOKEN, upload, wait_status
+
+    buf = io.BytesIO()
+    _text_image([f"Correo: {EMAIL}", "Texto neutro de la nota"]).save(buf, "PNG")
+    app = create_app(RealEngine(), TOKEN)
+    with LiveClient(app) as client:
+        client.headers["X-Session-Token"] = TOKEN
+        file_id = upload(client, "nota.png", buf.getvalue(), "image/png")
+        client.post("/api/process", json={"file_ids": [file_id]})
+        assert wait_status(client, file_id)["status"] == "ready"
+        session = app.state.session
+        working = Path(session.get(file_id).path)
+        digest = hashlib.sha256(working.read_bytes()).hexdigest()
+        listing = sorted((p.name, p.stat().st_mtime_ns) for p in Path(session.dir).iterdir())
+        empty = tmp_path / "tmp"
+        empty.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(empty))
+        monkeypatch.setenv("TMP", str(empty))
+        monkeypatch.setenv("TEMP", str(empty))
+        r = client.get(f"/api/files/{file_id}/pages/0.png?redacted=true")
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+        assert list(empty.iterdir()) == []
+        assert sorted((p.name, p.stat().st_mtime_ns) for p in Path(session.dir).iterdir()) == listing
+        assert hashlib.sha256(working.read_bytes()).hexdigest() == digest

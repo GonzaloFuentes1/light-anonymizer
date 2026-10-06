@@ -694,6 +694,32 @@ def test_redacted_page(client, tmp_path):
     assert _png_pixels(r.content).tolist() != _png_pixels(plain).tolist()  # the after has black zones
     file = client.get(f"/api/files/{file_id}").json()
     for f in file["findings"]:
-        client.patch(f"/api/files/{file_id}/findings/{f['id']}", json={"action": "remove", "reason": "No es un dato personal"})
+        client.patch(
+            f"/api/files/{file_id}/findings/{f['id']}", json={"action": "remove", "reason": "No es un dato personal"}
+        )
     nothing = client.get(url).content
     assert _png_pixels(nothing).tolist() == _png_pixels(plain).tolist()
+
+
+def test_redacted_page_of_a_file_in_error_is_not_viewable(client):
+    file_id = upload(client, "danado.pdf", b"%PDF-1.7\nesto no es un pdf")
+    client.post("/api/process", json={})
+    assert wait_status(client, file_id)["status"] == "error"
+    r = client.get(f"/api/files/{file_id}/pages/0.png?redacted=true")
+    assert r.status_code == 409 and r.json()["error"] == "not_viewable"
+
+
+def test_redacted_page_render_failure_is_a_plain_error(tmp_path):
+    class Failing(FakeEngine):
+        def render_result(self, file, page, zoom, findings):
+            raise RuntimeError("boom")
+
+    app = create_app(Failing(), TOKEN)
+    with LiveClient(app) as c:
+        c.headers["X-Session-Token"] = TOKEN
+        file_id = upload(c, "a.pdf", make_pdf())
+        c.post("/api/process", json={"file_ids": [file_id]})
+        assert wait_status(c, file_id)["status"] == "ready"
+        r = c.get(f"/api/files/{file_id}/pages/0.png?redacted=true")
+        assert r.status_code == 409 and r.json()["error"] == "render"
+        assert "boom" not in r.text

@@ -110,7 +110,17 @@ def test_js_syntax(name):
         ),
         (
             "app.css",
-            [".zone.suggested", ".detect", ".license", "td .warntxt", "--draw:", "--draw-ink:", "--draw-edge:", ".prow", ".vp-head"],
+            [
+                ".zone.suggested",
+                ".detect",
+                ".license",
+                "td .warntxt",
+                "--draw:",
+                "--draw-ink:",
+                "--draw-edge:",
+                ".prow",
+                ".vp-head",
+            ],
         ),
     ],
 )
@@ -137,8 +147,18 @@ def test_old_viewer_is_gone():
     for s in ('id="thumbs"', 'id="rfiles"', 'id="pagebox"', "Ver como quedará"):
         assert s not in html, f"index.html still has {s!r}"
     js = read("app.js")
-    for s in ("renderThumbs", "thumbCache", "setPage(", "rv.result",
-              "rv.page", "pagebox", "pageinner", "setView", "lastImageKey", "scaleNow"):
+    for s in (
+        "renderThumbs",
+        "thumbCache",
+        "setPage(",
+        "rv.result",
+        "rv.page",
+        "pagebox",
+        "pageinner",
+        "setView",
+        "lastImageKey",
+        "scaleNow",
+    ):
         assert s not in js, f"app.js still has {s!r}"
 
 
