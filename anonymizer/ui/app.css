@@ -171,6 +171,13 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .col-find h3 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 12px 14px 6px; }
 
 .col-doc { background: var(--surface-2); display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto auto; min-width: 0; }
+/* Explicit rows: a hidden child (#rv-status, #hpan) is not a grid item, so auto-placement would shift the viewport off its 1fr row. */
+.col-doc > .rv-bar { grid-row: 1; }
+.col-doc > .rv-status { grid-row: 2; }
+.col-doc > .tools { grid-row: 3; }
+.col-doc > .viewport { grid-row: 4; }
+.col-doc > .hpan { grid-row: 5; }
+.col-doc > .keys-verify { grid-row: 6; }
 .tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--line); }
 .tool { border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-s); padding: 5px 10px; font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
 .tool:hover:not(:disabled) { background: var(--surface-2); }
