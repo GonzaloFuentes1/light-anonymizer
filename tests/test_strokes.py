@@ -409,9 +409,10 @@ def test_a_pattern_cell_under_a_zone_is_never_exempt(tmp_path):
 
 
 @pytest.mark.parametrize("ring", [False, True])
-def test_a_rounded_frame_or_a_ring_crossing_a_signature_zone_makes_the_page_an_image(tmp_path, ring):
-    # It is not removed (a stamp's ring, a frame: mostly outside the zone), so the part under the
-    # zone stays: the page is exported as an image, with the frame still visible around the box.
+def test_a_rounded_frame_or_a_ring_crossing_a_signature_zone(tmp_path, ring):
+    # Neither is removed (a stamp's ring, a frame: mostly outside the zone). A rounded frame is page
+    # layout: the page stays as it is. The part of a ring under the zone stays: the page is
+    # exported as an image, with the ring still visible around the box.
     def frame(doc, page):
         if ring:
             page.draw_circle((440, 520), 30, color=(0.1, 0.1, 0.6), width=1.2)  # a stamp's ring
@@ -421,10 +422,13 @@ def test_a_rounded_frame_or_a_ring_crossing_a_signature_zone_makes_the_page_an_i
     result, _ = export_with(
         content_pdf(tmp_path / "a.pdf", sig_ops(300, 300), frame), [("signature", SIG_ZONE)], tmp_path
     )
-    assert as_image(result, "trazo"), [leak.message for leak in result.leaks]
+    if ring:
+        assert as_image(result, "trazo"), [leak.message for leak in result.leaks]
+    else:
+        assert result.exported and not result.rasterized_pages, [leak.message for leak in result.leaks]
     with pymupdf.open(result.output_path) as doc:
         pix = doc[0].get_pixmap(clip=pymupdf.Rect(462, 515, 474, 525) if ring else pymupdf.Rect(455, 520, 475, 530))
-    assert min(pix.samples) < 128  # the frame still shows, outside the zone
+    assert min(pix.samples) < (128 if ring else 200)  # the frame still shows, outside the zone
 
 
 def test_a_curve_crossing_a_zone_makes_the_page_an_image_even_a_chart(tmp_path):

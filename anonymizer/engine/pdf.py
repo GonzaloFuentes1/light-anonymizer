@@ -43,6 +43,7 @@ _PAGE_KEYS = ("AA", "PieceInfo", "Thumb", "Metadata")
 # A page exported as an image (``rasterize``) loses these too: they describe content it no longer has.
 _IMAGE_PAGE_KEYS = ("Annots", "Group", "StructParents", "Tabs", "B", "Trans", "VP", "BoxColorInfo", "SeparationInfo")
 RASTER_DPI = 300  # a page exported as an image
+RASTER_FAST_DPI = 200  # one that ran out of its time budget
 RASTER_MAX_SIDE = 6000  # pixels: the longest side of that image, for huge pages
 JPEG_QUALITY = 90
 # Lossless (Flate) unless it is this many times larger than JPEG (measured at 300 dpi: a text page
@@ -685,6 +686,10 @@ class PageOutcome:
     reasons: list[str] = field(default_factory=list)
     # The page as an image (``rasterize``): format, size in bytes, width and height in pixels, seconds.
     image: dict | None = None
+    # The text layer the page had after its redaction, before it became an image (``chars``: its
+    # text and the box of each character, unrotated page space): the leak check still reads it,
+    # so data nobody marked blocks the export as it would on a page that stayed text.
+    text_layer: tuple[str, list] | None = None
 
     @property
     def rasterized(self) -> bool:
@@ -696,28 +701,35 @@ class PageOutcome:
         return leftovers.reasons_text(self.reasons)
 
 
-def _encode(pix: pymupdf.Pixmap) -> tuple[bytes, str]:
+def _encode(pix: pymupdf.Pixmap, fast: bool = False) -> tuple[bytes, str]:
     """The pixels of a page as PNG (lossless) or JPEG, whichever ``PNG_MAX_RATIO`` picks; gray
-    when every pixel is gray."""
+    when every pixel is gray. ``fast``: one encoding only (PNG when gray, else JPEG)."""
     a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)
-    if pix.n == 3 and np.array_equal(a[:, :, 0], a[:, :, 1]) and np.array_equal(a[:, :, 1], a[:, :, 2]):
+    gray = pix.n == 3 and np.array_equal(a[:, :, 0], a[:, :, 1]) and np.array_equal(a[:, :, 1], a[:, :, 2])
+    if gray:
         pix = pymupdf.Pixmap(pymupdf.csGRAY, pix)
+    if fast:
+        return (pix.tobytes("png"), "png") if gray else (pix.tobytes("jpg", jpg_quality=JPEG_QUALITY), "jpeg")
     png = pix.tobytes("png")
     jpeg = pix.tobytes("jpg", jpg_quality=JPEG_QUALITY)
     return (png, "png") if len(png) <= PNG_MAX_RATIO * len(jpeg) else (jpeg, "jpeg")
 
 
-def rasterize(page: pymupdf.Page) -> dict:
+def rasterize(page: pymupdf.Page, fast: bool = False) -> dict:
     """Replaces everything ``page`` (unrotated) holds with one image of it as it shows now, black
     boxes included, at ``RASTER_DPI`` (the longest side at most ``RASTER_MAX_SIDE``): no text
     layer, no vector content, no annotation, no hidden layer is left; the page keeps its size and
     boxes (the caller puts its rotation back). Returns the image's format, size in bytes, width,
-    height and the seconds it took. The caller holds ``PDF_LOCK``."""
+    height and the seconds it took. The caller holds ``PDF_LOCK``.
+
+    ``fast``: the page already ran out of its time budget (a page of tens of thousands of paths),
+    so it is rendered at ``RASTER_FAST_DPI`` and encoded once (JPEG, or PNG when gray)."""
     started = time.perf_counter()
     rect = page.rect
-    zoom = min(RASTER_DPI / 72, RASTER_MAX_SIDE / max(rect.width, rect.height, 1.0))
+    dpi = RASTER_FAST_DPI if fast else RASTER_DPI
+    zoom = min(dpi / 72, RASTER_MAX_SIDE / max(rect.width, rect.height, 1.0))
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False, annots=False)
-    data, fmt = _encode(pix)
+    data, fmt = _encode(pix, fast)
     doc = page.parent
     contents = doc.get_new_xref()
     doc.update_object(contents, "<<>>")
@@ -764,6 +776,9 @@ def redact_page(
     if rotation:
         page.set_rotation(0)
     status: dict = {}
+    # One time budget for the stroke stage and the check together (``leftovers.SECONDS``); a page
+    # past it is exported as an image, quickly (``rasterize(fast=True)``).
+    deadline = time.monotonic() + leftovers.SECONDS
     if rects:
         whole: list = []
         strokes.remove(page, rects, list(drawn), whole, status)
@@ -771,10 +786,11 @@ def redact_page(
     # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
     outcome.grown = [group[1:] for group in apply_page_zones(page, rects, keep)]
     if rects:
-        outcome.reasons = ["time"] if status.get("timeout") else leftovers.check(page, rects)
+        outcome.reasons = ["time"] if status.get("timeout") else leftovers.check(page, rects, deadline)
     if outcome.reasons:
+        outcome.text_layer = chars(page)[:2]
         log.info("page %d exported as an image: %s", n, ", ".join(outcome.reasons))
-        outcome.image = rasterize(page)
+        outcome.image = rasterize(page, fast="time" in outcome.reasons)
         page = doc[n]
     if rotation:
         page.set_rotation(rotation)

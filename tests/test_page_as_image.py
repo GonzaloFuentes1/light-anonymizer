@@ -101,7 +101,7 @@ def test_layout_lines_and_boxes_are_not_leftovers():
         page.draw_line((200, 10), (200, 390), width=1)  # a vertical one
         page.draw_rect(pymupdf.Rect(50, 50, 350, 150), color=(0, 0, 0), width=1)  # a frame around it
         page.draw_rect(pymupdf.Rect(120, 80, 260, 140), color=None, fill=(0.9, 0.9, 0.6))  # a cell cut by it
-        page.draw_rect(pymupdf.Rect(100, 90, 300, 110), color=None, fill=(0, 0, 0))  # the black box itself
+        page.draw_rect(pymupdf.Rect(100, 90, 300, 110), color=(0, 0, 0), fill=(0, 0, 0))  # the black box itself
         page.draw_circle((200, 300), 80, color=(0, 0, 0), fill=(0.8, 0.8, 1))  # a disc far from it
         page.draw_line((90, 80), (310, 120), width=0.5)  # a slanted rule across it
         tilted = pymupdf.Rect(120, 60, 280, 140).quad.morph(pymupdf.Point(200, 100), pymupdf.Matrix(12))
@@ -134,18 +134,21 @@ def test_a_curved_clip_under_a_zone_is_a_leftover():
     assert _check(build, [(100, 90, 300, 110)]) == ["clip"]
 
 
-def test_a_shading_under_a_zone_is_a_leftover():
+@pytest.mark.parametrize("clip, expected", [("100 280 200 40 re", []), ("160 295 4 4 re 170 295 4 4 re 180 299 4 4 re", ["ink"])])
+def test_a_gradient_under_a_zone_is_judged_by_what_it_paints(clip, expected):
+    # A smooth gradient that holds the zone hides nothing (no edge under the box); painted through
+    # a clip of small squares (a QR code in a gradient) it carries data, and the page is an image.
     def build(page, doc):
         sh = doc.get_new_xref()
         doc.update_object(sh, "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [100 0 300 0] "
                               "/Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>")  # fmt: skip
         xref = doc.get_new_xref()
         doc.update_object(xref, "<<>>")
-        doc.update_stream(xref, b"q 100 280 200 40 re W n /Sh0 sh Q")
+        doc.update_stream(xref, f"q {clip} W n /Sh0 sh Q".encode())
         doc.xref_set_key(page.xref, "Contents", f"{xref} 0 R")
         doc.xref_set_key(page.xref, "Resources", f"<< /Shading << /Sh0 {sh} 0 R >> >>")
 
-    assert _check(build, [(150, 90, 250, 110)]) == ["pattern"]
+    assert _check(build, [(150, 90, 250, 110)]) == expected
     assert _check(build, [(150, 300, 250, 330)]) == []
 
 
@@ -261,7 +264,7 @@ def test_the_guard_blocks_if_a_leftover_reached_the_output(tmp_path, monkeypatch
     # Should never happen: a page with something left under a zone is exported as an image. If the
     # pipeline failed to do it, the leak check of the output still blocks the export.
     path = new_doc(lambda page, doc: squiggle(page), tmp_path / "a.pdf")
-    monkeypatch.setattr(pdf, "rasterize", lambda page: None)  # the page is left as it is
+    monkeypatch.setattr(pdf, "rasterize", lambda page, fast=False: None)  # the page is left as it is
     _, result = export(path, [manual(290, 490, 370, 550)], tmp_path / "out")
     assert not result.exported
     assert any("algo dibujado" in leak.message and leak.finding_id == "m1" for leak in result.leaks)

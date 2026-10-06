@@ -20,6 +20,7 @@ a leak. Messages are Spanish: they are shown to the user.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -34,7 +35,7 @@ from anonymizer.engine.common import bbox_of
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import TYPE_LABELS, Finding, Leak
 from anonymizer.engine.patterns import normalize_1to1
-from anonymizer.engine.text import detect_spans, needle
+from anonymizer.engine.text import detect_spans, needle, strong_needle
 
 CRITICAL_TYPES = ("rut", "email", "phone")
 # A zone counts as covered when almost all of its inside (the antialiased border left out) is black.
@@ -63,13 +64,24 @@ def _within(boxes: list[pymupdf.Rect | None], a: int, b: int, zones: list[pymupd
 
 
 def pdf_leaks(
-    path: Path, active: list[Finding], kept: list[Finding], from_text_layer: Callable[[Finding], bool]
+    path: Path,
+    active: list[Finding],
+    kept: list[Finding],
+    from_text_layer: Callable[[Finding], bool],
+    text_layers: dict[int, tuple[str, list]] | None = None,
 ) -> list[Leak]:
     """Leaks of an exported PDF. ``kept``: findings left visible on purpose (removed or suggested).
-    ``from_text_layer(f)`` says if the text of ``f`` was read from the text layer."""
+    ``from_text_layer(f)`` says if the text of ``f`` was read from the text layer.
+    ``text_layers``: for a page exported as an image, the text and character boxes it had after
+    its redaction (``pdf.PageOutcome.text_layer``); it is read instead of the page's (now empty)
+    text layer, so what an image shows unmarked is still found."""
+    text_layers = text_layers or {}
     with PDF_LOCK:
         with pymupdf.open(path) as doc:
-            layers = [(*pdf.chars(page)[:2], pymupdf.Matrix(page.derotation_matrix)) for page in doc]
+            layers = [
+                (*(text_layers[n] if n in text_layers else pdf.chars(page)[:2]), pymupdf.Matrix(page.derotation_matrix))
+                for n, page in enumerate(doc)
+            ]
             metadata = {k: v for k, v in (doc.metadata or {}).items() if v and k not in ("format", "encryption")}
             xmp = doc.get_xml_metadata()
             attachments = doc.embfile_count()
@@ -124,6 +136,94 @@ def pdf_leaks(
     return leaks
 
 
+_LITERAL = re.compile(rb"\((?:\\.|[^\\()]|\((?:\\.|[^\\()])*\))*\)", re.S)
+_HEX = re.compile(rb"<([0-9A-Fa-f\s]+)>")
+_ESCAPES = {b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b", b"f": b"\f"}
+# Streams that hold page content (their text is the text layer, read by ``pdf_leaks``) or binary
+# data (images, fonts) are not searched.
+_CONTENT_KEYS = ("/Subtype/Image", "/Subtype/Form", "/PatternType", "/FontFile", "/Length1", "/Subtype/Type1C",
+                 "/Subtype/CIDFontType0C", "/Subtype/OpenType", "/ShadingType")  # fmt: skip
+
+
+def _decode(raw: bytes) -> str:
+    """A PDF string's bytes as text: UTF-16 with its mark, else one byte per character."""
+    if raw.startswith(b"\xfe\xff"):
+        return raw[2:].decode("utf-16-be", "replace")
+    if raw.startswith(b"\xff\xfe"):
+        return raw[2:].decode("utf-16-le", "replace")
+    return raw.decode("latin-1")
+
+
+def _strings(source: bytes) -> list[str]:
+    """The literal and hexadecimal strings of a piece of PDF syntax, decoded."""
+    out = []
+    for m in _LITERAL.finditer(source):
+        body = m.group(0)[1:-1]
+        body = re.sub(rb"\\([nrtbf])", lambda e: _ESCAPES[e.group(1)], body)
+        body = re.sub(rb"\\([0-7]{1,3})", lambda e: bytes([int(e.group(1), 8) & 255]), body)
+        body = re.sub(rb"\\(.)", rb"\1", body, flags=re.S)
+        out.append(_decode(body))
+    for m in _HEX.finditer(source):
+        digits = re.sub(rb"\s", b"", m.group(1))
+        if len(digits) % 2:
+            digits += b"0"
+        try:
+            out.append(_decode(bytes.fromhex(digits.decode())))
+        except ValueError:
+            continue
+    return out
+
+
+def string_leaks(path: Path, active: list[Finding]) -> list[Leak]:
+    """Values of the active findings still written inside an exported PDF outside the content of
+    its pages: in the strings of any object (a page's or the catalog's keys, names, structure,
+    forms, annotations) and in the decompressed streams that are not page content, images or
+    fonts (metadata, attachments, scripts). Each value is searched as the text-layer check does
+    (``needle``: accents, case and spacing ignored)."""
+    patterns = []
+    seen: set[str] = set()
+    for f in active:
+        # Only values specific enough to be data wherever they appear (two words, a digit, an "@").
+        pattern = needle(f.text) if f.text and strong_needle(f.text) else None
+        if pattern is not None and pattern.pattern not in seen:
+            seen.add(pattern.pattern)
+            patterns.append((pattern, f))
+    if not patterns:
+        return []
+    texts: list[str] = []
+    with PDF_LOCK:
+        with pymupdf.open(path) as doc:
+            contents = {x for page in doc for x in page.get_contents()}
+            for x in range(1, doc.xref_length()):
+                try:
+                    source = doc.xref_object(x, compressed=True)
+                except Exception:  # noqa: BLE001 - a broken object has nothing to read
+                    continue
+                texts += _strings(source.encode("latin-1", "replace"))
+                if x in contents or not doc.xref_is_stream(x) or any(k in source.replace(" ", "") for k in _CONTENT_KEYS):
+                    continue
+                try:
+                    data = doc.xref_stream(x) or b""
+                except Exception:  # noqa: BLE001
+                    continue
+                texts.append(data.decode("latin-1"))
+                texts += _strings(data)
+    leaks: list[Leak] = []
+    normalized = [normalize_1to1(s) for s in texts if s.strip()]
+    for pattern, f in patterns:
+        if any(pattern.search(s) for s in normalized):
+            label = TYPE_LABELS.get(f.type, f.type)
+            leaks.append(
+                Leak(
+                    page=None,
+                    type=f.type,
+                    message=f"{label} sigue escrito dentro del archivo, fuera del contenido de las páginas.",
+                    finding_id=f.id,
+                )
+            )
+    return leaks
+
+
 def image_leaks(path: Path) -> list[Leak]:
     """Metadata left in an exported image (every page of a TIFF)."""
     with Image.open(path) as img:
@@ -163,15 +263,18 @@ def _inner_mask(shape: tuple[int, int], polygon: np.ndarray) -> np.ndarray:
     return cv2.erode(mask, kernel).astype(bool)
 
 
-def vector_leaks(path: Path, active: list[Finding]) -> list[Leak]:
+def vector_leaks(path: Path, active: list[Finding], skip: set[int] | frozenset = frozenset()) -> list[Leak]:
     """Drawings still under an active zone in an exported PDF (``leftovers.check``, with the same
     zones as the redaction): a guard that should never fire, since ``pdf.redact_page`` exports such a
-    page as an image. Each page is looked at unrotated, only in memory."""
+    page as an image. ``skip``: the pages exported as an image (their black boxes are pixels now;
+    ``uncovered`` checks them). Each page is looked at unrotated, only in memory."""
     leaks: list[Leak] = []
     with PDF_LOCK:
         with pymupdf.open(path) as doc:
             to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
             for n, items in sorted(strokes.zones_by_page(active, to_page).items()):
+                if n in skip:
+                    continue
                 page = doc[n]
                 rotation = page.rotation
                 if rotation:

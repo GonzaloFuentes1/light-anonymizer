@@ -20,6 +20,7 @@ import tempfile
 import time
 import traceback
 import uuid
+from collections import OrderedDict
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -76,6 +77,8 @@ def _pdf_zones(active: list[Finding], kept: list[Finding], to_page: list) -> tup
     keep = {n: [r for r, _ in items] for n, items in strokes.zones_by_page(kept, to_page).items()}
     return zones, rects, keep, drawn
 
+
+_AFTER_PAGES = 8  # redacted pages of the review's after kept in memory (RealEngine.render_result)
 
 _STAGE_TEXT = {
     "ocr": "Leyendo texto en imágenes (OCR)",
@@ -150,6 +153,10 @@ class RealEngine:
         self.ocr_dpi = ocr_dpi
         # finding id -> "text" | "raster": where its text was read (internal, used by the leak check).
         self._sources: dict[str, str] = {}
+        # The review's after: the page as it will be exported, redacted once per set of zones and
+        # kept as a one-page PDF (key: file, its size and time, page, zones), so that rendering it
+        # again (another zoom, a scroll back) does not redact it again. Guarded by PDF_LOCK.
+        self._after: OrderedDict[tuple, tuple[bytes, bool, str]] = OrderedDict()
         # OCR and faces run in background threads: without this, Windows slows them down 5-6x
         # whenever the app has no foreground window.
         disable_power_throttling()
@@ -407,8 +414,8 @@ class RealEngine:
             from anonymizer.engine import pdf
 
             with PDF_LOCK:
+                stat = Path(file.path).stat()
                 with pymupdf.open(file.path, filetype="pdf") as doc:
-                    pdf.reveal_layers(doc)
                     to_page: list = [None] * doc.page_count  # only this page's findings are used
                     if 0 <= page < doc.page_count:
                         to_page[page] = pymupdf.Matrix(doc[page].derotation_matrix)
@@ -416,14 +423,28 @@ class RealEngine:
                     _, rects, keep, drawn = _pdf_zones(
                         [f for f in mine if f.active], [f for f in mine if not f.active], to_page
                     )
-                    outcome = pdf.redact_page(
-                        doc, page, rects.get(page, []), keep=keep.get(page, ()), drawn=drawn.get(page, ())
-                    )
-                    pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+
+                    def boxes(by_page: dict) -> tuple:
+                        return tuple(tuple(round(v, 4) for v in r) for r in by_page.get(page, []))
+
+                    key = (file.path, stat.st_size, stat.st_mtime_ns, page, boxes(rects), boxes(keep), boxes(drawn))
+                    if key not in self._after:
+                        pdf.reveal_layers(doc)
+                        outcome = pdf.redact_page(
+                            doc, page, rects.get(page, []), keep=keep.get(page, ()), drawn=drawn.get(page, ())
+                        )
+                        doc.select([page])  # the page alone, exactly as redacted
+                        self._after[key] = (doc.tobytes(), outcome.rasterized, outcome.reason)
+                        while len(self._after) > _AFTER_PAGES:
+                            self._after.popitem(last=False)
+                self._after.move_to_end(key)
+                data, as_image, reason = self._after[key]
+                with pymupdf.open("pdf", data) as one:
+                    pix = one[0].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
                     size, samples = (pix.width, pix.height), bytes(pix.samples)
                     pix = None  # released before the PNG encoding
             if info is not None:
-                info.update(as_image=outcome.rasterized, reason=outcome.reason)
+                info.update(as_image=as_image, reason=reason)
             return _png("RGB", size, samples)
         import numpy as np
         from PIL import Image
@@ -470,9 +491,11 @@ class RealEngine:
                 if Path(name).suffix.lower() != ".pdf":
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
-                whole, grown, images = self._export_pdf(file, active, kept, staged)
-                leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer)
-                leaks += verify.vector_leaks(staged, active)
+                whole, grown, images, layers = self._export_pdf(file, active, kept, staged)
+                # A page exported as an image is checked with the text it had before (``layers``).
+                leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer, layers)
+                leaks += verify.vector_leaks(staged, active, skip=set(layers))
+                leaks += verify.string_leaks(staged, active)
             else:
                 from anonymizer.engine import image
 
@@ -523,13 +546,14 @@ class RealEngine:
     @staticmethod
     def _export_pdf(
         file: AnalyzedFile, active: list[Finding], kept: list[Finding], staged: Path
-    ) -> tuple[list[dict], list[dict], list[dict]]:
+    ) -> tuple[list[dict], list[dict], list[dict], dict[int, tuple[str, list]]]:
         """Applies the active findings; nothing is added over what was left visible (``kept``).
 
         Returns, in view space for the audit report, the strokes removed whole
         (``ExportResult.strokes_removed_whole``), the letters drawn as paths that each zone also
         took (D8, ``pdf.snap_rects``; ``ExportResult.grown``) and the pages exported as an image
-        (``ExportResult.rasterized_pages``)."""
+        (``ExportResult.rasterized_pages``); and, by page, the text layer each page exported as an
+        image had after its redaction (``PageOutcome.text_layer``), for the leak check."""
         import pymupdf
 
         from anonymizer.engine import pdf
@@ -555,4 +579,5 @@ class RealEngine:
         for n, o in sorted(outcomes.items()):
             if o.rasterized:
                 log.info("page %d of %s exported as an image: %s (%s)", n, file.id, o.reasons, o.image)
-        return out, grown, images
+        layers = {n: o.text_layer for n, o in outcomes.items() if o.rasterized and o.text_layer is not None}
+        return out, grown, images, layers
