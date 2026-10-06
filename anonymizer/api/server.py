@@ -30,6 +30,12 @@ Routes (JSON unless noted)::
     POST   /api/export                     {dest_dir, file_ids?, audit_pdf, audit_json}
     GET    /api/about                      name, version, license, source and components
 
+The ``redacted=true`` page (the review's after) is rendered with the export's own per-page
+redaction, so it is the page exactly as it will be exported. When that page will be exported as
+an image (decided 2026-10-06: something drawn might have stayed under a zone), the response has
+the headers ``X-Page-As-Image: 1`` and ``X-Page-As-Image-Reason`` (the Spanish reason,
+percent-encoded as UTF-8, ``urllib.parse.quote``); otherwise neither header is sent.
+
 Extensions beyond the base contract: ``POST /api/files/from-paths``; the extra summary fields
 ``size`` (bytes) and ``leaks`` (count); ``skipped`` in the from-paths answer; and, when the app
 is started with a launch key, ``GET /?k=<key>`` sets a session cookie that ``GET /`` requires
@@ -65,6 +71,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -927,8 +934,12 @@ def create_app(
                     for f in file.findings
                     if f.page == page
                 ]
-            render = lambda: session.engine.render_result(file, page, min(max(zoom, 0.05), 8.0), snapshot)  # noqa: E731
+            info: dict = {}
+            render = lambda: session.engine.render_result(  # noqa: E731
+                file, page, min(max(zoom, 0.05), 8.0), snapshot, info=info
+            )
         else:
+            info = {}
             file = session.get(file_id)
             check_render(file, page, zoom)
             render = lambda: session.engine.render_page(file, page, min(max(zoom, 0.05), 8.0))  # noqa: E731
@@ -937,7 +948,10 @@ def create_app(
         except Exception:
             log.exception("render of %s page %d failed (redacted=%s)", file_id, page, redacted)
             raise ApiError(409, "render", "No se pudo mostrar esta página.") from None
-        return Response(png, media_type="image/png")
+        headers = {}
+        if info.get("as_image"):
+            headers = {"X-Page-As-Image": "1", "X-Page-As-Image-Reason": quote(info.get("reason") or "", safe="")}
+        return Response(png, media_type="image/png", headers=headers)
 
     def check_render(file: AnalyzedFile, page: int, zoom: float) -> None:
         if not math.isfinite(zoom) or zoom <= 0:

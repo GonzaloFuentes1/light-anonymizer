@@ -351,7 +351,11 @@ class FakeEngine:
     # render_result
     # ------------------------------------------------------------------
 
-    def render_result(self, file: AnalyzedFile, page: int, zoom: float, findings: list[Finding]) -> bytes:
+    def render_result(
+        self, file: AnalyzedFile, page: int, zoom: float, findings: list[Finding], info: dict | None = None
+    ) -> bytes:
+        if info is not None:  # the development engine never exports a page as an image
+            info.update(as_image=False, reason="")
         zoom = max(0.05, min(8.0, float(zoom)))
         mine = [f for f in findings if f.page == page and f.active]
         kind = file.kind or sniff(file.path)
@@ -368,7 +372,9 @@ class FakeEngine:
             img.seek(page)
             out = self._fill(ImageOps.exif_transpose(img.copy()).convert("RGB"), mine)
         if zoom != 1.0:
-            out = out.resize((max(1, round(out.width * zoom)), max(1, round(out.height * zoom))), Image.Resampling.LANCZOS)
+            out = out.resize(
+                (max(1, round(out.width * zoom)), max(1, round(out.height * zoom))), Image.Resampling.LANCZOS
+            )
         out.save(buf, "PNG", compress_level=1)
         return buf.getvalue()
 
@@ -475,7 +481,9 @@ class FakeEngine:
             fmt = img.format if img.format in IMAGE_FORMATS else "PNG"
             frames = []
             for n, frame in enumerate(ImageSequence.Iterator(img)):
-                out = self._fill(ImageOps.exif_transpose(frame.copy()).convert("RGB"), [f for f in active if f.page == n])
+                out = self._fill(
+                    ImageOps.exif_transpose(frame.copy()).convert("RGB"), [f for f in active if f.page == n]
+                )
                 # A new image from raw pixels: no EXIF, XMP, ICC or text chunks are carried over.
                 frames.append(Image.frombytes("RGB", out.size, out.tobytes()))
         staged = folder / ("output" + IMAGE_FORMATS[fmt])

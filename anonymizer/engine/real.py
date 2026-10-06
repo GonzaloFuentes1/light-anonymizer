@@ -388,9 +388,15 @@ class RealEngine:
             frame.save(buf, "PNG")
             return buf.getvalue()
 
-    def render_result(self, file: AnalyzedFile, page: int, zoom: float, findings: list[Finding]) -> bytes:
+    def render_result(
+        self, file: AnalyzedFile, page: int, zoom: float, findings: list[Finding], info: dict | None = None
+    ) -> bytes:
         """PNG of page ``page`` as it will be exported: the active findings of that page applied
-        with the export's own redaction, on an in-memory copy. Nothing is written to disk."""
+        with the export's own redaction (``pdf.redact_page``), on an in-memory copy. Nothing is
+        written to disk. ``info``: receives ``as_image`` (the page will be exported as an image) and
+        ``reason`` (why, in Spanish)."""
+        if info is not None:
+            info.update(as_image=False, reason="")
         zoom = max(0.05, min(8.0, float(zoom)))
         polygons = [f.polygon for f in findings if f.page == page and f.active]
         kind = file.kind or sniff(file.path)
@@ -409,9 +415,13 @@ class RealEngine:
                     _, rects, keep, drawn = _pdf_zones(
                         [f for f in mine if f.active], [f for f in mine if not f.active], to_page
                     )
-                    pdf.redact_page(doc, page, rects.get(page, []), keep=keep.get(page, ()), drawn=drawn.get(page, ()))
+                    outcome = pdf.redact_page(
+                        doc, page, rects.get(page, []), keep=keep.get(page, ()), drawn=drawn.get(page, ())
+                    )
                     pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
                     size, samples = (pix.width, pix.height), bytes(pix.samples)
+            if info is not None:
+                info.update(as_image=outcome.rasterized, reason=outcome.reason)
             return _png("RGB", size, samples)
         import numpy as np
         from PIL import Image
@@ -452,14 +462,15 @@ class RealEngine:
         name = Path(file.name).name or "archivo"
         whole: list[dict] = []  # PDF strokes removed whole (ExportResult.strokes_removed_whole)
         grown: list[dict] = []  # PDF letters drawn as paths that the zones also took (ExportResult.grown)
+        images: list[dict] = []  # PDF pages exported as an image (ExportResult.rasterized_pages)
         with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
             if kind == "pdf":
                 if Path(name).suffix.lower() != ".pdf":
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
-                whole, grown = self._export_pdf(file, active, kept, staged)
+                whole, grown, images = self._export_pdf(file, active, kept, staged)
                 leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer)
-                leaks += verify.glyph_leaks(staged, active, kept)
+                leaks += verify.vector_leaks(staged, active)
             else:
                 from anonymizer.engine import image
 
@@ -486,6 +497,14 @@ class RealEngine:
             log.warning("export of %s blocked: %d leaks", file.id, n)
         else:
             message = "Archivo exportado. La verificación automática no encontró datos censurados legibles."
+            if images:
+                pages = [str(r["page"] + 1) for r in images]
+                listed = pages[0] if len(pages) == 1 else ", ".join(pages[:-1]) + " y " + pages[-1]
+                message += (
+                    f" {'La página' if len(pages) == 1 else 'Las páginas'} {listed} se "
+                    f"{'exportó' if len(pages) == 1 else 'exportaron'} como imagen para quitar con certeza lo que "
+                    "había bajo las zonas; el informe de auditoría dice por qué."
+                )
         return ExportResult(
             file_id=file.id,
             output_path=file.output_path,
@@ -496,17 +515,19 @@ class RealEngine:
             message=message,
             strokes_removed_whole=whole if not leaks else [],
             grown=grown if not leaks else [],
+            rasterized_pages=images if not leaks else [],
         )
 
     @staticmethod
     def _export_pdf(
         file: AnalyzedFile, active: list[Finding], kept: list[Finding], staged: Path
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> tuple[list[dict], list[dict], list[dict]]:
         """Applies the active findings; nothing is added over what was left visible (``kept``).
 
         Returns, in view space for the audit report, the strokes removed whole
-        (``ExportResult.strokes_removed_whole``) and the letters drawn as paths that each zone also
-        took (D8, ``pdf.snap_rects``; ``ExportResult.grown``)."""
+        (``ExportResult.strokes_removed_whole``), the letters drawn as paths that each zone also
+        took (D8, ``pdf.snap_rects``; ``ExportResult.grown``) and the pages exported as an image
+        (``ExportResult.rasterized_pages``)."""
         import pymupdf
 
         from anonymizer.engine import pdf
@@ -528,4 +549,8 @@ class RealEngine:
                 if extra:
                     rects_view = [[round(v, 2) for v in (r.x0, r.y0, r.x1, r.y1)] for r in extra]
                     grown.append({"finding_id": f.id, "page": n, "rects": rects_view})
-        return out, grown
+        images = [{"page": n, "reason": o.reason} for n, o in sorted(outcomes.items()) if o.rasterized]
+        for n, o in sorted(outcomes.items()):
+            if o.rasterized:
+                log.info("page %d of %s exported as an image: %s (%s)", n, file.id, o.reasons, o.image)
+        return out, grown, images

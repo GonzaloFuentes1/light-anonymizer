@@ -501,7 +501,7 @@ def test_redaction_removes_stroked_paths_inside_the_zone_only(tmp_path):
     assert ("s", ["re"]) in kept and ("f", ["re"]) in kept and ("s", ["l"]) in kept
 
 
-def test_a_drawing_left_under_a_zone_blocks_the_export(tmp_path, no_models, monkeypatch):
+def test_a_drawing_left_under_a_zone_makes_the_page_an_image(tmp_path, no_models, monkeypatch):
     from anonymizer.engine import strokes
 
     doc = pymupdf.open()
@@ -514,12 +514,14 @@ def test_a_drawing_left_under_a_zone_blocks_the_export(tmp_path, no_models, monk
     file = AnalyzedFile(id="f1", name="firma.pdf", path=str(tmp_path / "firma.pdf"))
     engine.analyze(file, [])
     assert [f for f in file.findings if f.type == "signature"]
-    monkeypatch.setattr(strokes, "remove", lambda page, zones, drawn=(), whole=None: 0)  # as MuPDF alone would leave it
+    # As MuPDF alone would leave it: the strokes stay under the zone, so the page is exported as an
+    # image (decided 2026-10-06) and nothing drawn is left in the file.
+    monkeypatch.setattr(strokes, "remove", lambda page, zones, drawn=(), whole=None, status=None: 0)
     result = engine.export(file, str(tmp_path / "out"))
-    assert not result.exported
-    assert any(
-        leak.type == "signature" and "trazo dibujado sigue en el archivo" in leak.message for leak in result.leaks
-    )
+    assert result.exported, [leak.message for leak in result.leaks]
+    assert [r["page"] for r in result.rasterized_pages] == [0] and "trazo" in result.rasterized_pages[0]["reason"]
+    with pymupdf.open(result.output_path) as out:
+        assert not out[0].get_drawings() and not out[0].get_text().strip()
 
 
 def test_a_zone_drawn_by_the_reviewer_also_removes_the_strokes(tmp_path, no_models):

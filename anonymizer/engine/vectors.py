@@ -13,12 +13,12 @@ rectangle covers all of it (measured with MuPDF 1.28: a letter first touched by 
 it stays, even when another rectangle covers it whole). For a shape that is also stroked, the
 rectangle must cover the box grown by the stroke: half the line width with round or bevel joins,
 the miter limit (10) times the width with miter joins. So when a zone is applied
-(``pdf.apply_page_zones``), each letter under it (``under``: its centre, or half of it, inside the
-zone) first gets a small rectangle of its own (``cover``), in a pass of its own; only then the
-zones are applied, deciding alone on everything else. Never a band across the zone, at most a few
-points beyond it, and never into what the reviewer kept visible: a letter whose centre is in a
-kept area belongs to that area. ``verify.glyph_leaks`` checks that no letter under an applied zone,
-and no shape almost entirely inside one, is left.
+(``pdf.apply_page_zones``), each letter whose centre is inside it first gets a small rectangle of
+its own (``cover``), in a pass of its own; only then the zones are applied, deciding alone on
+everything else. Never a band across the zone, at most ``COVER_MAX`` beyond it, and never into
+what the reviewer kept visible. A letter that cannot be covered that way (it reaches further, or a
+kept area is in the way) stays cut by the zone: ``leftovers.check`` finds it and the page is
+exported as an image (decided 2026-10-06).
 
 Coordinates are PyMuPDF's unrotated page space, like the text layer. Every call needs
 ``PDF_LOCK`` held (PyMuPDF is not thread-safe).
@@ -30,6 +30,7 @@ import math
 from collections import defaultdict
 from typing import NamedTuple
 
+import numpy as np
 import pymupdf
 
 # A filled shape no larger than this on either side (points) can be a letter; larger ones are
@@ -39,21 +40,20 @@ GLYPH_MAX_SIDE = 40.0
 MIN_GLYPHS = 8
 # ...and fewer characters of the text layer than this share of its shapes.
 MAX_CHARS_PER_GLYPH = 0.5
-# A letter is under a zone when its centre is inside it, or at least this share of its box: it is
-# then covered whole when the zone is applied (``cover``), and one left in the output is a leak.
+# A letter is under a zone when its centre is inside it, or at least this share of its box
+# (``under``, used to measure).
 UNDER_SHARE = 0.5
-# A letter is covered only if that does not reach further than this beyond the zone (points); one
-# that would is left, and the leak check asks for a larger zone.
-COVER_MAX = 6.0
+# A letter whose centre is inside a zone is covered with a rectangle of its own only if that
+# rectangle (grown by its stroke's reach) stays within this many points of the zone (decided
+# 2026-10-06; it was 6 pt plus the reach, which reached 12 pt and removed real text lines 13 pt
+# away). One that would reach further is left, and ``leftovers.check`` exports the page as an image.
+COVER_MAX = 1.5
 # Points added around a letter's rectangle: MuPDF does not count a shape as covered when the edges
 # are exactly equal.
 COVER_PAD = 0.02
 # How far MuPDF looks beyond the box of a stroked shape: the miter limit (PDF default 10) times the
 # line width with miter joins, half the width with round or bevel joins (measured, MuPDF 1.28).
 MITER_LIMIT = 10.0
-# A shape of any size with at least this share of its box inside an applied zone and still in the
-# output is a leak (``verify.glyph_leaks``).
-LEFT_SHARE = 0.9
 _TOUCH = 1e-3  # points: a subpath goes on where the previous segment ended
 
 
@@ -233,31 +233,6 @@ def centre(r: pymupdf.Rect) -> pymupdf.Point:
     return pymupdf.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
 
 
-def kept(g: pymupdf.Rect, keep: list[pymupdf.Rect] | tuple) -> bool:
-    """The letter ``g`` belongs to an area left visible: its centre is in one of ``keep``."""
-    c = centre(g)
-    return any(k.contains(c) for k in keep)
-
-
-def left_over(page: pymupdf.Page, rect: pymupdf.Rect) -> list[pymupdf.Rect]:
-    """Filled shapes of any size (``shapes`` without a size limit, plus boxes other than the black
-    ones of the redactions) with at least ``LEFT_SHARE`` of their box inside ``rect``: after a zone
-    is applied, none should be left."""
-    boxes = [s.box for s in shapes(page, max_side=None)]
-    for d in page.get_cdrawings():
-        if d.get("type") in ("f", "fs") and tuple(d.get("fill") or ()) != (0.0, 0.0, 0.0):
-            for points, is_box in _subpaths(d.get("items") or ()):
-                if is_box and points:
-                    xs, ys = [q[0] for q in points], [q[1] for q in points]
-                    boxes.append(pymupdf.Rect(min(xs), min(ys), max(xs), max(ys)))
-    out = []
-    for box in boxes:
-        inter = box & rect
-        if box.get_area() > 0 and not inter.is_empty and inter.get_area() >= LEFT_SHARE * box.get_area():
-            out.append(box)
-    return out
-
-
 def under(rect: pymupdf.Rect, glyphs: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
     """The letters of ``rect``: those whose centre is inside it, or at least ``UNDER_SHARE`` of their
     box. A letter of the next line that a zone only grazes is not one of them."""
@@ -270,25 +245,42 @@ def under(rect: pymupdf.Rect, glyphs: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
     return out
 
 
-def cover(rect: pymupdf.Rect, letters: list[Shape], keep: list[pymupdf.Rect] | tuple = ()) -> list[pymupdf.Rect]:
-    """One small rectangle per letter under ``rect`` (``under``), so that applying the zone removes
-    them whole: an OCR box or a drawn zone a little tighter than a letter would otherwise leave that
-    letter in the file, under the black box. Nothing else is covered.
+def cover(
+    rect: pymupdf.Rect, letters: list[Shape], keep: list[pymupdf.Rect] | tuple = (), centres: np.ndarray | None = None
+) -> list[pymupdf.Rect]:
+    """One small rectangle per letter whose centre is inside ``rect``, so that applying the zone
+    removes it whole: an OCR box or a drawn zone a little tighter than a letter would otherwise leave
+    that letter in the file, under the black box. Nothing else is covered.
 
-    A letter whose centre is in an area of ``keep`` (what the reviewer left visible) belongs to that
-    area: it is not covered, nor a leak. A letter that reaches more than ``COVER_MAX`` beyond the
-    zone, or whose rectangle (grown by its stroke's reach, up to ``COVER_MAX``) would enter a kept
-    area, is not covered: the leak check reports it."""
-    out = []
+    A letter is not covered when its rectangle (grown by its stroke's reach) would reach more than
+    ``COVER_MAX`` beyond the zone or enter an area of ``keep`` (what the reviewer left visible):
+    then it stays, cut by the zone, and ``leftovers.check`` exports the page as an image. A kept
+    area never spares a letter whose centre is in the zone. ``centres``: the centres of
+    ``letters`` (``centres_of``), if already computed."""
+    centres = centres_of(letters) if centres is None else centres
+    if not len(centres):
+        return []
+    inside = (
+        (centres[:, 0] >= rect.x0)
+        & (centres[:, 0] <= rect.x1)
+        & (centres[:, 1] >= rect.y0)
+        & (centres[:, 1] <= rect.y1)
+    )
     limit = rect + (-COVER_MAX, -COVER_MAX, COVER_MAX, COVER_MAX)
-    under_rect = {tuple(g) for g in under(rect, [s.box for s in letters])}
-    for s in letters:
-        g = s.box
-        if tuple(g) not in under_rect or kept(g, keep) or not limit.contains(g):
-            continue
-        grow = min(s.reach, COVER_MAX) + COVER_PAD
-        r = g + (-grow, -grow, grow, grow)
-        if any(r.intersects(k) for k in keep):
+    out = []
+    for k in np.flatnonzero(inside):
+        s = letters[k]
+        grow = s.reach + COVER_PAD
+        r = s.box + (-grow, -grow, grow, grow)
+        if not limit.contains(r) or any(r.intersects(a) for a in keep):
             continue
         out.append(r)
     return out
+
+
+def centres_of(letters: list[Shape]) -> np.ndarray:
+    """The centres of the boxes of ``letters``, one row (x, y) each."""
+    if not letters:
+        return np.zeros((0, 2))
+    boxes = np.array([[s.box.x0, s.box.y0, s.box.x1, s.box.y1] for s in letters], np.float64)
+    return np.column_stack(((boxes[:, 0] + boxes[:, 2]) / 2, (boxes[:, 1] + boxes[:, 3]) / 2))

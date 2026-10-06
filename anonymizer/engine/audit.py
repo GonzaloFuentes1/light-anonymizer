@@ -191,6 +191,12 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
         "letters_covered": [
             {**g, "page_number": g["page"] + 1} for g in (result.grown if result and result.exported else [])
         ],
+        # Decided 2026-10-06: pages exported as one image, because something drawn might have stayed
+        # under a zone, and why.
+        "rasterized_pages": [
+            {"page_number": r["page"] + 1, "reason": r["reason"]}
+            for r in (result.rasterized_pages if result and result.exported else [])
+        ],
         "redactions_applied": len(active),
         # Drawn strokes removed whole although part of them lay outside the zones: the page shows that.
         "strokes_removed_whole": [
@@ -370,6 +376,16 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
         )
         if visible:
             parts.append(_table(["Página", "Queda visible"], [[f.page + 1, f.text or "—"] for f in visible]))
+
+    if result is not None and result.exported and result.rasterized_pages:
+        parts.append("<h3>Páginas exportadas como imagen</h3>")
+        parts.append(
+            "<p>En estas páginas algo dibujado podía seguir en el archivo bajo una zona censurada. Para quitarlo con "
+            "certeza, cada una se exportó como una sola imagen de la página ya censurada (300 dpi): ya no tiene texto "
+            "seleccionable ni dibujos.</p>"
+        )
+        rows = [[r["page"] + 1, r["reason"]] for r in result.rasterized_pages]
+        parts.append(_table(["Página", "Motivo"], rows))
 
     if result is not None and result.strokes_removed_whole:
         parts.append("<h3>Trazos dibujados quitados enteros</h3>")

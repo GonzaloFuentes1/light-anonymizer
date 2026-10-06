@@ -1,21 +1,26 @@
 """Leak check of an exported file, before it is copied to the destination folder.
 
 PDF: the text of every active finding read from the text layer must be gone from the output,
-the text-layer patterns (RUT, e-mail, phone) run again over the output must find nothing, no
-pen stroke may remain under an active zone or cross the edge of a signature or drawn zone
-(``strokes.leaks``), metadata, XMP and attachments must be empty, and no letter drawn as a path
-may be left under an active zone (``glyph_leaks``, D8). Images: no EXIF, XMP, comments or text chunks.
+the text-layer patterns (RUT, e-mail, phone) run again over the output must find nothing, and
+metadata, XMP and attachments must be empty. Images: no EXIF, XMP, comments or text chunks.
 Both: the zone of every active finding must be solid black in the output (``uncovered``), which
-also checks what OCR, faces, QR and the reviewer marked, whose text is not in the text layer.
+also checks what OCR, faces, QR and the reviewer marked, whose text is not in the text layer, and
+every page exported as an image.
+
+Drawings left under a zone (letters drawn as paths, strokes, patterns, shadings) do not block the
+export: decided 2026-10-06, the page is exported as an image instead (``pdf.redact_page``).
+``vector_leaks`` only guards that this happened: it runs the same ``leftovers.check`` over the
+output and should never find anything. Blocks are left for what an image cannot fix: data still
+readable outside the black boxes, and metadata.
 
 What the reviewer chose to keep (removed findings) and the suggestions left unapplied (D12: URLs
 that are not personal; D10: values of the exceptions list) stay visible on purpose and are never
-a leak. Messages are Spanish: they
-are shown to the user.
+a leak. Messages are Spanish: they are shown to the user.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -24,7 +29,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
-from anonymizer.engine import pdf, strokes, vectors
+from anonymizer.engine import leftovers, pdf, strokes
 from anonymizer.engine.common import bbox_of
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import TYPE_LABELS, Finding, Leak
@@ -68,13 +73,11 @@ def pdf_leaks(
             metadata = {k: v for k, v in (doc.metadata or {}).items() if v and k not in ("format", "encryption")}
             xmp = doc.get_xml_metadata()
             attachments = doc.embfile_count()
-            drawn = strokes.leaks(doc, active)
     leaks: list[Leak] = []
     if metadata or xmp:
         leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene metadatos."))
     if attachments:
         leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene archivos adjuntos."))
-    leaks += drawn
     for n, (text, boxes, to_page) in enumerate(layers):
         chars = list(text)
         normalized = normalize_1to1(text)
@@ -160,43 +163,35 @@ def _inner_mask(shape: tuple[int, int], polygon: np.ndarray) -> np.ndarray:
     return cv2.erode(mask, kernel).astype(bool)
 
 
-def glyph_leaks(path: Path, active: list[Finding], kept: list[Finding] | tuple = ()) -> list[Leak]:
-    """Shapes drawn as paths (D8) still in an exported PDF under an active zone.
-
-    The black box hides them, but they are still in the file (MuPDF keeps a shape no rectangle covers
-    whole). Two kinds: a letter under the zone (``vectors.under``, the rule ``pdf.snap_rects``
-    covered letters by on export), unless it belongs to an area left visible (``kept``: its centre
-    is there); and any filled shape, of any size, almost entirely inside the zone
-    (``vectors.left_over``), which the zone alone should have removed.
-    """
-    by_page: dict[int, list[Finding]] = {}
-    for f in active:
-        by_page.setdefault(f.page, []).append(f)
+def vector_leaks(path: Path, active: list[Finding]) -> list[Leak]:
+    """Drawings still under an active zone in an exported PDF (``leftovers.check``, with the same
+    zones as the redaction): a guard that should never fire, since ``pdf.redact_page`` exports such a
+    page as an image. Each page is looked at unrotated, only in memory."""
     leaks: list[Leak] = []
     with PDF_LOCK:
         with pymupdf.open(path) as doc:
-            for n in sorted(by_page):
-                if not 0 <= n < doc.page_count:
-                    continue
+            to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
+            for n, items in sorted(strokes.zones_by_page(active, to_page).items()):
                 page = doc[n]
-                letters = vectors.letters(page)
-                to_page = pymupdf.Matrix(page.derotation_matrix)
-                keep = [(pymupdf.Rect(*bbox_of(f.polygon)) * to_page).normalize() for f in kept if f.page == n]
-                for f in by_page[n]:
-                    zone = (pymupdf.Rect(*bbox_of(f.polygon)) * to_page).normalize()
-                    left = [g for g in vectors.under(zone, letters) if not vectors.kept(g, keep)]
-                    if left or vectors.left_over(page, zone):
-                        label = TYPE_LABELS.get(f.type, f.type)
-                        leaks.append(
-                            Leak(
-                                page=n,
-                                type=f.type,
-                                message=f"Una zona marcada en la página {n + 1} ({label}) deja en el archivo "
-                                "letras o formas dibujadas como trazos que no se pudieron quitar enteras. "
-                                "Agranda la zona para que las cubra o revisa esa parte del documento.",
-                                finding_id=f.id,
-                            )
+                rotation = page.rotation
+                if rotation:
+                    page.set_rotation(0)
+                try:
+                    found = leftovers.check(page, [r for r, _ in items], time.monotonic() + 2 * leftovers.SECONDS)
+                finally:
+                    if rotation:
+                        page.set_rotation(rotation)
+                if found:
+                    f = items[0][1]
+                    leaks.append(
+                        Leak(
+                            page=n,
+                            type=f.type,
+                            message=f"En la página {n + 1} quedó en el archivo, bajo una zona marcada, algo dibujado "
+                            f"que no se quitó: {leftovers.reasons_text(found)}.",
+                            finding_id=f.id,
                         )
+                    )
     return leaks
 
 

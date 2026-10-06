@@ -1,13 +1,14 @@
-"""Stroked vector paths under redaction zones: which ones leave the file, removing them, and the leak check.
+"""Stroked vector paths under redaction zones: which ones leave the file, and removing them.
 
 MuPDF's redaction removes the *filled* paths a zone covers but keeps every *stroked* one: a
 signature drawn with a pen tool stayed in the file under the black box. Its option to remove every
 path a zone touches also removes page frames, table shading and background bands. Stroked paths
 are therefore handled here, apart from MuPDF's redaction.
 
-The rule is that of the whole tool: recall over precision. The stroke logic stays silent only when
-it is certain that a stroke is not under an applied zone, or that it left the file; whenever a
-classification would be a guess, the export is blocked with a message that says what to do.
+The stroke logic removes a stroke only when it is certain that the stroke is under an applied zone
+and that removing it changes nothing else. Whatever it cannot remove with certainty stays, and
+``leftovers.check`` then finds it under the zone: that page is exported as an image (decided
+2026-10-06), which removes it for certain.
 
 - ``plan`` judges every stroked path by its box, cut to the clip that shows it (a path clipped
   away entirely is judged by where it is drawn: its data is still in the file). A path whose box
@@ -15,10 +16,8 @@ classification would be a guess, the export is blocked with a message that says 
   layout) stay, and so do closed convex outlines (rings, ovals, rounded frames: stamps, frames)
   that lie mostly outside the zone. Any other curve or polyline that crosses the edge of a zone
   where drawings are the data (a signature, a zone drawn by the reviewer) leaves whole when at
-  least 60 % of its visible length lies inside the zones, and blocks the export from 20 %: the
-  reviewer must enlarge the zone. Any other stroke with at least 80 % under the zones blocks too.
-  Nothing is exempted for being a pattern's cell or a glyph: ``get_drawings`` lists them as paths,
-  and what the redaction cannot remove (MuPDF removes a pattern fill or a glyph it covers) blocks.
+  least 60 % of its visible length lies inside the zones. Nothing is exempted for being a pattern's
+  cell or a glyph: ``get_drawings`` lists them as paths.
 - ``remove`` takes them out of the page's content with MuPDF's content filter. The filter only
   reports, in content order, the box of each painted path (grown for its stroke), so its calls are
   lined up with ``page.get_drawings(extended=True)``, clips included (a shape filled with a pattern
@@ -26,15 +25,13 @@ classification would be a guess, the export is blocked with a message that says 
   path are dropped. The filter never enters Type3 glyph procedures or pattern cells. Then the page's
   paths and text, and what the filter painted, are compared with what was expected; on any other
   difference the page is put back as it was.
-- ``leaks`` runs ``plan`` again over the exported file with the same zones and rules: a stroke that
-  should have left and is still there, or one a zone must cover entirely, blocks the export.
 
 Each page has a time budget (``REMOVE_SECONDS``) for the whole stage; past it nothing is removed
-and the export is blocked. Coordinates: PyMuPDF's unrotated page space (that of ``get_drawings``
-and ``add_redact_annot``); the filter's boxes are in PDF user space (``~page.transformation_matrix``).
-This module uses private PyMuPDF bindings (``_make_PdfFilterOptions``, ``_as_pdf_page``) and
-MuPDF's culler callback: ``self_test`` checks at startup that they still behave as expected, and
-PyMuPDF is pinned below 1.29.
+and the page is exported as an image. Coordinates: PyMuPDF's unrotated page space (that of
+``get_drawings`` and ``add_redact_annot``); the filter's boxes are in PDF user space
+(``~page.transformation_matrix``). This module uses private PyMuPDF bindings
+(``_make_PdfFilterOptions``, ``_as_pdf_page``) and MuPDF's culler callback: ``self_test`` checks at
+startup that they still behave as expected, and PyMuPDF is pinned below 1.29.
 """
 
 from __future__ import annotations
@@ -50,7 +47,7 @@ import numpy as np
 import pymupdf
 
 from anonymizer.engine.common import bbox_of
-from anonymizer.engine.model import TYPE_LABELS, Finding, Leak
+from anonymizer.engine.model import Finding
 from anonymizer.engine.signatures import closed_convex, path_shape
 
 log = logging.getLogger(__name__)
@@ -74,11 +71,9 @@ _CLIPPING = (mupdf.FZ_CULL_CLIP_PATH_FILL, mupdf.FZ_CULL_CLIP_PATH_STROKE, mupdf
 # Zones whose content may be a drawing: a stroke that crosses their edge matters.
 DRAWN_TYPES = ("signature", "manual")
 MOSTLY = 0.6  # share of a stroke's visible length under a drawing zone for it to go whole
-CROSSING = 0.2  # share under a drawing zone from which a crossing stroke blocks the export
-UNDER = 0.8  # share under any zone from which any other stroke blocks the export
 AROUND = 0.5  # a closed convex outline with less than this under the zones is a frame or stamp around it
 MARGIN = 1.0  # points: a path this close to a zone's edge counts as inside it
-REMOVE_SECONDS = 15.0  # time budget of the stroke stage of one page (the export is blocked past it)
+REMOVE_SECONDS = 15.0  # time budget of the stroke stage of one page (the page is exported as an image past it)
 _TOLERANCE = 0.5  # points: the filter's boxes and get_drawings' rectangles agree within this
 
 Box = tuple[float, float, float, float]
@@ -104,7 +99,6 @@ class Plan(NamedTuple):
     paths: list[Entry]
     remove: set[int]  # paths that leave the file
     whole: set[int]  # among them, those removed whole although part of them lies outside the zones
-    enlarge: list[tuple[int, int]]  # (path, zone index): the zone must cover the whole stroke
     clips: list[tuple[int, Box]]  # (seq, scissor) of every clip of the listing
 
 
@@ -166,12 +160,15 @@ def _touches(r: Box, zone: pymupdf.Rect) -> bool:
     return r[0] < zone.x1 and zone.x0 < r[2] and r[1] < zone.y1 and zone.y0 < r[3]
 
 
-def paths(page: pymupdf.Page, deadline: float | None = None) -> tuple[list[Entry], list[tuple[int, Box]]]:
-    """The page's paths (``get_drawings``, in content order) and its clips, as (seq, scissor)."""
+def paths(
+    page: pymupdf.Page, deadline: float | None = None, drawings: list[dict] | None = None
+) -> tuple[list[Entry], list[tuple[int, Box]]]:
+    """The page's paths (``get_drawings``, in content order) and its clips, as (seq, scissor).
+    ``drawings``: the page's ``get_drawings(extended=True)``, if already listed."""
     out: list[Entry] = []
     clips: list[tuple[int, Box]] = []
     stack: list[tuple[int, Box | None, int]] = []  # (level, scissor cut to the outer clips, seq)
-    for seq, d in enumerate(page.get_drawings(extended=True)):
+    for seq, d in enumerate(page.get_drawings(extended=True) if drawings is None else drawings):
         if seq % 1024 == 0:
             _check(deadline)
         kind = d.get("type") or ""
@@ -241,7 +238,7 @@ def _share_inside(items, visible: Box, zones: list[pymupdf.Rect]) -> float:
 def plan(
     page: pymupdf.Page, zones: list[pymupdf.Rect], drawn: list[pymupdf.Rect] = (), deadline: float | None = None
 ) -> Plan:
-    """Which stroked paths of the page leave the file, and which ones the zones must cover entirely.
+    """Which stroked paths of the page leave the file.
 
     ``drawn``: the zones (among ``zones``) whose content may be a drawing (signatures, zones drawn
     by the reviewer). Raises ``TimeoutError`` past ``deadline`` (monotonic).
@@ -249,7 +246,6 @@ def plan(
     found, clips = paths(page, deadline)
     remove: set[int] = set()
     whole: set[int] = set()
-    enlarge: list[tuple[int, int]] = []
     zones = list(zones)
     drawing = [any(z == d for d in drawn) for z in zones]
     for i, (d, box, extent, _, _, _) in enumerate(found):
@@ -270,18 +266,10 @@ def plan(
         convex = closed_convex(items)
         if convex and share < AROUND:
             continue  # a frame or a stamp around the zone
-        drawing_hit = [k for k in hit if drawing[k]]
-        if drawing_hit and (convex or _pen_shape(items)):
-            if share >= MOSTLY:
-                remove.add(i)
-                whole.add(i)
-                continue
-            if share >= CROSSING:
-                enlarge.append((i, drawing_hit[0]))
-                continue
-        if share >= UNDER:
-            enlarge.append((i, hit[0]))
-    return Plan(found, remove, whole, enlarge, clips)
+        if share >= MOSTLY and any(drawing[k] for k in hit) and (convex or _pen_shape(items)):
+            remove.add(i)
+            whole.add(i)
+    return Plan(found, remove, whole, clips)
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +509,11 @@ def _paths_and_text(page: pymupdf.Page, found: list[Entry] | None = None) -> tup
 
 
 def remove(
-    page: pymupdf.Page, zones: list[pymupdf.Rect], drawn: list[pymupdf.Rect] = (), whole: list[Box] | None = None
+    page: pymupdf.Page,
+    zones: list[pymupdf.Rect],
+    drawn: list[pymupdf.Rect] = (),
+    whole: list[Box] | None = None,
+    status: dict | None = None,
 ) -> int:
     """Removes from the page's content the stroked paths ``plan`` says must leave. Returns how many.
 
@@ -529,7 +521,8 @@ def remove(
     although part of it lay outside the zones (it changes what the page shows there). When the
     result is not exactly the page minus those paths (same other paths and text, the filter painting
     the same things), or the stage takes longer than ``REMOVE_SECONDS``, the page is left as it was
-    and 0 is returned: the leak check then finds the paths still there and blocks the export.
+    and 0 is returned: ``leftovers.check`` then finds the paths still there and the page is exported
+    as an image. ``status``: receives ``{"timeout": True}`` when the stage ran out of time.
     """
     deadline = time.monotonic() + REMOVE_SECONDS
     try:
@@ -542,6 +535,8 @@ def remove(
         match = _match(probe.calls, planned.paths, to_user, deadline, planned.clips)
     except TimeoutError:
         log.warning("page %d: the stroke stage took too long; nothing removed", page.number)
+        if status is not None:
+            status["timeout"] = True
         return 0
     drop = {n: k for n, k in match.items() if k in planned.remove and probe.calls[n][0] in _PATH_KINDS}
     # A shape painted with a pattern, or a path get_drawings does not list, drawn entirely inside a
@@ -645,89 +640,3 @@ def self_test() -> bool:
     except Exception:  # noqa: BLE001 - any failure means the filter cannot be trusted
         log.exception("the stroke removal self-test failed")
         return False
-
-
-# ---------------------------------------------------------------------------
-# Leak check
-# ---------------------------------------------------------------------------
-
-
-def _label(f: Finding) -> str:
-    return "Zona dibujada" if f.type == "manual" else TYPE_LABELS.get(f.type, f.type)
-
-
-def leaks(doc: pymupdf.Document, active: list[Finding]) -> list[Leak]:
-    """Strokes still in an exported PDF that should have left with the zones of ``active``, or that
-    the zones must cover entirely (the same rectangles and rules as the redaction), and painted paths
-    ``get_drawings`` does not list under a zone. Call with ``PDF_LOCK`` held; each page is looked at
-    unrotated, like in the redaction (only in memory)."""
-    out: list[Leak] = []
-    to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
-    for n, items in sorted(zones_by_page(active, to_page).items()):
-        page = doc[n]
-        rotation = page.rotation
-        if rotation:
-            page.set_rotation(0)
-        try:
-            out += _page_leaks(page, n, items)
-        finally:
-            if rotation:
-                page.set_rotation(rotation)
-    return out
-
-
-def _page_leaks(page: pymupdf.Page, n: int, items: list[tuple[pymupdf.Rect, Finding]]) -> list[Leak]:
-    zones = [r for r, _ in items]
-    deadline = time.monotonic() + REMOVE_SECONDS
-    try:
-        planned = plan(page, zones, [r for r, f in items if f.type in DRAWN_TYPES], deadline)
-        probe = _Culler()
-        _filter(page, probe, update=False)
-        match = _match(probe.calls, planned.paths, ~page.transformation_matrix, deadline, planned.clips)
-    except TimeoutError:
-        f = items[0][1]
-        message = (
-            f"La revisión de los trazos dibujados de la página {n + 1} no terminó a tiempo (la página tiene demasiados "
-            "trazos). No publiques este archivo: publica esa página escaneada o impresa como imagen."
-        )
-        return [Leak(page=n, type=f.type, message=message, finding_id=f.id)]
-    out: list[Leak] = []
-    reported: set[tuple[str, str]] = set()
-
-    def report(f: Finding, why: str, message: str) -> None:
-        if (f.id, why) not in reported:
-            reported.add((f.id, why))
-            out.append(Leak(page=n, type=f.type, message=message, finding_id=f.id))
-
-    for _, box, _ in _unlisted(page, probe.calls, match, zones):
-        holder = next((f for r, f in items if _touches(box, r)), items[0][1])
-        report(
-            holder,
-            "unlisted",
-            f"{_label(holder)}: en la página {n + 1} queda bajo la zona un trazo o relleno con trama que no se puede "
-            "revisar ni quitar por partes. Agranda la zona para cubrirlo entero o publica esa página escaneada o "
-            "impresa como imagen.",
-        )
-    for k in sorted(planned.remove):
-        d, box = planned.paths[k].d, planned.paths[k].box
-        if _is_layout(d.get("items") or []):  # frames, rules and the black boxes themselves
-            continue
-        holder = next((f for r, f in items if _inside(box, r, MARGIN)), None) or next(
-            (f for r, f in items if _touches(box, r)), items[0][1]
-        )
-        report(
-            holder,
-            "kept",
-            f"{_label(holder)}: un trazo dibujado sigue en el archivo bajo la zona de la página {n + 1} y no se pudo "
-            "quitar sin alterar el resto de la página. No publiques este archivo: publica esa página escaneada o "
-            "impresa como imagen.",
-        )
-    for _, z in planned.enlarge:
-        f = items[z][1]
-        report(
-            f,
-            "enlarge",
-            f"{_label(f)}: un trazo dibujado cruza el borde de la zona de la página {n + 1} y la parte tapada sigue en "
-            "el archivo; agranda la zona para cubrirlo entero.",
-        )
-    return out

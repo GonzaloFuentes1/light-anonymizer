@@ -1,6 +1,7 @@
 """Stroked vector paths under redaction zones (``anonymizer.engine.strokes``): only the paths drawn
-under a zone leave the file, nothing around them; what cannot be removed safely blocks the export.
-Invented documents only."""
+under a zone leave the file, nothing around them; what cannot be removed safely stays cut by the
+zone, and the page is then exported as an image (decided 2026-10-06), never silently left in the
+file. Invented documents only."""
 
 from __future__ import annotations
 
@@ -54,6 +55,17 @@ def drawings(path: Path, n: int = 0) -> list[tuple[str, str, tuple]]:
 
 def curves(path: Path) -> list:
     return [d for d in drawings(path) if "c" in d[1]]
+
+
+def as_image(result, why: str = "") -> bool:
+    """The export went through with page 1 exported as one image (no text, no drawing left),
+    for a reason that contains ``why``."""
+    if not result.exported or [r["page"] for r in result.rasterized_pages] != [0]:
+        return False
+    with pymupdf.open(result.output_path) as doc:
+        page = doc[0]
+        empty = not page.get_drawings() and not page.get_text().strip() and len(page.get_images()) == 1
+    return empty and why in result.rasterized_pages[0]["reason"]
 
 
 def redact(tmp_path: Path, build, zone, drawn: bool = False, rotation: int = 0, crop=None) -> tuple[list, list]:
@@ -190,8 +202,10 @@ def test_a_stroke_mostly_under_a_signature_zone_goes_whole(tmp_path):
 
     _, after = redact(tmp_path, build, (298, 498, 430, 542), drawn=True)  # the last 20 pt stick out
     assert not [d for d in after if "c" in d[1]]
-    _, kept = redact(tmp_path, build, (298, 498, 430, 542))  # a zone of text data: only what is inside goes
-    assert [d for d in kept if "c" in d[1]]
+    # A zone of text data: the stroke is not taken whole, so it stays cut by the zone and the page
+    # is exported as an image (no drawing left at all).
+    _, kept = redact(tmp_path, build, (298, 498, 430, 542))
+    assert kept == []
 
 
 def _engine_file(path: Path, zone: pymupdf.Rect) -> tuple[RealEngine, AnalyzedFile]:
@@ -205,18 +219,17 @@ def _engine_file(path: Path, zone: pymupdf.Rect) -> tuple[RealEngine, AnalyzedFi
     return engine, file
 
 
-def test_a_drawn_zone_over_half_a_signature_blocks_the_export(tmp_path):
+def test_a_drawn_zone_over_half_a_signature_exports_the_page_as_an_image(tmp_path):
     doc = pymupdf.open()
     signature(new_page(doc))
     doc.save(tmp_path / "a.pdf")
     doc.close()
     engine, file = _engine_file(tmp_path / "a.pdf", pymupdf.Rect(290, 490, 370, 550))
     result = engine.export(file, str(tmp_path / "out"))
-    assert not result.exported
-    assert any("agranda la zona" in leak.message and "página 1" in leak.message for leak in result.leaks)
+    assert as_image(result, "trazo")
     file.findings[-1].polygon = [[290, 490], [460, 490], [460, 550], [290, 550]]  # the whole signature
     result = engine.export(file, str(tmp_path / "out2"))
-    assert result.exported, [leak.message for leak in result.leaks]
+    assert result.exported and not result.rasterized_pages, [leak.message for leak in result.leaks]
     assert not curves(Path(result.output_path))
 
 
@@ -265,7 +278,7 @@ def test_a_tight_zone_on_a_filled_logo_exports(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_a_wrong_removal_is_undone_and_blocks_the_export(tmp_path, monkeypatch):
+def test_a_wrong_removal_is_undone_and_the_page_exported_as_an_image(tmp_path, monkeypatch):
     doc = pymupdf.open()
     page = new_page(doc)
     signature(page)
@@ -285,8 +298,7 @@ def test_a_wrong_removal_is_undone_and_blocks_the_export(tmp_path, monkeypatch):
         assert [(d["type"], d["rect"]) for d in page.get_drawings()] == before  # put back as it was
     engine, file = _engine_file(tmp_path / "a.pdf", pymupdf.Rect(298, 498, 452, 542))
     result = engine.export(file, str(tmp_path / "out"))
-    assert not result.exported
-    assert any("no se pudo quitar" in leak.message for leak in result.leaks)
+    assert as_image(result)
 
 
 def test_the_content_filter_still_works():
@@ -397,7 +409,9 @@ def test_a_pattern_cell_under_a_zone_is_never_exempt(tmp_path):
 
 
 @pytest.mark.parametrize("ring", [False, True])
-def test_a_rounded_frame_or_a_ring_crossing_a_signature_zone_does_not_block(tmp_path, ring):
+def test_a_rounded_frame_or_a_ring_crossing_a_signature_zone_makes_the_page_an_image(tmp_path, ring):
+    # It is not removed (a stamp's ring, a frame: mostly outside the zone), so the part under the
+    # zone stays: the page is exported as an image, with the frame still visible around the box.
     def frame(doc, page):
         if ring:
             page.draw_circle((440, 520), 30, color=(0.1, 0.1, 0.6), width=1.2)  # a stamp's ring
@@ -407,36 +421,37 @@ def test_a_rounded_frame_or_a_ring_crossing_a_signature_zone_does_not_block(tmp_
     result, _ = export_with(
         content_pdf(tmp_path / "a.pdf", sig_ops(300, 300), frame), [("signature", SIG_ZONE)], tmp_path
     )
-    assert result.exported, [leak.message for leak in result.leaks]
-    assert [d for d in curves(Path(result.output_path)) if d[2] != (300.0, 502.0, 450.0, 542.0)]  # the frame stays
+    assert as_image(result, "trazo"), [leak.message for leak in result.leaks]
+    with pymupdf.open(result.output_path) as doc:
+        pix = doc[0].get_pixmap(clip=pymupdf.Rect(462, 515, 474, 525) if ring else pymupdf.Rect(455, 520, 475, 530))
+    assert min(pix.samples) < 128  # the frame still shows, outside the zone
 
 
-def test_a_curve_crossing_a_drawn_zone_blocks_even_a_chart(tmp_path):
+def test_a_curve_crossing_a_zone_makes_the_page_an_image_even_a_chart(tmp_path):
     # Whether an open curve under a reviewer's zone is a chart or a signature's flourish is a guess:
-    # it blocks (a false block is acceptable, a silent leak is not). Under a text zone it does not.
+    # it is not removed, and the part under the zone goes with the page exported as an image.
     body = "0.1 0.3 0.8 RG 1.2 w 100 300 m 200 330 300 350 400 360 c 450 365 500 368 550 370 c S\n"
     path = content_pdf(tmp_path / "a.pdf", body)
-    result, _ = export_with(path, [("manual", pymupdf.Rect(90, 470, 250, 560))], tmp_path)
-    assert not result.exported and any("agranda la zona" in leak.message for leak in result.leaks)
-    result, _ = export_with(path, [("name", pymupdf.Rect(90, 470, 250, 560))], tmp_path)
-    assert result.exported, [leak.message for leak in result.leaks]
+    for kind in ("manual", "name"):
+        result, _ = export_with(path, [(kind, pymupdf.Rect(90, 470, 250, 560))], tmp_path)
+        assert as_image(result, "trazo"), [leak.message for leak in result.leaks]
 
 
-def test_a_text_zone_over_most_of_a_stroke_blocks(tmp_path):
+def test_a_text_zone_over_most_of_a_stroke_makes_the_page_an_image(tmp_path):
     path = content_pdf(tmp_path / "a.pdf", sig_ops(300, 300))
     result, _ = export_with(path, [("name", pymupdf.Rect(295, 495, 420, 547))], tmp_path)  # 80 % of it
-    assert not result.exported and any("agranda la zona" in leak.message for leak in result.leaks)
+    assert as_image(result, "trazo"), [leak.message for leak in result.leaks]
     result, _ = export_with(path, [("name", pymupdf.Rect(300, 502, 450, 542))], tmp_path)  # its exact box
     assert result.exported, [leak.message for leak in result.leaks]
     assert not curves(Path(result.output_path))
 
 
-def test_a_failed_removal_of_a_checkmark_is_reported(tmp_path, monkeypatch):
+def test_a_failed_removal_of_a_checkmark_makes_the_page_an_image(tmp_path, monkeypatch):
     body = "0 0 0 RG 1.5 w 310 330 m 320 315 l 345 345 l S\n"  # a hand-drawn tick: two straight segments
     path = content_pdf(tmp_path / "a.pdf", body)
-    monkeypatch.setattr(strokes, "remove", lambda page, zones, drawn=(), whole=None: 0)
+    monkeypatch.setattr(strokes, "remove", lambda page, zones, drawn=(), whole=None, status=None: 0)
     result, _ = export_with(path, [("manual", pymupdf.Rect(300, 495, 355, 547))], tmp_path)
-    assert not result.exported and any("no se pudo quitar" in leak.message for leak in result.leaks)
+    assert as_image(result, "trazo"), [leak.message for leak in result.leaks]
 
 
 @pytest.mark.parametrize("miter, width", [(50, 0.5), (100, 0.25)])
@@ -465,19 +480,19 @@ def test_a_stroke_removed_whole_is_recorded(tmp_path):
         assert "se quitó entero" in "".join(page.get_text() for page in doc)
 
 
-def test_a_pattern_partly_under_a_zone_blocks_and_covered_exports(tmp_path):
+def test_a_pattern_partly_under_a_zone_makes_the_page_an_image_and_covered_exports(tmp_path):
     # A fill of one tile has its cell listed at the page's coordinates, inside the filled area. The
-    # fills only partly under the zone stay in the file, and with them the cell: that blocks. Fills
-    # entirely under the zone are removed with what they paint.
+    # fills only partly under the zone stay in the file, and with them the cell: the page is exported
+    # as an image. Fills entirely under the zone are removed with what they paint.
     fills = " ".join(f"{300 + 4 * i} 300 4 4 re f" for i in range(10))
     path = content_pdf(tmp_path / "a.pdf", f"/Pattern cs /P1 scn {fills}\n", _pattern)
     zone = pymupdf.Rect(302, 539, 338, 541)  # more than 1 pt short of the fills: MuPDF and we keep them
     with pymupdf.open(path) as doc:
         assert [d for d in doc[0].get_drawings() if d["rect"] in zone + (-1, -1, 1, 1)]
     result, _ = export_with(path, [("name", zone)], tmp_path)
-    assert not result.exported and any("trama" in leak.message for leak in result.leaks)
+    assert as_image(result), [leak.message for leak in result.leaks]
     result, _ = export_with(path, [("name", pymupdf.Rect(298, 536, 342, 544))], tmp_path)
-    assert result.exported, [leak.message for leak in result.leaks]
+    assert result.exported and not result.rasterized_pages, [leak.message for leak in result.leaks]
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +607,7 @@ def _name_and_flourish() -> tuple[str, str]:
         ("body_40", pymupdf.Rect(292, 470, 365, 535)),
     ],
 )
-def test_a_signature_stroke_crossing_a_drawn_zone_blocks(tmp_path, case, zone):
+def test_a_signature_stroke_crossing_a_drawn_zone_makes_the_page_an_image(tmp_path, case, zone):
     body, flourish = _name_and_flourish()
     if case.startswith("flourish"):
         ops = body + flourish
@@ -605,7 +620,7 @@ def test_a_signature_stroke_crossing_a_drawn_zone_blocks(tmp_path, case, zone):
     else:
         ops = body
     result, _ = export_with(content_pdf(tmp_path / f"{case}.pdf", ops), [("manual", zone)], tmp_path)
-    assert not result.exported and any("agranda la zona" in leak.message for leak in result.leaks)
+    assert as_image(result, "trazo"), [leak.message for leak in result.leaks]
 
 
 def test_two_copies_at_the_same_place_both_leave(tmp_path):
@@ -646,11 +661,11 @@ def test_crowds_of_paths_on_one_center_stay_within_the_time_budget(tmp_path):
     assert _not_silent(result)
 
 
-def test_a_stage_over_its_time_budget_blocks(tmp_path, monkeypatch):
+def test_a_stage_over_its_time_budget_makes_the_page_an_image(tmp_path, monkeypatch):
     path = content_pdf(tmp_path / "a.pdf", sig_ops(300, 300))
     monkeypatch.setattr(strokes, "REMOVE_SECONDS", -1.0)  # every budget is already spent
     result, _ = export_with(path, [("signature", SIG_ZONE)], tmp_path)
-    assert not result.exported and any("tiempo" in leak.message for leak in result.leaks)
+    assert as_image(result, "tiempo"), [leak.message for leak in result.leaks]
 
 
 @pytest.mark.parametrize("cell", [b"0 0 0.5 rg 0 0 4 4 re f", b"0 0 0.5 RG 0.5 w 0 2 m 1 3.5 3 0.5 4 2 c S"])
@@ -661,7 +676,7 @@ def test_a_signature_stroked_with_a_pattern_is_never_silent(tmp_path, cell):
         tmp_path / "ps.pdf", sig_ops(300, 300, color="/Pattern CS /P1 SCN"), lambda d, p: _add_pattern(d, p, cell)
     )
     result, _ = export_with(path, [("signature", SIG_ZONE)], tmp_path)
-    assert not result.exported and any("trama" in leak.message for leak in result.leaks)
+    assert as_image(result, "trama"), [leak.message for leak in result.leaks]
     # Inside a zone wide enough for its painted box, it is removed.
     result, _ = export_with(path, [("signature", pymupdf.Rect(270, 470, 480, 575))], tmp_path)
     assert result.exported, [leak.message for leak in result.leaks]

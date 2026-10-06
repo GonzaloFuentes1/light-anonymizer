@@ -935,3 +935,56 @@ def test_redacted_route_equals_export_and_writes_nothing(tmp_path, monkeypatch):
         client.post("/api/export", json={"dest_dir": str(dest), "audit_pdf": False, "audit_json": False})
         out = AnalyzedFile(id="o", name="informe.pdf", path=str(dest / "informe.pdf"), kind="pdf")
         assert np.array_equal(_pixels(after), _pixels(RealEngine().render_page(out, 0, 1.0)))
+
+
+def _disc_pdf(path: Path, rotation: int = 0) -> Path:
+    """A text page with a filled disc: a zone over half of it leaves the rest of its outline under
+    the zone, so the page is exported as an image (decided 2026-10-06)."""
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "Texto neutro de relleno que sigue visible.", fontsize=11)
+        page.draw_circle((200, 400), 30, color=None, fill=(0.2, 0.3, 0.7))
+        page.set_cropbox(pymupdf.Rect(10, 20, 585, 830))
+        if rotation:
+            page.set_rotation(rotation)
+        doc.save(path)
+    return path
+
+
+@pytest.mark.parametrize("rotation", [0, 90])
+@pytest.mark.parametrize("zoom", [1.0, 1.9])
+def test_after_equals_export_page_exported_as_an_image(tmp_path, rotation, zoom):
+    path = _disc_pdf(tmp_path / "d.pdf", rotation)
+    with pymupdf.open(path) as doc:
+        zone = (pymupdf.Rect(150, 360, 200, 440) * doc[0].rotation_matrix).normalize()
+    engine = RealEngine()
+    file = _file(path, "pdf", [_manual(0, *zone)])
+    info: dict = {}
+    engine.render_result(file, 0, zoom, list(file.findings), info=info)
+    assert info["as_image"] and info["reason"]
+    _assert_parity(engine, file, 0, zoom, tmp_path)
+
+
+def test_redacted_route_says_when_a_page_will_be_an_image(tmp_path):
+    from urllib.parse import unquote
+
+    from anonymizer.api.server import create_app
+    from anonymizer.engine import leftovers
+    from tests.live_client import LiveClient
+    from tests.test_api import TOKEN, upload, wait_status
+
+    app = create_app(RealEngine(), TOKEN)
+    with LiveClient(app) as client:
+        client.headers["X-Session-Token"] = TOKEN
+        file_id = upload(client, "disco.pdf", _disc_pdf(tmp_path / "d.pdf").read_bytes())
+        client.post("/api/process", json={"file_ids": [file_id]})
+        assert wait_status(client, file_id)["status"] == "ready"
+        plain = client.get(f"/api/files/{file_id}/pages/0.png?redacted=true")
+        assert plain.status_code == 200 and "x-page-as-image" not in plain.headers
+        polygon = common.rect_polygon(140, 340, 190, 420)  # over half the disc (view space, cropped page)
+        assert client.post(f"/api/files/{file_id}/findings", json={"page": 0, "polygon": polygon}).status_code < 300
+        after = client.get(f"/api/files/{file_id}/pages/0.png?redacted=true")
+        assert after.headers["x-page-as-image"] == "1"
+        assert unquote(after.headers["x-page-as-image-reason"]) == leftovers.REASONS["shape"]
+        before = client.get(f"/api/files/{file_id}/pages/0.png")
+        assert "x-page-as-image" not in before.headers

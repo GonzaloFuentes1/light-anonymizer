@@ -135,6 +135,9 @@ class ExportResult:
     # D8: per finding, the small rectangles (view space) added to cover whole the letters drawn as
     # paths under its zone: {"finding_id", "page", "rects": [[x0, y0, x1, y1], ...]}.
     grown: list[dict] = field(default_factory=list)
+    # Pages exported as one image because something drawn might have stayed under a zone (decided
+    # 2026-10-06): {"page": 0-based, "reason": Spanish}.
+    rasterized_pages: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

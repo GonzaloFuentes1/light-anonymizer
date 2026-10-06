@@ -9,6 +9,8 @@ space with ``page.rotation_matrix`` for the findings.
 from __future__ import annotations
 
 import hashlib
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,7 +18,7 @@ from typing import Any
 import numpy as np
 import pymupdf
 
-from anonymizer.engine import context, faces, raster, signatures, strokes, vectors
+from anonymizer.engine import context, faces, leftovers, raster, signatures, strokes, vectors
 from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, bbox_of, stage, waiting_for
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import DetectionOptions
@@ -38,6 +40,16 @@ from anonymizer.engine.text import (
 _CATALOG_KEYS = ("Names", "OpenAction", "AA", "AcroForm", "OCProperties", "Outlines", "Metadata", "PageLabels",
                  "StructTreeRoot", "MarkInfo", "PieceInfo")  # fmt: skip
 _PAGE_KEYS = ("AA", "PieceInfo", "Thumb", "Metadata")
+# A page exported as an image (``rasterize``) loses these too: they describe content it no longer has.
+_IMAGE_PAGE_KEYS = ("Annots", "Group", "StructParents", "Tabs", "B", "Trans", "VP", "BoxColorInfo", "SeparationInfo")
+RASTER_DPI = 300  # a page exported as an image
+RASTER_MAX_SIDE = 6000  # pixels: the longest side of that image, for huge pages
+JPEG_QUALITY = 90
+# Lossless (Flate) unless it is this many times larger than JPEG (measured at 300 dpi: a text page
+# 0.38, text with a colour photo 1.44, a scanned page 3.4).
+PNG_MAX_RATIO = 1.5
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -616,10 +628,13 @@ def snap_rects(
     """The rectangles that applying ``rects`` (unrotated page space) on ``page`` takes: for each zone,
     the zone itself and one small rectangle per letter drawn as a path under it (D8,
     ``vectors.cover``), since MuPDF removes such a letter only when one rectangle covers all of it.
-    ``keep``: areas the reviewer left visible; a letter that belongs to one is not taken, and no
-    added rectangle enters one. Call with ``PDF_LOCK`` held."""
+    ``keep``: areas the reviewer left visible; no added rectangle enters one. The page's shapes are
+    listed once for all the zones. Call with ``PDF_LOCK`` held."""
     letters = vectors.shapes(page) if rects else []
-    return [[r, *vectors.cover(r, letters, keep)] if letters else [r] for r in rects]
+    if not letters:
+        return [[r] for r in rects]
+    centres = vectors.centres_of(letters)
+    return [[r, *vectors.cover(r, letters, keep, centres)] for r in rects]
 
 
 def apply_page_zones(
@@ -666,6 +681,59 @@ class PageOutcome:
     grown: list[list[pymupdf.Rect]] = field(default_factory=list)
     # The drawn extent of each stroke removed whole although part of it lay outside the zones.
     strokes_removed_whole: list[pymupdf.Rect] = field(default_factory=list)
+    # Why the page was exported as an image (keys of ``leftovers.REASONS``); empty when it was not.
+    reasons: list[str] = field(default_factory=list)
+    # The page as an image (``rasterize``): format, size in bytes, width and height in pixels, seconds.
+    image: dict | None = None
+
+    @property
+    def rasterized(self) -> bool:
+        return self.image is not None
+
+    @property
+    def reason(self) -> str:
+        """Why it was exported as an image, in Spanish (empty when it was not)."""
+        return leftovers.reasons_text(self.reasons)
+
+
+def _encode(pix: pymupdf.Pixmap) -> tuple[bytes, str]:
+    """The pixels of a page as PNG (lossless) or JPEG, whichever ``PNG_MAX_RATIO`` picks; gray
+    when every pixel is gray."""
+    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)
+    if pix.n == 3 and np.array_equal(a[:, :, 0], a[:, :, 1]) and np.array_equal(a[:, :, 1], a[:, :, 2]):
+        pix = pymupdf.Pixmap(pymupdf.csGRAY, pix)
+    png = pix.tobytes("png")
+    jpeg = pix.tobytes("jpg", jpg_quality=JPEG_QUALITY)
+    return (png, "png") if len(png) <= PNG_MAX_RATIO * len(jpeg) else (jpeg, "jpeg")
+
+
+def rasterize(page: pymupdf.Page) -> dict:
+    """Replaces everything ``page`` (unrotated) holds with one image of it as it shows now, black
+    boxes included, at ``RASTER_DPI`` (the longest side at most ``RASTER_MAX_SIDE``): no text
+    layer, no vector content, no annotation, no hidden layer is left; the page keeps its size and
+    boxes (the caller puts its rotation back). Returns the image's format, size in bytes, width,
+    height and the seconds it took. The caller holds ``PDF_LOCK``."""
+    started = time.perf_counter()
+    rect = page.rect
+    zoom = min(RASTER_DPI / 72, RASTER_MAX_SIDE / max(rect.width, rect.height, 1.0))
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False, annots=False)
+    data, fmt = _encode(pix)
+    doc = page.parent
+    contents = doc.get_new_xref()
+    doc.update_object(contents, "<<>>")
+    doc.update_stream(contents, b" ")
+    doc.xref_set_key(page.xref, "Contents", f"{contents} 0 R")
+    doc.xref_set_key(page.xref, "Resources", "<<>>")  # nothing inherited from the page tree either
+    for key in (*_PAGE_KEYS, *_IMAGE_PAGE_KEYS):
+        doc.xref_set_key(page.xref, key, "null")
+    page.insert_image(page.rect, stream=data, keep_proportion=False)
+    return {
+        "format": fmt,
+        "bytes": len(data),
+        "width": pix.width,
+        "height": pix.height,
+        "seconds": round(time.perf_counter() - started, 3),
+    }
 
 
 def redact_page(
@@ -684,7 +752,9 @@ def redact_page(
     Stroked paths under the zones are removed by ``strokes.remove`` (``drawn``: the zones whose
     content may be a drawing, where a pen stroke mostly under the zone goes whole), then the zones
     are applied with the letters drawn as paths under them (``apply_page_zones``; ``keep``: areas
-    left visible on purpose)."""
+    left visible on purpose). Then, decided 2026-10-06 ("if unsure, that page is exported as an
+    image"): when anything drawn may still be under a zone (``leftovers.check``), or the stroke
+    stage ran out of time, the page is replaced by one image of itself (``rasterize``)."""
     page = doc[n]
     outcome = PageOutcome()
     # MuPDF misplaces redaction zones on a rotated page whose CropBox or MediaBox does not
@@ -693,12 +763,19 @@ def redact_page(
     rotation = page.rotation
     if rotation:
         page.set_rotation(0)
+    status: dict = {}
     if rects:
         whole: list = []
-        strokes.remove(page, rects, list(drawn), whole)
+        strokes.remove(page, rects, list(drawn), whole, status)
         outcome.strokes_removed_whole = [pymupdf.Rect(box) for box in whole]
     # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
     outcome.grown = [group[1:] for group in apply_page_zones(page, rects, keep)]
+    if rects:
+        outcome.reasons = ["time"] if status.get("timeout") else leftovers.check(page, rects)
+    if outcome.reasons:
+        log.info("page %d exported as an image: %s", n, ", ".join(outcome.reasons))
+        outcome.image = rasterize(page)
+        page = doc[n]
     if rotation:
         page.set_rotation(rotation)
     for annot in list(page.annots() or []):

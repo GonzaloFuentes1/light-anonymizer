@@ -177,15 +177,15 @@ def test_a_reviewer_zone_a_little_short_still_removes_whole_letters(tmp_path):
     drawn = Finding(id="m1", file_id="b", page=0, type="manual", polygon=zone, detector="reviewer", status="added",
                     history=[HistoryEntry(at="2026-10-05T10:00:00+00:00", action="added")])  # fmt: skip
     file = AnalyzedFile(id="b", name="a.pdf", path=str(path), kind="pdf", findings=[drawn], status="confirmed")
-    # Before the fix of this case, the leak check saw nothing: it now looks for letters left under a zone.
-    assert verify.glyph_leaks(path, [drawn])
+    # The original has letters under the zone: what the guard over the output would see.
+    assert verify.vector_leaks(path, [drawn])
     result = RealEngine().export(file, str(tmp_path / "out"))
-    assert result.exported, [leak.message for leak in result.leaks]
+    assert result.exported and not result.rasterized_pages, [leak.message for leak in result.leaks]
     with pymupdf.open(result.output_path) as doc:
         assert not [g for g in vectors.glyph_paths(doc[0]) if 400 < g.y1 < 430]
 
 
-def test_letters_left_under_an_applied_zone_are_a_leak(tmp_path, monkeypatch):
+def test_letters_left_under_an_applied_zone_make_the_page_an_image(tmp_path, monkeypatch):
     path = vector_text_pdf(tmp_path / "a.pdf", [f"Correo: {EMAIL}"])
     with pymupdf.open(path) as doc:
         line = [g for g in vectors.glyph_paths(doc[0]) if 400 < g.y1 < 430]
@@ -194,8 +194,8 @@ def test_letters_left_under_an_applied_zone_are_a_leak(tmp_path, monkeypatch):
     file = AnalyzedFile(id="b", name="a.pdf", path=str(path), kind="pdf", findings=[drawn], status="confirmed")
     monkeypatch.setattr(pdf, "snap_rects", lambda page, rects, keep=(): [[r] for r in rects])  # not grown
     result = RealEngine().export(file, str(tmp_path / "out"))
-    assert not result.exported
-    assert any("trazos" in leak.message and leak.finding_id == "m1" for leak in result.leaks)
+    assert as_image(result), [leak.message for leak in result.leaks]
+    assert "letras" in result.rasterized_pages[0]["reason"]
 
 
 def test_many_small_shapes_are_grouped_quickly(tmp_path):
@@ -232,6 +232,31 @@ def letters_of(path) -> list[tuple[float, float, float, float]]:
         return [tuple(round(v, 2) for v in g) for g in vectors.letters(doc[0])]
 
 
+def pixels(path, zoom: float = 2.0) -> np.ndarray:
+    with pymupdf.open(path) as doc:
+        pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+        return np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3).astype(int)
+
+
+def as_image(result) -> bool:
+    """Exported with page 1 as one image (decided 2026-10-06): no text, no drawing left."""
+    if not result.exported or [r["page"] for r in result.rasterized_pages] != [0]:
+        return False
+    with pymupdf.open(result.output_path) as doc:
+        return not doc[0].get_drawings() and not doc[0].get_text().strip() and len(doc[0].get_images()) == 1
+
+
+def same_outside(before, after, zones, zoom: float = 2.0, margin: float = 2.0) -> float:
+    """Mean difference of the two renders outside ``zones`` (page points, grown by ``margin``)."""
+    mask = np.ones(before.shape[:2], bool)
+    for x0, y0, x1, y1 in zones:
+        mask[
+            int((y0 - margin) * zoom) : int((y1 + margin) * zoom) + 1,
+            int((x0 - margin) * zoom) : int((x1 + margin) * zoom) + 1,
+        ] = False
+    return float(np.abs(before - after)[mask].mean())
+
+
 def export_zones(path: Path, zones: dict[str, tuple], out: Path, kept: dict[str, tuple] | None = None):
     """Exports ``path`` with active OCR-like findings on ``zones`` and findings left visible on ``kept``."""
     findings = [
@@ -265,25 +290,15 @@ BLOCK = [
     ],
 )
 def test_only_the_letters_under_a_zone_are_removed(tmp_path, size, leading, zone):
+    # At single spacing the OCR box of the data line cuts letters of the lines above and below: they
+    # are not taken (their centre is outside the zone), so they stay cut by the zone and the page is
+    # exported as an image (decided 2026-10-06). The neighbouring lines still show whole in it.
     path = drawn_page(tmp_path / "block.pdf", [(72, 420 + leading * i, line, size) for i, line in enumerate(BLOCK)])
-    before = letters_of(path)
     _, result = export_zones(path, {"z1": zone}, tmp_path / "out")
-    assert result.exported, [leak.message for leak in result.leaks]
-    after = set(letters_of(result.output_path))
-
-    def line_of(g) -> int:  # the line whose letters' middle is closest
-        return min(range(5), key=lambda i: abs(420 + leading * i - size * 0.3 - (g[1] + g[3]) / 2))
-
-    lines = [[g for g in before if line_of(g) == i] for i in range(5)]
-    assert not [g for g in lines[2] if g in after]  # the line with the data is gone
-    for i in (0, 1, 3, 4):  # the neighbours keep their letters (before the fix, lines 1 to 3 went)
-        assert sum(g in after for g in lines[i]) >= 0.9 * len(lines[i]), (i, sum(g in after for g in lines[i]))
-    # Besides the letters under the zone, the dots of the next line's i's (and its periods) that fall
-    # entirely inside the zone go too: MuPDF removes every subpath a rectangle covers whole, so such
-    # an "i" shows here as changed (its box loses the dot).
-    removed = [pymupdf.Rect(g) for g in before if g not in after]
-    stray = [g for g in removed if g not in vectors.under(pymupdf.Rect(zone), removed)]
-    assert all(min(g.width, g.height) <= 1.5 for g in stray), stray
+    assert as_image(result), [leak.message for leak in result.leaks]
+    x0, y0, x1, y1 = zone
+    assert pixels(result.output_path)[int(y0 * 2) + 3 : int(y1 * 2) - 3, int(x0 * 2) + 3 : int(x1 * 2) - 3].max() < 60
+    assert same_outside(pixels(path), pixels(result.output_path), [zone]) < 2  # nothing else changed
 
 
 def test_a_zone_whose_edges_fall_exactly_on_letters_removes_them(tmp_path):
@@ -299,6 +314,8 @@ def test_a_zone_whose_edges_fall_exactly_on_letters_removes_them(tmp_path):
 
 
 def test_a_zone_touching_the_ascenders_of_the_next_line_leaves_them(tmp_path):
+    # Those letters are cut by the zone, not taken: the page is exported as an image, where the
+    # first line still shows.
     path = drawn_page(tmp_path / "two.pdf", [(72, 420, BLOCK[1], 12), (72, 434, BLOCK[2], 12)])
     before = letters_of(path)
     second = [g for g in before if g[3] > 428]
@@ -308,9 +325,8 @@ def test_a_zone_touching_the_ascenders_of_the_next_line_leaves_them(tmp_path):
     zone = (60, first_bottom - 1.5, 400, max(g[3] for g in second) + 1)
     assert zone[1] < top
     _, result = export_zones(path, {"z1": zone}, tmp_path / "out")
-    assert result.exported
-    after = set(letters_of(result.output_path))
-    assert all(g in after for g in before if g[3] <= 428)  # the first line is untouched
+    assert as_image(result), [leak.message for leak in result.leaks]
+    assert same_outside(pixels(path), pixels(result.output_path), [zone]) < 2
 
 
 def test_a_chart_next_to_a_zone_keeps_its_bars(tmp_path):
@@ -462,16 +478,19 @@ def test_a_large_shape_left_inside_a_zone_is_a_leak(tmp_path):
     zone = Finding(id="z1", file_id="b", page=0, type="manual", polygon=common.rect_polygon(95, 295, 165, 365),
                    detector="reviewer", status="added")  # fmt: skip
     # On the unredacted file the shape is still there: that is what a failed removal looks like.
-    assert verify.glyph_leaks(tmp_path / "big.pdf", [zone])
+    assert verify.vector_leaks(tmp_path / "big.pdf", [zone])
     file = AnalyzedFile(id="b", name="big.pdf", path=str(tmp_path / "big.pdf"), kind="pdf", findings=[zone],
                         status="confirmed")  # fmt: skip
-    assert RealEngine().export(file, str(tmp_path / "out")).exported  # the zone alone removes it
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    assert result.exported and not result.rasterized_pages  # the zone alone removes it
 
 
-def test_letters_of_a_kept_line_inside_the_zone_neither_block_nor_go(tmp_path):
+def test_letters_of_a_kept_line_cut_by_the_zone_make_the_page_an_image(tmp_path):
     # Single spacing: the OCR box of the data line reaches the line above, a URL left visible; the
-    # periods of that URL have their centre inside the zone. They belong to the URL (measured boxes
-    # of the review, font 10 and 12).
+    # periods of that URL have their centre inside the zone (measured boxes of the review, font 10
+    # and 12). A kept area never spares what is under an active zone, and a rectangle for them would
+    # enter the kept URL: they stay cut by the zone and the page is exported as an image, where the
+    # URL still shows outside the black box.
     lines = ["Primera linea neutra del bloque dibujado, sin datos de nadie.",
              "Sitio institucional: www.goreficticio.cl/tramites",
              "Contacto: ana.prueba@ejemplo.cl fono +56 9 8123 4567",
@@ -483,13 +502,9 @@ def test_letters_of_a_kept_line_inside_the_zone_neither_block_nor_go(tmp_path):
     }
     for size, (url, data, phone) in cases.items():
         path = drawn_page(tmp_path / f"k{size}.pdf", [(72, 420 + size * i, line, size) for i, line in enumerate(lines)])
-        before = letters_of(path)
         _, result = export_zones(path, {"z1": data}, tmp_path / f"out{size}", kept={"u1": url, "p1": phone})
-        assert result.exported, (size, [leak.message for leak in result.leaks])
-        after = set(letters_of(result.output_path))
-        url_rect = pymupdf.Rect(url)
-        url_letters = [g for g in before if url_rect.contains(vectors.centre(pymupdf.Rect(g)))]
-        assert all(g in after for g in url_letters), size  # the URL left visible keeps every letter
+        assert as_image(result), (size, [leak.message for leak in result.leaks])
+        assert same_outside(pixels(path), pixels(result.output_path), [data]) < 2, size
 
 
 def test_letters_drawn_with_fill_and_stroke_are_removed_or_reported(tmp_path):
