@@ -461,12 +461,12 @@ def _skip_zones(monkeypatch, skip):
     original = pdf.redact
     boxes = [common.bbox_of(f.polygon) for f in skip]
 
-    def faulty(source, dest, rects_by_page):
+    def faulty(source, dest, rects_by_page, drawn_by_page=None, whole_out=None):
         kept = {
             n: [r for r in rects if not any(abs(r.x0 - b[0]) < 0.01 and abs(r.y0 - b[1]) < 0.01 for b in boxes)]
             for n, rects in rects_by_page.items()
         }
-        return original(source, dest, kept)
+        return original(source, dest, kept, drawn_by_page, whole_out)
 
     monkeypatch.setattr(pdf, "redact", faulty)
 

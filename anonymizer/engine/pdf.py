@@ -16,10 +16,11 @@ from typing import Any
 import numpy as np
 import pymupdf
 
-from anonymizer.engine import context, faces, raster
+from anonymizer.engine import context, faces, raster, signatures, strokes
 from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, stage, waiting_for
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import DetectionOptions
+from anonymizer.engine.ocr import OcrLine
 from anonymizer.engine.patterns import normalize_1to1
 from anonymizer.engine.text import (
     DETECTOR_PRIORITY,
@@ -50,7 +51,7 @@ class PageZone:
     detector: str
     score: float | None
     doubt: str | None
-    source: str  # "text" (text layer) or "raster" (pixels: OCR, faces, QR)
+    source: str  # "text" (text layer) or "raster" (pixels: OCR, faces, QR; and vector signatures)
     optional: bool = False  # D12: it only covers a URL that is not personal
 
 
@@ -294,6 +295,8 @@ def text_zones(tp: TextPage, name_list: tuple[str, ...]) -> list[PageZone]:
         elif type_ == "name" and detector == "context":
             listed = any(la < b and a < lb for la, lb in tp.list_ranges) or in_list(value, name_list)
             doubt = None if listed else DOUBT_CONTEXT_NAME
+        elif type_ == "signature":
+            doubt = signatures.DOUBT_SIGNATURE
         optional = (
             type_ == "url"
             and not is_personal_url(value, name_list)
@@ -303,9 +306,28 @@ def text_zones(tp: TextPage, name_list: tuple[str, ...]) -> list[PageZone]:
             r = clip_against_neighbors(r, a, b, tp.lines)
             zones.append(PageZone(tp.index, r, type_, value, detector, 0.6 if doubt else 1.0, doubt, "text", optional))
     for type_, x0, y0, x1, y1 in tp.rects:
-        doubt = DOUBT_CONTEXT_NAME if type_ == "name" else None
+        doubt = {"name": DOUBT_CONTEXT_NAME, "signature": signatures.DOUBT_SIGNATURE}.get(type_)
         zones.append(PageZone(tp.index, pymupdf.Rect(x0, y0, x1, y1), type_, "", "context", None, doubt, "raster"))
     return zones
+
+
+def vector_signatures(page: pymupdf.Page, tp: TextPage, columns: bool = False) -> list[PageZone]:
+    """Signatures drawn as vector paths on a page with text (call with ``PDF_LOCK`` held).
+
+    ``columns``: also the column under a "Firma" header of a table of the text layer (when the
+    context rule for names, which finds it otherwise, is off). Scanned pages are left to the raster
+    detector: their pixels are read whatever draws them.
+    """
+    if tp.scanned:
+        return []
+    space = (page.rect * page.derotation_matrix).normalize()  # unrotated page space, like the text layer
+    lines = [ln for _, _, ln in tp.lines]
+    found = signatures.detect_vector(page.get_drawings(), lines, space.width, space.height, columns=columns)
+    return [
+        PageZone(tp.index, pymupdf.Rect(x0, y0, x1, y1), "signature", "", signatures.DETECTOR, score,
+                 signatures.DOUBT_SIGNATURE, "raster")
+        for x0, y0, x1, y1, score in found
+    ]  # fmt: skip
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +368,92 @@ def image_regions(
     return [(x0, y0, x1, y1) for x0, y0, x1, y1 in boxes if x1 - x0 >= 24 and y1 - y0 >= 24]
 
 
+def _signature_lines(tp: TextPage, to_pix: pymupdf.Matrix, region: tuple[int, int, int, int]) -> list[OcrLine]:
+    """Signature keywords of the text layer near an image region, in that region's pixels."""
+    x0, y0, x1, y1 = region
+    out = []
+    for _, _, ln in tp.lines:
+        if not signatures.is_keyword_line(ln.text):
+            continue
+        corners = ((ln.x0, ln.y0), (ln.x1, ln.y0), (ln.x1, ln.y1), (ln.x0, ln.y1))
+        pts = np.array([[p.x, p.y] for p in (pymupdf.Point(c) * to_pix for c in corners)], np.float64)
+        (lx0, ly0), (lx1, ly1) = pts.min(axis=0), pts.max(axis=0)
+        reach = 12 * max(1.0, float(min(lx1 - lx0, ly1 - ly0)))
+        if lx0 <= x1 + reach and x0 - reach <= lx1 and ly0 <= y1 + reach and y0 - reach <= ly1:
+            out.append(OcrLine(pts - [x0, y0], ln.text, 1.0, 0))
+    return out
+
+
+def _overlaps(r: pymupdf.Rect, box: tuple[int, int, int, int]) -> bool:
+    return not r.is_empty and r.x0 < box[2] and box[0] < r.x1 and r.y0 < box[3] and box[1] < r.y1
+
+
+def _repeated_images(doc: pymupdf.Document) -> set[tuple[int, tuple[int, ...]]]:
+    """Images placed at the same place on two pages or more (a letterhead's emblem), as (xref, box)."""
+    count: dict[tuple[int, tuple[int, ...]], int] = {}
+    for page in doc:
+        for info in page.get_image_info(xrefs=True):
+            if info.get("xref"):
+                key = (int(info["xref"]), tuple(round(v) for v in info["bbox"]))
+                count[key] = count.get(key, 0) + 1
+    return {key for key, n in count.items() if n >= 2}
+
+
+def _signature_rules(page: pymupdf.Page, tp: TextPage) -> list[pymupdf.Rect]:
+    """Possible signature lines, in the page as it is shown: straight horizontal lines, drawn or typed
+    ("________"), at least 30 pt long and shorter than 60 % of the page's width (a page-wide header
+    or footer rule is not one)."""
+    to_view = pymupdf.Matrix(page.rotation_matrix)
+    width = page.rect.width
+    rules = []
+    for d in page.get_drawings():
+        items = d.get("items") or []
+        single = len(items) == 1 and (items[0][0] == "l" or (items[0][0] == "re" and "f" in d["type"]))
+        r = (pymupdf.Rect(d["rect"]) * to_view).normalize()
+        if single and r.height <= 2 and 30 <= r.width <= 0.6 * width:
+            rules.append(r)
+    for _, _, ln in tp.lines:
+        text = ln.text.strip()
+        r = (pymupdf.Rect(ln.x0, ln.y0, ln.x1, ln.y1) * to_view).normalize()
+        if len(text) >= 10 and set(text) <= set("_.-… ") and r.width <= 0.6 * width:
+            rules.append(r)
+    return rules
+
+
+def _anchored(image: pymupdf.Rect, rules: list[pymupdf.Rect], names: list[pymupdf.Rect]) -> bool:
+    """A signature line under or across the image, or a person's name right under it (all in the page
+    as it is shown)."""
+    reach = max(15.0, 0.3 * image.height)
+    for r in rules:
+        overlap = min(r.x1, image.x1) - max(r.x0, image.x0)
+        if (
+            overlap >= 0.5 * min(image.width, r.width)
+            and image.y0 + 0.3 * image.height <= r.y1
+            and r.y0 <= image.y1 + reach
+        ):
+            return True
+    for r in names:
+        overlap = min(r.x1, image.x1) - max(r.x0, image.x0)
+        if overlap > 0 and image.y1 - 0.2 * image.height <= r.y0 <= image.y1 + 2 * reach:
+            return True
+    return False
+
+
+def _name_boxes(tp: TextPage, to_view: pymupdf.Matrix) -> list[pymupdf.Rect]:
+    """Boxes of the names found in the text layer, in the page as it is shown."""
+    out = []
+    for type_, a, b, _ in tp.spans:
+        if type_ != "name":
+            continue
+        boxes = [r for r in tp.boxes[a:b] if r is not None and not r.is_empty]
+        if boxes:
+            u = pymupdf.Rect(boxes[0])
+            for r in boxes[1:]:
+                u |= r
+            out.append((u * to_view).normalize())
+    return out
+
+
 def raster_zones(
     doc: pymupdf.Document,
     tp: TextPage,
@@ -355,20 +463,33 @@ def raster_zones(
     step: Callable[[str], None] | None = None,
     dpi: int = OCR_DPI,
 ) -> list[PageZone]:
-    """OCR, faces and QR codes of a page.
+    """OCR, faces, signatures and QR codes of a page.
 
-    Scanned pages (no text layer): OCR and faces over the whole page. Pages with text: OCR and
-    faces only inside each embedded image, however small (a phone in a 2 % image is still a
-    leak), and QR codes over the whole page. ``cache`` (shared by the pages of a document) reads
-    the same image region, rendered identically on several pages, only once. ``options``: the
-    detection groups that run; with OCR, faces and QR off the page is not even rendered.
+    Scanned pages (no text layer): OCR, faces and signatures over the whole page. Pages with text:
+    OCR, faces and signatures only inside each embedded image, however small (a phone in a 2 %
+    image is still a leak), and QR codes over the whole page. A small image may be a signature by
+    itself, and a signature keyword of the text layer next to an image counts as if it were inside
+    it; an image repeated at the same place on several pages (a letterhead's emblem) is not.
+    ``cache`` (shared by the pages of a document) reads the same image region, rendered identically
+    on several pages, only once. ``options``: the detection groups that run; with OCR, faces,
+    signatures and QR off the page is not even rendered.
     """
     options = options or DetectionOptions()
+    cache = {} if cache is None else cache
     with waiting_for(PDF_LOCK):
         page = doc[tp.index]
-        info = page.get_image_info()
+        info = page.get_image_info(xrefs=True)
         if not (tp.scanned or info) or not options.raster:
             return []
+        if info and not tp.scanned and options.signatures and "repeated" not in cache:
+            cache["repeated"] = _repeated_images(doc)
+        repeated_here = [
+            i
+            for i in info
+            if (int(i.get("xref") or 0), tuple(round(v) for v in i["bbox"])) in cache.get("repeated", ())
+        ]
+        rules = _signature_rules(page, tp) if repeated_here else []
+        to_view = pymupdf.Matrix(page.rotation_matrix)
         with stage("render"):
             zoom = dpi / 72
             pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
@@ -378,20 +499,51 @@ def raster_zones(
             page_rect = pymupdf.Rect(page.rect)
             width, height = pix.width, pix.height
             del pix
-    cache = {} if cache is None else cache
     if tp.scanned:
         zones = raster.detect_in_image(rgb, name_list, face_threshold=0.6, step=step, options=options)
     else:
         zones = []
         if options.qr:
             zones = raster.detect_in_image(
-                rgb, name_list, ocr_enabled=False, face_regions=[], qr_enabled=True, step=step, options=options
+                rgb,
+                name_list,
+                ocr_enabled=False,
+                face_regions=[],
+                qr_enabled=True,
+                step=step,
+                options=options,
+                signatures_enabled=False,
             )
         found_faces: list[Zone] = []
-        regions = image_regions(info, page_rect, to_pix, width, height) if options.ocr or options.faces else []
+        reads = options.ocr or options.faces or options.signatures
+        regions = image_regions(info, page_rect, to_pix, width, height) if reads else []
         for x0, y0, x1, y1 in regions:
             crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
-            key = (crop.shape, hashlib.blake2b(crop.tobytes(), digest_size=16).digest())
+            keywords = _signature_lines(tp, to_pix, (x0, y0, x1, y1)) if options.signatures else []
+            # A small image (not a photo or a scanned card) may be a signature by itself, and a curly
+            # stroke alone in an image may be one. An image repeated at the same place on other pages
+            # is a letterhead's emblem unless something marks it as a signature (a keyword, a
+            # signature line, a person's name under it): then it is the same signature on every page
+            # (certificates signed by the same official, initials on every sheet).
+            repeated = [
+                i for i in repeated_here
+                if _overlaps((pymupdf.Rect(i["bbox"]) & page_rect) * to_pix, (x0, y0, x1, y1))
+            ]  # fmt: skip
+            if repeated and not keywords:
+                names = cache.setdefault(("names", tp.index), _name_boxes(tp, to_view))
+                repeated = [
+                    i for i in repeated if not _anchored((pymupdf.Rect(i["bbox"]) * to_view).normalize(), rules, names)
+                ]
+            else:
+                repeated = []
+            whole = x1 - x0 <= 0.6 * width and y1 - y0 <= 0.25 * height and not repeated
+            key = (
+                crop.shape,
+                hashlib.blake2b(crop.tobytes(), digest_size=16).digest(),
+                whole,
+                bool(repeated),
+                tuple((ln.text, ln.polygon.round(1).tobytes()) for ln in keywords),
+            )
             if key not in cache:
                 cache[key] = raster.detect_in_image(
                     crop,
@@ -401,6 +553,10 @@ def raster_zones(
                     ocr_min_side=736,
                     step=step,
                     options=options,
+                    signature_lines=keywords,
+                    signature_whole=whole,
+                    signature_lone=not repeated,
+                    signature_page_size=(width, height),
                 )
             for z in cache[key]:
                 moved = z._replace(polygon=z.polygon + [x0, y0])
@@ -419,10 +575,19 @@ def raster_zones(
 # ---------------------------------------------------------------------------
 
 
-def redact(source: str, dest: str, rects_by_page: dict[int, list[pymupdf.Rect]]) -> None:
+def redact(
+    source: str,
+    dest: str,
+    rects_by_page: dict[int, list[pymupdf.Rect]],
+    drawn_by_page: dict[int, list[pymupdf.Rect]] | None = None,
+    whole_out: list[tuple[int, pymupdf.Rect]] | None = None,
+) -> None:
     """Writes ``dest``: ``source`` with the zones really removed (text, vector paths and image pixels)
     and the document cleaned (metadata, XMP, annotations, forms, attachments, layers, bookmarks,
-    JavaScript actions), fully rewritten."""
+    JavaScript actions), fully rewritten. Stroked paths under the zones are removed by
+    ``strokes.remove``; ``drawn_by_page``: the zones whose content may be a drawing (signatures,
+    zones drawn by the reviewer), where a pen stroke mostly under the zone goes whole; ``whole_out``
+    receives (page, box in unrotated page space) of each stroke removed whole."""
     with PDF_LOCK:
         doc = pymupdf.open(source, filetype="pdf")
         try:
@@ -435,6 +600,11 @@ def redact(source: str, dest: str, rects_by_page: dict[int, list[pymupdf.Rect]])
                 rotation = page.rotation
                 if rotation:
                     page.set_rotation(0)
+                if rects_by_page.get(n):
+                    whole: list = []
+                    strokes.remove(page, rects_by_page[n], (drawn_by_page or {}).get(n, []), whole)
+                    if whole_out is not None:
+                        whole_out += [(n, pymupdf.Rect(box)) for box in whole]
                 for r in rects_by_page.get(n, []):
                     page.add_redact_annot(r, fill=(0, 0, 0))
                 page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)

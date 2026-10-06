@@ -98,7 +98,9 @@ def recorders(monkeypatch):
 
 def test_groups_and_defaults():
     keys = [g.key for g in DETECTION_GROUPS]
-    assert keys == ["patterns", "urls_personal", "urls_other", "names_list", "names_context", "ocr", "faces", "qr"]
+    assert keys == [
+        "patterns", "urls_personal", "urls_other", "names_list", "names_context", "ocr", "faces", "signatures", "qr"
+    ]  # fmt: skip
     defaults = DetectionOptions().to_dict()
     assert defaults == {g.key: g.default for g in DETECTION_GROUPS}
     assert defaults["urls_other"] is False and all(v for k, v in defaults.items() if k != "urls_other")
@@ -137,15 +139,20 @@ def test_faces_and_qr_off_are_not_called(tmp_path, recorders):
     assert set(file.timings) >= {"render", "ocr", "analyze"} and not {"faces", "qr"} & set(file.timings)
 
 
-def test_nothing_rendered_when_ocr_faces_and_qr_are_off(tmp_path, recorders, monkeypatch):
+def test_nothing_rendered_when_ocr_faces_signatures_and_qr_are_off(tmp_path, recorders, monkeypatch):
     rendered = []
     original = pymupdf.Page.get_pixmap
     monkeypatch.setattr(
         pymupdf.Page, "get_pixmap", lambda self, *a, **kw: rendered.append(1) or original(self, *a, **kw)
     )
-    file = analyze(scanned_pdf(tmp_path / "scan.pdf"), DetectionOptions(ocr=False, faces=False, qr=False))
+    off = DetectionOptions(ocr=False, faces=False, signatures=False, qr=False)
+    file = analyze(scanned_pdf(tmp_path / "scan.pdf"), off)
     assert not rendered and recorders == {"ocr": 0, "faces": 0, "qr": 0}
     assert set(file.timings) == {"text", "analyze"}
+    # Signatures alone still read the pixels (ink strokes and signature lines need no OCR).
+    file = analyze(scanned_pdf(tmp_path / "scan.pdf"), off.replace(signatures=True))
+    assert rendered and recorders == {"ocr": 0, "faces": 0, "qr": 0}
+    assert set(file.timings) == {"text", "render", "signatures", "analyze"}
 
 
 def test_name_list_off(tmp_path):
@@ -210,10 +217,10 @@ def test_everything_on_keeps_every_finding_applied(tmp_path):
 
 def test_stage_timings(tmp_path, recorders):
     text = analyze(text_pdf(tmp_path / "a.pdf", [f"RUT: {VALID_RUT}"]))
-    assert set(text.timings) == {"text", "analyze"}
+    assert set(text.timings) == {"text", "signatures", "analyze"}  # signatures: the page's vector paths
     assert 0 <= text.timings["text"] <= text.timings["analyze"]
     scan = analyze(scanned_pdf(tmp_path / "scan.pdf"))
-    assert set(scan.timings) == {"text", "render", "ocr", "faces", "qr", "analyze"}
+    assert set(scan.timings) == {"text", "render", "ocr", "faces", "signatures", "qr", "analyze"}
     assert sum(v for k, v in scan.timings.items() if k != "analyze") <= scan.timings["analyze"] + 0.01
 
 
@@ -294,13 +301,16 @@ def test_cost_model_learns_and_saves_only_numbers(tmp_path):
 
 
 def test_estimate_total_follows_the_options():
-    stages = {"text": 0.1, "render": 0.3, "ocr": 14.0, "faces": 1.8, "qr": 0.2}
+    stages = {"text": 0.1, "render": 0.3, "ocr": 14.0, "faces": 1.8, "signatures": 0.5, "qr": 0.2}
     groups = estimate.by_group(stages)
     assert groups["ocr"] == 14.0 and groups["patterns"] == 0.1 and groups["names_list"] == 0.0
+    assert groups["signatures"] == 0.5
     every = estimate.total(stages, DetectionOptions())
-    assert every == pytest.approx(16.4)
-    assert estimate.total(stages, DetectionOptions(ocr=False)) == pytest.approx(2.4)
-    assert estimate.total(stages, DetectionOptions(ocr=False, faces=False, qr=False)) == pytest.approx(0.1)
+    assert every == pytest.approx(16.9)
+    assert estimate.total(stages, DetectionOptions(ocr=False)) == pytest.approx(2.9)
+    assert estimate.total(stages, DetectionOptions(ocr=False, faces=False, qr=False)) == pytest.approx(0.9)
+    off = DetectionOptions(ocr=False, faces=False, signatures=False, qr=False)
+    assert estimate.total(stages, off) == pytest.approx(0.1)
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +468,7 @@ def test_cost_model_survives_a_broken_file(tmp_path, content):
 
 
 def test_estimate_total_never_grows_when_a_group_is_turned_off():
-    stages = {"text": 0.4, "render": 1.3, "ocr": 21.0, "faces": 2.2, "qr": 0.3}
+    stages = {"text": 0.4, "render": 1.3, "ocr": 21.0, "faces": 2.2, "signatures": 0.4, "qr": 0.3}
     keys = [g.key for g in DETECTION_GROUPS if not g.locked]
     for bits in range(2 ** len(keys)):
         options = DetectionOptions.from_dict({k: bool(bits >> i & 1) for i, k in enumerate(keys)})

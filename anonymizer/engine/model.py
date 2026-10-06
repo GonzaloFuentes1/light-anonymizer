@@ -52,7 +52,7 @@ class Finding:
     type: str  # one of FindingType
     polygon: list[list[float]]  # view space, at least 3 points
     text: str | None = None
-    detector: str = "regex"  # regex | name_list | context | ocr | faces | qr | reviewer
+    detector: str = "regex"  # regex | name_list | context | ocr | faces | signatures | qr | reviewer
     score: float | None = None
     doubtful: bool = False
     doubt_reason: str | None = None  # Spanish, e.g. "El dígito verificador no coincide"
@@ -105,8 +105,8 @@ class AnalyzedFile:
     output_path: str | None = None
     # Detection groups it was analyzed with (``DetectionOptions.to_dict``), set when it is processed.
     options: dict[str, bool] = field(default_factory=dict)
-    # Seconds: "analyze" (total), its stages ("text", "render", "ocr", "faces", "qr", only those that
-    # ran; see ``common.StageClock``) and "export".
+    # Seconds: "analyze" (total), its stages ("text", "render", "ocr", "faces", "signatures", "qr", only
+    # those that ran; see ``common.StageClock``) and "export".
     timings: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -122,6 +122,9 @@ class ExportResult:
     removed_by_reviewer: int
     exported: bool  # False when a leak blocked the export
     message: str  # Spanish
+    # Drawn strokes removed whole although part of them lay outside the zones (a pen stroke mostly
+    # under a signature zone or a zone drawn by the reviewer): {"page": 0-based, "polygon": view space}.
+    strokes_removed_whole: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +212,15 @@ DETECTION_GROUPS: tuple[DetectionGroup, ...] = (
         default=True,
     ),
     DetectionGroup(
+        "signatures",
+        "Firmas",
+        "Firmas a mano en escaneos, fotos e imágenes, y firmas dibujadas en los PDF. Se marcan como dudosas "
+        "para que las revises primero.",
+        "Las firmas quedarán visibles: búscalas en la revisión y cúbrelas con «Dibujar zona».",
+        "firmas",
+        default=True,
+    ),
+    DetectionGroup(
         "qr",
         "Códigos QR",
         "Por ejemplo, el de la cédula de identidad, que guarda el RUN.",
@@ -236,6 +248,7 @@ class DetectionOptions:
     names_context: bool = True
     ocr: bool = True
     faces: bool = True
+    signatures: bool = True
     qr: bool = True
 
     @classmethod
@@ -258,8 +271,8 @@ class DetectionOptions:
 
     @property
     def raster(self) -> bool:
-        """Some pixels must be read: OCR, faces or QR codes are on."""
-        return self.ocr or self.faces or self.qr
+        """Some pixels must be read: OCR, faces, signatures or QR codes are on."""
+        return self.ocr or self.faces or self.signatures or self.qr
 
 
 # Plain-language error messages (Spanish) by error code.

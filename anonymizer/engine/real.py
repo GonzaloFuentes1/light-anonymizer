@@ -5,8 +5,8 @@
 the leak check over a temporary output and copies it to the destination only when it is clean.
 
 Detectors: patterns (``regex``), the user's list (``name_list``), context rules and the
-given-name dictionary (``context``), OCR at 0/90/270° (``ocr``), YuNet faces (``faces``) and QR
-codes (``qr``). See the modules of this package for each one. Which groups of detectors run is
+given-name dictionary (``context``), OCR at 0/90/270° (``ocr``), YuNet faces (``faces``), rules
+for handwritten and drawn signatures (``signatures``) and QR codes (``qr``). See the modules of this package for each one. Which groups of detectors run is
 decided per file (``AnalyzedFile.options``, see ``model.DetectionOptions``); a group that is off
 skips its work. The time of each stage is measured (``AnalyzedFile.timings``).
 """
@@ -30,7 +30,6 @@ from anonymizer.engine.common import (
     Cancelled,
     FileError,
     StageClock,
-    bbox_of,
     disable_power_throttling,
     now_iso,
     publish,
@@ -57,10 +56,11 @@ log = logging.getLogger(__name__)
 _STAGE_TEXT = {
     "ocr": "Leyendo texto en imágenes (OCR)",
     "faces": "Buscando rostros",
+    "signatures": "Buscando firmas",
     "qr": "Buscando códigos QR",
 }
 # Where each stage starts inside the share of progress of one page or image.
-_STAGE_OFFSET = {"ocr": 0.0, "faces": 0.6, "qr": 0.9}
+_STAGE_OFFSET = {"ocr": 0.0, "faces": 0.6, "signatures": 0.85, "qr": 0.9}
 # Detectors whose text comes from the text layer of a PDF (checked again in the output).
 _TEXT_LAYER_DETECTORS = ("regex", "name_list", "context")
 # Types whose value, found again inside a URL, makes that URL personal (D12). A RUT, e-mail or
@@ -103,6 +103,11 @@ def missing_requirements() -> list[str]:
             missing.append(module)
     if not ocr.available():
         missing.append("rapidocr/onnxruntime")
+    if not missing:
+        from anonymizer.engine import strokes
+
+        if not strokes.self_test():  # private PyMuPDF bindings: a PyMuPDF update could break them
+            missing.append("pymupdf (content filter that removes strokes)")
     if not faces.available():
         missing.append(str(faces.YUNET_MODEL))
     else:
@@ -250,6 +255,14 @@ class RealEngine:
                 pdf.propagate(text_pages)
                 pdf.data_in_urls(text_pages)
                 zones = [z for tp in text_pages for z in pdf.text_zones(tp, names)]
+            if options.signatures:  # signatures drawn as vector paths on the pages with text
+                with stage("signatures"):
+                    for tp in text_pages:
+                        if tp.scanned:
+                            continue
+                        report(0.2, f"Buscando firmas dibujadas: página {tp.index + 1} de {count}")
+                        with waiting_for(PDF_LOCK):
+                            zones += pdf.vector_signatures(doc[tp.index], tp, columns=not options.names_context)
             cache: dict = {}
             share = 0.75 / count
             for n, tp in enumerate(text_pages):
@@ -369,12 +382,13 @@ class RealEngine:
         removed = sum(1 for f in file.findings if f.status == "removed")
         kind = file.kind or sniff(file.path)
         name = Path(file.name).name or "archivo"
+        whole: list[dict] = []  # PDF strokes removed whole (ExportResult.strokes_removed_whole)
         with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
             if kind == "pdf":
                 if Path(name).suffix.lower() != ".pdf":
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
-                self._export_pdf(file, active, staged)
+                whole = self._export_pdf(file, active, staged)
                 leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer)
             else:
                 from anonymizer.engine import image
@@ -410,20 +424,28 @@ class RealEngine:
             removed_by_reviewer=removed,
             exported=not leaks,
             message=message,
+            strokes_removed_whole=whole if not leaks else [],
         )
 
     @staticmethod
-    def _export_pdf(file: AnalyzedFile, active: list[Finding], staged: Path) -> None:
+    def _export_pdf(file: AnalyzedFile, active: list[Finding], staged: Path) -> list[dict]:
+        """Writes the redacted PDF; returns the strokes removed whole (``ExportResult``), in view space."""
         import pymupdf
 
-        from anonymizer.engine import pdf
+        from anonymizer.engine import pdf, strokes
 
         with PDF_LOCK:
             with pymupdf.open(file.path, filetype="pdf") as doc:
                 to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
-        rects: dict[int, list[pymupdf.Rect]] = {}
-        for f in active:
-            if 0 <= f.page < len(to_page):
-                x0, y0, x1, y1 = bbox_of(f.polygon)
-                rects.setdefault(f.page, []).append((pymupdf.Rect(x0, y0, x1, y1) * to_page[f.page]).normalize())
-        pdf.redact(file.path, str(staged), rects)
+                to_view = [pymupdf.Matrix(page.rotation_matrix) for page in doc]
+        # The leak check (strokes.leaks) uses these same rectangles.
+        zones = strokes.zones_by_page(active, to_page)
+        rects = {n: [r for r, _ in items] for n, items in zones.items()}
+        drawn = {n: [r for r, f in items if f.type in strokes.DRAWN_TYPES] for n, items in zones.items()}
+        whole: list[tuple[int, pymupdf.Rect]] = []
+        pdf.redact(file.path, str(staged), rects, drawn, whole)
+        out = []
+        for n, box in whole:
+            r = (box * to_view[n]).normalize()
+            out.append({"page": n, "polygon": [[round(x, 2), round(y, 2)] for x, y in rect_polygon(*r)]})
+        return out

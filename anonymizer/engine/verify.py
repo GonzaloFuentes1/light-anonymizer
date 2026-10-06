@@ -1,8 +1,9 @@
 """Leak check of an exported file, before it is copied to the destination folder.
 
 PDF: the text of every active finding read from the text layer must be gone from the output,
-the text-layer patterns (RUT, e-mail, phone) run again over the output must find nothing, and
-metadata, XMP and attachments must be empty. Images: no EXIF, XMP, comments or text chunks.
+the text-layer patterns (RUT, e-mail, phone) run again over the output must find nothing, no
+pen stroke may remain under an active zone or cross the edge of a signature or drawn zone
+(``strokes.leaks``), and metadata, XMP and attachments must be empty. Images: no EXIF, XMP, comments or text chunks.
 Both: the zone of every active finding must be solid black in the output (``uncovered``), which
 also checks what OCR, faces, QR and the reviewer marked, whose text is not in the text layer.
 
@@ -21,7 +22,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
-from anonymizer.engine import pdf
+from anonymizer.engine import pdf, strokes
 from anonymizer.engine.common import bbox_of
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import TYPE_LABELS, Finding, Leak
@@ -59,17 +60,19 @@ def pdf_leaks(
 ) -> list[Leak]:
     """Leaks of an exported PDF. ``kept``: findings left visible on purpose (removed or suggested).
     ``from_text_layer(f)`` says if the text of ``f`` was read from the text layer."""
-    leaks: list[Leak] = []
     with PDF_LOCK:
         with pymupdf.open(path) as doc:
             layers = [(*pdf.chars(page)[:2], pymupdf.Matrix(page.derotation_matrix)) for page in doc]
             metadata = {k: v for k, v in (doc.metadata or {}).items() if v and k not in ("format", "encryption")}
             xmp = doc.get_xml_metadata()
             attachments = doc.embfile_count()
+            drawn = strokes.leaks(doc, active)
+    leaks: list[Leak] = []
     if metadata or xmp:
         leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene metadatos."))
     if attachments:
         leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene archivos adjuntos."))
+    leaks += drawn
     for n, (text, boxes, to_page) in enumerate(layers):
         chars = list(text)
         normalized = normalize_1to1(text)
