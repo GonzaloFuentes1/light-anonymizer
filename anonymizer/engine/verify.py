@@ -200,7 +200,11 @@ def string_leaks(path: Path, active: list[Finding]) -> list[Leak]:
                 except Exception:  # noqa: BLE001 - a broken object has nothing to read
                     continue
                 texts += _strings(source.encode("latin-1", "replace"))
-                if x in contents or not doc.xref_is_stream(x) or any(k in source.replace(" ", "") for k in _CONTENT_KEYS):
+                if (
+                    x in contents
+                    or not doc.xref_is_stream(x)
+                    or any(k in source.replace(" ", "") for k in _CONTENT_KEYS)
+                ):
                     continue
                 try:
                     data = doc.xref_stream(x) or b""
