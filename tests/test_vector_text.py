@@ -278,8 +278,9 @@ def test_only_the_letters_under_a_zone_are_removed(tmp_path, size, leading, zone
     assert not [g for g in lines[2] if g in after]  # the line with the data is gone
     for i in (0, 1, 3, 4):  # the neighbours keep their letters (before the fix, lines 1 to 3 went)
         assert sum(g in after for g in lines[i]) >= 0.9 * len(lines[i]), (i, sum(g in after for g in lines[i]))
-    # Besides the letters under the zone, MuPDF also drops the thin shapes it touches (the stem of
-    # an "l" of the next line, about 1 pt wide): measured, not something the engine can prevent.
+    # Besides the letters under the zone, the dots of the next line's i's (and its periods) that fall
+    # entirely inside the zone go too: MuPDF removes every subpath a rectangle covers whole, so such
+    # an "i" shows here as changed (its box loses the dot).
     removed = [pymupdf.Rect(g) for g in before if g not in after]
     stray = [g for g in removed if g not in vectors.under(pymupdf.Rect(zone), removed)]
     assert all(min(g.width, g.height) <= 1.5 for g in stray), stray
@@ -411,3 +412,136 @@ def test_the_analysis_does_not_grow_ocr_zones(tmp_path, monkeypatch):
     (zone,) = [f for f in file.findings if f.detector == "ocr"]
     x0, y0, x1, y1 = common.bbox_of(zone.polygon)
     assert y1 - y0 <= 12 * 72 / 200 + 2.01  # the 12 px box at 200 dpi plus the 1 pt margin
+
+
+def drawn_name(path: Path, text: str, size: float, font: str) -> Path:
+    """A landscape page with ``text`` drawn as paths, large, in ``font``, and a text layer above."""
+    src = pymupdf.open()
+    page = src.new_page(width=842, height=595)
+    page.insert_text((40, 300), text, fontsize=size, fontname=font)
+    with pymupdf.open("svg", page.get_svg_image(text_as_path=True).encode("utf-8")) as as_svg:
+        doc = pymupdf.open("pdf", as_svg.convert_to_pdf())
+    src.close()
+    for i, line in enumerate(NEUTRAL):
+        doc[0].insert_text((40, 60 + 22 * i), line, fontsize=11)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+@pytest.mark.parametrize(
+    "font,size,text",
+    [("heit", 64, "Ana Pellegrini"), ("helv", 64, "Ana Pellegrini"), ("tiit", 64, "Fulvia Pellegrini"),
+     ("heit", 30, "ana.pellegrini@ficticio.cl")],
+)  # fmt: skip
+def test_large_drawn_letters_under_a_generous_zone_are_all_removed(tmp_path, font, size, text):
+    # Outlines over 40 pt are not "letters"; a neighbouring letter's rectangle used to touch them
+    # first without covering them, and MuPDF then kept them although the zone covered them whole.
+    path = drawn_name(tmp_path / "name.pdf", text, size, font)
+    with pymupdf.open(path) as doc:
+        shapes = [s.box for s in vectors.shapes(doc[0], max_side=None) if s.box.y1 > 200]
+    zone = pymupdf.Rect(min(s.x0 for s in shapes), min(s.y0 for s in shapes), max(s.x1 for s in shapes),
+                        max(s.y1 for s in shapes)) + (-4, -4, 4, 4)  # fmt: skip
+    _, result = export_zones(path, {"z1": tuple(zone)}, tmp_path / "out")
+    assert result.exported, [leak.message for leak in result.leaks]
+    with pymupdf.open(result.output_path) as doc:
+        left = [s.box for s in vectors.shapes(doc[0], max_side=None) if zone.contains(s.box)]
+    assert left == []
+
+
+def test_a_large_shape_left_inside_a_zone_is_a_leak(tmp_path):
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), NEUTRAL[0], fontsize=11)
+    shape = page.new_shape()
+    shape.draw_polyline([(100, 300), (160, 300), (130, 360), (100, 300)])  # a 60 pt drawn shape
+    shape.finish(fill=(0.1, 0.1, 0.1), color=None)
+    shape.commit()
+    doc.save(tmp_path / "big.pdf")
+    doc.close()
+    zone = Finding(id="z1", file_id="b", page=0, type="manual", polygon=common.rect_polygon(95, 295, 165, 365),
+                   detector="reviewer", status="added")  # fmt: skip
+    # On the unredacted file the shape is still there: that is what a failed removal looks like.
+    assert verify.glyph_leaks(tmp_path / "big.pdf", [zone])
+    file = AnalyzedFile(id="b", name="big.pdf", path=str(tmp_path / "big.pdf"), kind="pdf", findings=[zone],
+                        status="confirmed")  # fmt: skip
+    assert RealEngine().export(file, str(tmp_path / "out")).exported  # the zone alone removes it
+
+
+def test_letters_of_a_kept_line_inside_the_zone_neither_block_nor_go(tmp_path):
+    # Single spacing: the OCR box of the data line reaches the line above, a URL left visible; the
+    # periods of that URL have their centre inside the zone. They belong to the URL (measured boxes
+    # of the review, font 10 and 12).
+    lines = ["Primera linea neutra del bloque dibujado, sin datos de nadie.",
+             "Sitio institucional: www.goreficticio.cl/tramites",
+             "Contacto: ana.prueba@ejemplo.cl fono +56 9 8123 4567",
+             "Mesa central: 600 123 4567",
+             "Quinta linea neutra que cierra el bloque de prueba."]  # fmt: skip
+    cases = {
+        10: ((68.8, 418.8, 277.1, 434.1), (68.5, 429.2, 326.1, 444.9), (68.5, 438.9, 199.7, 455.0)),
+        12: ((68.8, 419.1, 316.7, 437.3), (68.5, 431.4, 377.2, 449.6), (69.2, 444.0, 223.5, 460.0)),
+    }
+    for size, (url, data, phone) in cases.items():
+        path = drawn_page(tmp_path / f"k{size}.pdf", [(72, 420 + size * i, line, size) for i, line in enumerate(lines)])
+        before = letters_of(path)
+        _, result = export_zones(path, {"z1": data}, tmp_path / f"out{size}", kept={"u1": url, "p1": phone})
+        assert result.exported, (size, [leak.message for leak in result.leaks])
+        after = set(letters_of(result.output_path))
+        url_rect = pymupdf.Rect(url)
+        url_letters = [g for g in before if url_rect.contains(vectors.centre(pymupdf.Rect(g)))]
+        assert all(g in after for g in url_letters), size  # the URL left visible keeps every letter
+
+
+def test_letters_drawn_with_fill_and_stroke_are_removed_or_reported(tmp_path):
+    # MuPDF counts a filled and stroked shape as covered only with its stroke: half the width with
+    # round joins, ten times the width with miter joins (measured).
+    def outlined(path, width, join):
+        src = pymupdf.open()
+        src.new_page(width=595, height=842).insert_text((72, 140), "Ana Prueba", fontsize=24)
+        with pymupdf.open("svg", src[0].get_svg_image(text_as_path=True).encode("utf-8")) as as_svg:
+            letters = [d for d in pymupdf.open("pdf", as_svg.convert_to_pdf())[0].get_drawings() if d.get("fill")]
+        doc = pymupdf.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 300), NEUTRAL[0], fontsize=11)
+        for d in letters:
+            shape = page.new_shape()
+            for item in d["items"]:
+                if item[0] == "l":
+                    shape.draw_line(item[1], item[2])
+                elif item[0] == "c":
+                    shape.draw_bezier(item[1], item[2], item[3], item[4])
+            shape.finish(fill=(0, 0, 0), color=(0, 0, 0), width=width, lineJoin=join, even_odd=True, closePath=False)
+            shape.commit()
+        doc.save(path)
+        doc.close()
+        return path
+
+    path = outlined(tmp_path / "round.pdf", 0.5, 1)
+    with pymupdf.open(path) as doc:
+        name = [g for g in vectors.letters(doc[0]) if g.y1 < 200]
+    zone = (min(g.x0 for g in name) - 2, min(g.y0 for g in name) - 2, max(g.x1 for g in name) + 2,
+            max(g.y1 for g in name) - 0.5)  # fmt: skip
+    _, result = export_zones(path, {"z1": zone}, tmp_path / "out_round")
+    assert result.exported, [leak.message for leak in result.leaks]
+    with pymupdf.open(result.output_path) as doc:
+        assert not [g for g in vectors.letters(doc[0]) if g.y1 < 200]
+    # A 1.5 pt stroke with miter joins would need a rectangle 15 pt beyond each letter: not covered,
+    # and the export is blocked instead of leaving the letters silently.
+    path = outlined(tmp_path / "miter.pdf", 1.5, 0)
+    _, result = export_zones(path, {"z1": zone}, tmp_path / "out_miter")
+    assert not result.exported and any("no se pudieron quitar" in leak.message for leak in result.leaks)
+
+
+def test_joined_letter_rectangles_never_reach_into_a_kept_area():
+    a, b = pymupdf.Rect(0, 0, 10, 10), pymupdf.Rect(8, 0, 18, 10)
+    keep = [pymupdf.Rect(9, 11, 30, 20)]  # touched only by the union's corner: no, the union is 0..18
+    assert vectors.join_overlapping([a, b]) == [pymupdf.Rect(0, 0, 18, 10)]
+    keep = [pymupdf.Rect(0, 9.5, 2, 12)]  # a kept area under a's corner: a alone touches it too
+    c = pymupdf.Rect(20, 0, 30, 10)
+    d = pymupdf.Rect(28, 0, 40, 10)
+    away = [pymupdf.Rect(35, -10, 45, -1)]  # c and d both stay clear of it; their union too
+    assert vectors.join_overlapping([c, d], away) == [pymupdf.Rect(20, 0, 40, 10)]
+    e, f = pymupdf.Rect(50, 0, 60, 5), pymupdf.Rect(58, 5, 70, 12)
+    corner = [pymupdf.Rect(51, 6, 57, 11)]  # inside the union's box, touched by neither of them
+    assert vectors.join_overlapping([e, f], corner) == [e, f]
+    assert keep  # (kept for readability of the cases above)

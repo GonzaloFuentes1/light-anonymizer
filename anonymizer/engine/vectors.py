@@ -10,13 +10,15 @@ A drawing program may write one path per letter or one path for a whole line or 
 letter as a subpath; so the unit here is the subpath. MuPDF redacts line art subpath by subpath,
 and the first redaction rectangle that touches a shape decides: the shape is removed only if that
 rectangle covers all of it (measured with MuPDF 1.28: a letter first touched by a zone that cuts
-it stays, even when another rectangle covers it whole). So when a zone is applied
-(``pdf.snap_rects``), each filled letter under it (``under``: its centre, or half of it, inside the
-zone) gets a small rectangle of its own (``cover``): only those letters, never a band across the
-zone, at most a few points beyond it and never into what the reviewer kept visible.
-``verify.glyph_leaks`` checks that no letter under an applied zone is left. Letters drawn with fill
-and stroke are not removed by MuPDF's redaction of filled shapes: they are left to the handling of
-strokes, and they are not counted as letters here.
+it stays, even when another rectangle covers it whole). For a shape that is also stroked, the
+rectangle must cover the box grown by the stroke: half the line width with round or bevel joins,
+the miter limit (10) times the width with miter joins. So when a zone is applied
+(``pdf.apply_page_zones``), each letter under it (``under``: its centre, or half of it, inside the
+zone) first gets a small rectangle of its own (``cover``), in a pass of its own; only then the
+zones are applied, deciding alone on everything else. Never a band across the zone, at most a few
+points beyond it, and never into what the reviewer kept visible: a letter whose centre is in a
+kept area belongs to that area. ``verify.glyph_leaks`` checks that no letter under an applied zone,
+and no shape almost entirely inside one, is left.
 
 Coordinates are PyMuPDF's unrotated page space, like the text layer. Every call needs
 ``PDF_LOCK`` held (PyMuPDF is not thread-safe).
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from typing import NamedTuple
 
 import pymupdf
 
@@ -45,7 +48,21 @@ COVER_MAX = 6.0
 # Points added around a letter's rectangle: MuPDF does not count a shape as covered when the edges
 # are exactly equal.
 COVER_PAD = 0.02
+# How far MuPDF looks beyond the box of a stroked shape: the miter limit (PDF default 10) times the
+# line width with miter joins, half the width with round or bevel joins (measured, MuPDF 1.28).
+MITER_LIMIT = 10.0
+# A shape of any size with at least this share of its box inside an applied zone and still in the
+# output is a leak (``verify.glyph_leaks``).
+LEFT_SHARE = 0.9
 _TOUCH = 1e-3  # points: a subpath goes on where the previous segment ended
+
+
+class Shape(NamedTuple):
+    """A filled subpath: its box and how far MuPDF's "covered" test reaches beyond it (``reach``: 0
+    for a shape that is only filled, the stroke's reach for one that is also stroked)."""
+
+    box: pymupdf.Rect
+    reach: float
 
 
 def _subpaths(items) -> list[tuple[list[tuple[float, float]], bool]]:
@@ -74,31 +91,42 @@ def _subpaths(items) -> list[tuple[list[tuple[float, float]], bool]]:
     return out
 
 
-def glyph_paths(page: pymupdf.Page, filled_only: bool = False) -> list[pymupdf.Rect]:
-    """Boxes of the filled, letter-sized subpaths of the page that are not plain boxes (a bullet
-    square, a table cell, a QR module or the black box of a redaction are a single rectangle).
+def _reach(d: dict) -> float:
+    if d.get("type") != "fs":
+        return 0.0
+    width = float(d.get("width") or 1.0)
+    return MITER_LIMIT * width if not d.get("lineJoin") else width / 2
 
-    ``filled_only``: leave out shapes that are also stroked (outlined letters, chart markers), which
-    MuPDF's redaction does not remove as filled shapes (``letters``)."""
-    kinds = ("f",) if filled_only else ("f", "fs")
-    rects = []
+
+def shapes(page: pymupdf.Page, max_side: float | None = GLYPH_MAX_SIDE) -> list[Shape]:
+    """The filled shapes of the page that are not plain boxes (a bullet square, a table cell, a QR
+    module or the black box of a redaction are a single rectangle): a small path is one shape,
+    whatever its subpaths (an "i" and its dot); a larger one gives its subpaths, as MuPDF redacts
+    them, those up to ``max_side`` on each side (None: any size)."""
+    out = []
     for d in page.get_cdrawings():
-        if d.get("type") not in kinds:
+        if d.get("type") not in ("f", "fs"):
             continue
+        reach = _reach(d)
+        items = d.get("items") or ()
         x0, y0, x1, y1 = d["rect"]
-        if 0 < x1 - x0 <= GLYPH_MAX_SIDE and 0 < y1 - y0 <= GLYPH_MAX_SIDE:  # one small path: one box
-            items = d.get("items") or ()
+        if 0 < x1 - x0 <= GLYPH_MAX_SIDE and 0 < y1 - y0 <= GLYPH_MAX_SIDE:  # one small path: one shape
             if not (len(items) == 1 and items[0][0] in ("re", "qu")):
-                rects.append(pymupdf.Rect(x0, y0, x1, y1))
+                out.append(Shape(pymupdf.Rect(x0, y0, x1, y1), reach))
             continue
-        for points, is_box in _subpaths(d.get("items") or ()):  # a large path: its letter-sized subpaths
+        for points, is_box in _subpaths(items):  # its subpaths, as MuPDF redacts them
             if is_box or not points:
                 continue
             xs, ys = [p[0] for p in points], [p[1] for p in points]
             w, h = max(xs) - min(xs), max(ys) - min(ys)
-            if 0 < w <= GLYPH_MAX_SIDE and 0 < h <= GLYPH_MAX_SIDE:
-                rects.append(pymupdf.Rect(min(xs), min(ys), max(xs), max(ys)))
-    return rects
+            if (w > 0 or h > 0) and (max_side is None or (0 < w <= max_side and 0 < h <= max_side)):
+                out.append(Shape(pymupdf.Rect(min(xs), min(ys), max(xs), max(ys)), reach))
+    return out
+
+
+def glyph_paths(page: pymupdf.Page) -> list[pymupdf.Rect]:
+    """Boxes of the letter-like shapes of the page (``shapes``): filled, letter-sized, not boxes."""
+    return [s.box for s in shapes(page)]
 
 
 def clusters(rects: list[pymupdf.Rect]) -> list[tuple[pymupdf.Rect, int]]:
@@ -174,9 +202,10 @@ def text_regions(
     return regions
 
 
-def join_overlapping(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
+def join_overlapping(rects: list[pymupdf.Rect], keep: list[pymupdf.Rect] | tuple = ()) -> list[pymupdf.Rect]:
     """``rects`` with every group of overlapping rectangles replaced by its union, so that no shape
-    covered by one of them is first touched by a neighbour that cuts it."""
+    covered by one of them is first touched by a neighbour that cuts it. Two rectangles whose union
+    would enter an area in ``keep`` stay apart: only those, not the whole group."""
     out = [pymupdf.Rect(r) for r in rects]
     changed = True
     while changed:
@@ -184,7 +213,7 @@ def join_overlapping(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
         joined: list[pymupdf.Rect] = []
         for r in out:
             for k, o in enumerate(joined):
-                if r.intersects(o):
+                if r.intersects(o) and not any((o | r).intersects(a) for a in keep):
                     joined[k] = o | r
                     changed = True
                     break
@@ -195,9 +224,38 @@ def join_overlapping(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
 
 
 def letters(page: pymupdf.Page) -> list[pymupdf.Rect]:
-    """The filled letter-like shapes of the page: what applying a zone removes, and what the leak
-    check looks for under the zones applied."""
-    return glyph_paths(page, filled_only=True)
+    """The boxes of the letter-like shapes of the page, filled or filled and stroked: what applying a
+    zone removes, and what the leak check looks for under the zones applied."""
+    return glyph_paths(page)
+
+
+def centre(r: pymupdf.Rect) -> pymupdf.Point:
+    return pymupdf.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
+
+
+def kept(g: pymupdf.Rect, keep: list[pymupdf.Rect] | tuple) -> bool:
+    """The letter ``g`` belongs to an area left visible: its centre is in one of ``keep``."""
+    c = centre(g)
+    return any(k.contains(c) for k in keep)
+
+
+def left_over(page: pymupdf.Page, rect: pymupdf.Rect) -> list[pymupdf.Rect]:
+    """Filled shapes of any size (``shapes`` without a size limit, plus boxes other than the black
+    ones of the redactions) with at least ``LEFT_SHARE`` of their box inside ``rect``: after a zone
+    is applied, none should be left."""
+    boxes = [s.box for s in shapes(page, max_side=None)]
+    for d in page.get_cdrawings():
+        if d.get("type") in ("f", "fs") and tuple(d.get("fill") or ()) != (0.0, 0.0, 0.0):
+            for points, is_box in _subpaths(d.get("items") or ()):
+                if is_box and points:
+                    xs, ys = [q[0] for q in points], [q[1] for q in points]
+                    boxes.append(pymupdf.Rect(min(xs), min(ys), max(xs), max(ys)))
+    out = []
+    for box in boxes:
+        inter = box & rect
+        if box.get_area() > 0 and not inter.is_empty and inter.get_area() >= LEFT_SHARE * box.get_area():
+            out.append(box)
+    return out
 
 
 def under(rect: pymupdf.Rect, glyphs: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
@@ -212,17 +270,25 @@ def under(rect: pymupdf.Rect, glyphs: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
     return out
 
 
-def cover(rect: pymupdf.Rect, glyphs: list[pymupdf.Rect], keep: list[pymupdf.Rect] | tuple = ()) -> list[pymupdf.Rect]:
+def cover(rect: pymupdf.Rect, letters: list[Shape], keep: list[pymupdf.Rect] | tuple = ()) -> list[pymupdf.Rect]:
     """One small rectangle per letter under ``rect`` (``under``), so that applying the zone removes
     them whole: an OCR box or a drawn zone a little tighter than a letter would otherwise leave that
-    letter in the file, under the black box. Nothing else is covered. A letter that reaches more
-    than ``COVER_MAX`` beyond the zone, or into an area in ``keep`` (what the reviewer left
-    visible), is not covered: the leak check reports it."""
+    letter in the file, under the black box. Nothing else is covered.
+
+    A letter whose centre is in an area of ``keep`` (what the reviewer left visible) belongs to that
+    area: it is not covered, nor a leak. A letter that reaches more than ``COVER_MAX`` beyond the
+    zone, or whose rectangle (grown by its stroke's reach, up to ``COVER_MAX``) would enter a kept
+    area, is not covered: the leak check reports it."""
     out = []
     limit = rect + (-COVER_MAX, -COVER_MAX, COVER_MAX, COVER_MAX)
-    for g in under(rect, glyphs):
-        r = g + (-COVER_PAD, -COVER_PAD, COVER_PAD, COVER_PAD)
-        if not limit.contains(r) or any(r.intersects(k) for k in keep):
+    under_rect = {tuple(g) for g in under(rect, [s.box for s in letters])}
+    for s in letters:
+        g = s.box
+        if tuple(g) not in under_rect or kept(g, keep) or not limit.contains(g):
+            continue
+        grow = min(s.reach, COVER_MAX) + COVER_PAD
+        r = g + (-grow, -grow, grow, grow)
+        if any(r.intersects(k) for k in keep):
             continue
         out.append(r)
     return out

@@ -718,9 +718,31 @@ you prefer to fix it now.
 > and its e-mail was never read). Measured, re-running the review's sweep (a drawn block of five
 > lines, the middle one with an e-mail and a phone, OCR then export, fonts 10 and 12, spacing 1.0
 > to 1.5): every export passes, the middle line is removed whole, and the neighbouring lines keep
-> all their letters from spacing 1.15 up; at single spacing they keep 45 of 46 and 41 of 44 (MuPDF
-> also drops the shapes under about 1 pt wide a zone touches, such as the stem of an "l"), where
-> before the three middle lines were erased.
+> all their letters from spacing 1.15 up; at single spacing they keep 45 of 46 and 41 of 44 (the
+> dots of i's and the periods of those lines that fall entirely inside the zone go: MuPDF removes
+> every subpath a zone covers whole), where before the three middle lines were erased.
+>
+> **Fixed after a third review (2026-10-06).** Putting the letters' rectangles before the zones
+> in one pass leaked: a shape that is not a "letter" (an outline over 40 pt, as in a name drawn at
+> 64 pt) was first touched by a neighbouring letter's rectangle that does not contain it, and MuPDF
+> kept it although the zone covered it whole; the export passed. Now `pdf.apply_page_zones(page,
+> rects, keep)`, the one entry point for the export and any preview of it, applies the letters'
+> rectangles in a pass of their own and then the zones, which decide alone on everything else;
+> and the leak check also reports any filled shape, of any size, at least 90 % inside an applied
+> zone (`vectors.left_over`; the black boxes of the redactions are left out). A letter whose centre
+> is in an area the reviewer left visible belongs to that area: it is not covered and not a leak
+> (at single spacing, the periods of a URL left visible above the data line blocked the export).
+> Letters drawn filled and outlined are letters too: their rectangle is grown by the stroke's
+> reach as MuPDF measures it (half the width with round or bevel joins, ten times the width with
+> miter joins; measured), up to 6 pt; one that would need more stays and blocks the export.
+> Overlapping letter rectangles are joined only when the union stays out of the kept areas. A lone
+> "N." before a listed value is an initial, not "N°". Measured: the large drawn names of the
+> review (Helvetica, Oblique, Times Italic at 64 pt, an e-mail at 30 pt) under a generous zone
+> leave no shape in the file (with the one-pass order two of them kept outlines); the kept-neighbour
+> block exports at every spacing from 1.0; the review's sweep (fonts 8, 10 and 12, spacing 0.9 to
+> 1.5, OCR then export) exports everywhere with nothing of the data line left, the neighbouring
+> lines keep every shape from spacing 1.15 up, lose 1 to 3 dots or periods at 1.0, and at 0.9,
+> where the lines overlap, also the letters the zone covers.
 >
 > **Measured (2026-10-05).** The test set's drawn-text case is a page with no text layer at all,
 > already read whole as a scan (9 of 9, unchanged). For the case D8 is about, that page with two
@@ -896,8 +918,10 @@ the list still rules. Agreed?
   drawn as a single rectangle (l, I, a hyphen, a period: they look like table cells or bullets,
   so a word made only of them is not counted) and text drawn with strokes instead of fills, such
   as the SHX fonts of CAD drawings. On a page with almost no text layer both are still read, as
-  that page is read whole by OCR. Letters drawn filled and outlined are found and read, but
-  censoring them hides them without removing their shapes from the file: removing stroked paths is
-  left to the handling of strokes. When a zone is applied, MuPDF also drops shapes under about
-  1 pt wide that the zone only touches (the stem of an "l" of the next line).
+  that page is read whole by OCR. Letters drawn filled and outlined are removed when their stroke
+  is thin (MuPDF needs the rectangle to cover the stroke too: up to ten times its width with miter
+  joins); with a thicker stroke they cannot be removed and the export is blocked with a leak.
+  Shapes drawn only with strokes are left to the handling of strokes. When a zone is applied,
+  MuPDF also removes the dots of i's and the periods of a neighbouring line that fall entirely
+  inside it.
 - Human review of every document before publishing is mandatory.

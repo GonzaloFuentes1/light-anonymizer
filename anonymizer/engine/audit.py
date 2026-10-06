@@ -379,12 +379,12 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
             parts.append(_table(["Tipo", "Página", "Queda visible"], rows))
 
     grown = result.grown if result is not None and result.exported else []
-    if grown:  # D8: what was removed beyond the zones themselves
+    if grown:  # D8: the rectangles applied, besides the zones, for the letters under them
         by_id = {f.id: f for f in file.findings}
-        parts.append("<h3>Letras dibujadas cubiertas enteras</h3>")
+        parts.append("<h3>Letras cubiertas por las zonas</h3>")
         parts.append(
-            "<p>Estas zonas tapaban en parte letras dibujadas como trazos; se taparon enteras para "
-            "quitarlas del archivo.</p>"
+            "<p>Estas zonas tenían debajo letras dibujadas como trazos. Cada una se tapó entera con un "
+            "rectángulo propio, para quitarla del archivo.</p>"
         )
         rows = [
             [g["page"] + 1, TYPE_LABELS.get(by_id[g["finding_id"]].type, "") if g["finding_id"] in by_id else "—",

@@ -157,13 +157,14 @@ def _inner_mask(shape: tuple[int, int], polygon: np.ndarray) -> np.ndarray:
     return cv2.erode(mask, kernel).astype(bool)
 
 
-def glyph_leaks(path: Path, active: list[Finding]) -> list[Leak]:
-    """Filled letters drawn as paths (D8) still under an active zone of an exported PDF.
+def glyph_leaks(path: Path, active: list[Finding], kept: list[Finding] | tuple = ()) -> list[Leak]:
+    """Shapes drawn as paths (D8) still in an exported PDF under an active zone.
 
     The black box hides them, but they are still in the file (MuPDF keeps a shape no rectangle covers
-    whole). "Under" is ``vectors.under``, the rule ``pdf.snap_rects`` covered them by on export; one
-    left is a letter that was not covered (it reached too far beyond the zone, or into an area left
-    visible). Shapes that are also stroked are not letters here (``vectors.letters``).
+    whole). Two kinds: a letter under the zone (``vectors.under``, the rule ``pdf.snap_rects``
+    covered letters by on export), unless it belongs to an area left visible (``kept``: its centre
+    is there); and any filled shape, of any size, almost entirely inside the zone
+    (``vectors.left_over``), which the zone alone should have removed.
     """
     by_page: dict[int, list[Finding]] = {}
     for f in active:
@@ -175,21 +176,21 @@ def glyph_leaks(path: Path, active: list[Finding]) -> list[Leak]:
                 if not 0 <= n < doc.page_count:
                     continue
                 page = doc[n]
-                glyphs = vectors.letters(page)
-                if not glyphs:
-                    continue
+                letters = vectors.letters(page)
                 to_page = pymupdf.Matrix(page.derotation_matrix)
+                keep = [(pymupdf.Rect(*bbox_of(f.polygon)) * to_page).normalize() for f in kept if f.page == n]
                 for f in by_page[n]:
                     zone = (pymupdf.Rect(*bbox_of(f.polygon)) * to_page).normalize()
-                    if vectors.under(zone, glyphs):
+                    left = [g for g in vectors.under(zone, letters) if not vectors.kept(g, keep)]
+                    if left or vectors.left_over(page, zone):
                         label = TYPE_LABELS.get(f.type, f.type)
                         leaks.append(
                             Leak(
                                 page=n,
                                 type=f.type,
-                                message=f"Una zona marcada en la página {n + 1} ({label}) tapa solo en parte "
-                                "letras dibujadas como trazos, que siguen en el archivo. Agranda la zona para "
-                                "que las cubra enteras.",
+                                message=f"Una zona marcada en la página {n + 1} ({label}) deja en el archivo "
+                                "letras o formas dibujadas como trazos que no se pudieron quitar enteras. "
+                                "Agranda la zona para que las cubra o revisa esa parte del documento.",
                                 finding_id=f.id,
                             )
                         )

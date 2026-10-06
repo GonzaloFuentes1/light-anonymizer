@@ -58,6 +58,7 @@ atencion ciudadana|informaciones|oficina de partes|numero|nro|n|web|sitio web|pa
 # Words of those phrases that are also names: they count as a label only before a colon, or as the
 # uppercase "RUT" ("Rut Mesa" is a person; "Mesa central:" and "RUT N°" are labels).
 _NAME_LIKE = frozenset({"rut", "mesa"})
+_NUMBER_SIGN = re.compile(r"(?i)\bn\s*[°º]")  # "N°", "Nº": número
 
 
 def rut_key(text: str) -> str | None:
@@ -134,10 +135,11 @@ def is_label(gap: str) -> bool:
     """``gap``, the text right before a listed value, is nothing, punctuation or one label phrase."""
     if any(c.isdigit() for c in gap):
         return False
-    words = tuple(re.findall(r"[^\W\d_]+", norm(gap)))
+    # "N°" and "Nº" are the label "n"; a lone "N." is an initial (and "º" would read as "o").
+    words = tuple(re.findall(r"[^\W\d_]+", norm(_NUMBER_SIGN.sub(" n ", gap))))
     if not words:
         return True
-    if words not in LABEL_PHRASES:
+    if words not in LABEL_PHRASES or ("n" in words and not _NUMBER_SIGN.search(gap)):
         return False
     if _NAME_LIKE.isdisjoint(words):
         return True

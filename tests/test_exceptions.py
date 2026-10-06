@@ -214,6 +214,7 @@ def test_a_line_with_only_labels_and_listed_values_is_an_exception():
         f"Mesa central: {CALL_CENTER}",
         f"Línea gratuita {TOLL_FREE}",
         f"RUT N° {INSTITUTION_RUT}",
+        f"Nº {CALL_CENTER}",
         f"RUT: {INSTITUTION_RUT}",
         f"Fono: {CALL_CENTER}.",
     ):
@@ -231,6 +232,7 @@ def test_a_line_with_only_labels_and_listed_values_is_an_exception():
         f"J. P. {CALL_CENTER}",  # initials
         f"Whatsapp {CALL_CENTER} · Cel. E. Rut",  # words after the value
         f"Fono: {CALL_CENTER} Ana",
+        f"N. {CALL_CENTER}",  # an initial, not "N°"
     ],
 )
 def test_names_and_initials_next_to_a_listed_value_keep_it_censored(text):

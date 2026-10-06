@@ -453,21 +453,34 @@ def snap_rects(
     """The rectangles that applying ``rects`` (unrotated page space) on ``page`` takes: for each zone,
     the zone itself and one small rectangle per letter drawn as a path under it (D8,
     ``vectors.cover``), since MuPDF removes such a letter only when one rectangle covers all of it.
-    ``keep``: areas the reviewer left visible, which no added rectangle enters. Apply them in the
-    order of ``apply_order``. Call with ``PDF_LOCK`` held; the same function serves the export and
-    any preview of it."""
-    letters = vectors.letters(page) if rects else []
+    ``keep``: areas the reviewer left visible; a letter that belongs to one is not taken, and no
+    added rectangle enters one. Call with ``PDF_LOCK`` held."""
+    letters = vectors.shapes(page) if rects else []
     return [[r, *vectors.cover(r, letters, keep)] if letters else [r] for r in rects]
 
 
-def apply_order(groups: list[list[pymupdf.Rect]], keep: list[pymupdf.Rect] | tuple = ()) -> list[pymupdf.Rect]:
-    """The rectangles of ``snap_rects`` in the order to add them as redactions: the letters' first
-    (overlapping ones joined), then the zones. MuPDF lets the first rectangle that touches a shape
-    decide whether it is removed, so a zone that cuts a letter must not come before the rectangle
-    that covers that letter whole; a letter a zone only grazes (not under it) stays."""
-    letters = [r for r in vectors.join_overlapping([r for group in groups for r in group[1:]])]
-    letters = [r for r in letters if not any(r.intersects(k) for k in keep)]
-    return [*letters, *(group[0] for group in groups)]
+def apply_page_zones(
+    page: pymupdf.Page, rects: list[pymupdf.Rect], keep: list[pymupdf.Rect] | tuple = ()
+) -> list[list[pymupdf.Rect]]:
+    """Applies ``rects`` (unrotated page space; the page must have no /Rotate while this runs) on
+    ``page`` and returns what ``snap_rects`` took for each zone. The one entry point for the export
+    and any preview of it.
+
+    Two passes, because MuPDF lets the first redaction rectangle that touches a shape decide whether
+    it is removed: first the letters' rectangles alone (overlapping ones joined, never into a kept
+    area), then the zones, which decide alone on everything else. In one pass, a letter's rectangle
+    touching a large shape the zone covers whole (an outline over 40 pt, a fill-and-stroke shape)
+    came first and kept it in the file."""
+    groups = snap_rects(page, rects, keep)
+    letters = vectors.join_overlapping([r for group in groups for r in group[1:]], keep)
+    if letters:
+        for r in letters:
+            page.add_redact_annot(r, fill=(0, 0, 0))
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+    for group in groups:
+        page.add_redact_annot(group[0], fill=(0, 0, 0))
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+    return groups
 
 
 def redact(
@@ -481,7 +494,7 @@ def redact(
     JavaScript actions), fully rewritten.
 
     ``keep_by_page``: areas left visible on purpose (``snap_rects``). Returns, per page, the
-    rectangles applied for each zone of ``rects_by_page``, in the same order."""
+    rectangles applied for each zone of ``rects_by_page``, in the same order (``apply_page_zones``)."""
     applied: dict[int, list[list[pymupdf.Rect]]] = {}
     with PDF_LOCK:
         doc = pymupdf.open(source, filetype="pdf")
@@ -497,11 +510,7 @@ def redact(
                     page.set_rotation(0)
                 # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
                 keep = (keep_by_page or {}).get(n, ())
-                groups = snap_rects(page, rects_by_page.get(n, []), keep)
-                applied[n] = groups
-                for r in apply_order(groups, keep):
-                    page.add_redact_annot(r, fill=(0, 0, 0))
-                page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+                applied[n] = apply_page_zones(page, rects_by_page.get(n, []), keep)
                 if rotation:
                     page.set_rotation(rotation)
                 for annot in list(page.annots() or []):
