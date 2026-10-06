@@ -98,6 +98,14 @@ def test_js_syntax(name):
                 "Censurar todos los otros enlaces",
                 "No censurar",
                 "sin censurar",
+                "Dibujando · Esc para salir",
+                "Cargando…",
+                "Actualizando…",
+                "No se pudo mostrar el resultado de esta página",
+                "Reintentar",
+                "Ver página",
+                "Cargando el archivo…",
+                "Esta página se exportará como imagen",
             ],
         ),
         (
@@ -121,3 +129,13 @@ def test_the_source_url_comes_from_the_api():
     # The UI may not hardcode external addresses (the CSP blocks them anyway): GET /api/about serves it.
     for name in ("index.html", "app.js"):
         assert "github" not in read(name).lower()
+
+
+def test_old_viewer_is_gone():
+    """The single-page viewer, its thumbnails and the "Ver como quedará" overlay left with the scrolling review."""
+    html = read("index.html")
+    for s in ('id="thumbs"', 'id="rfiles"', 'id="pagebox"', "Ver como quedará"):
+        assert s not in html, f"index.html still has {s!r}"
+    js = read("app.js")
+    for s in ("renderThumbs", "thumbCache", "setPage(", "rv.result"):
+        assert s not in js, f"app.js still has {s!r}"

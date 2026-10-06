@@ -219,9 +219,10 @@
     if (res.status === 204) return null;
     return res.json();
   }
-  async function apiBlobUrl(path) {
+  /** A binary answer as a blob URL, with the response headers. */
+  async function apiBlob(path) {
     const res = await request(path);
-    return URL.createObjectURL(await res.blob());
+    return { url: URL.createObjectURL(await res.blob()), headers: res.headers };
   }
   const enc = encodeURIComponent;
 
@@ -1102,17 +1103,12 @@
     go(3);
   }
 
-  // Stubs of the scrolling viewer, each replaced by the task that builds that part.
-  function renderZonesAll() {} // replaced in Task 12
-  function renderRowZones() {} // replaced in Task 12
-  function revealFinding() {} // replaced in Task 12
-  function rowLabel(i) { return `Página ${i + 1} de ${S.rv.file.pages.length}`; } // replaced in Task 12
-  function scrollToY(y) { $("#viewport").scrollTop = y; } // replaced in Task 12
-
   function focusViewport() { $("#viewport").focus({ preventScroll: true }); }
 
   /** Empty the viewport. The new generation makes every image response still on its way stale. */
   function teardownRows() {
+    cancelDrag();
+    smoothTo = null;
     S.rv.gen += 1;
     stopObserver();
     clearQueue();
@@ -1360,16 +1356,17 @@
       const el = h("div", { class: `cell ${side}` },
         h("span", { class: "cap", "aria-hidden": "true", text: before ? "Antes" : "Después: como quedará" }), box, state);
       const parts = { cell: el, box, inner, img, state, key: "", url: null, mp: 0, pending: "", pendingMp: 0, failed: "", fail: null };
-      return before ? { ...parts, zones } : { ...parts, version: null };
+      return before ? { ...parts, zones } : { ...parts, version: null, note: null }; // note: showExportNote
     };
     rv.rows = pages.map((page, i) => {
       const before = cell("before", i), after = cell("after", i);
-      const label = h("div", { class: "plabel", text: rowLabel(i) });
+      const label = h("div", { class: "plabel" }); // its text: renderRowLabels, below
       const el = h("div", { class: "prow", role: "group", "aria-label": `Página ${i + 1} de ${n}`, dataset: { row: String(i) } },
         before.cell, after.cell, label);
       return { i, page, el, label, fit: 1, scale: 1, w: 0, h: 0, before, after };
     });
     $("#rows").replaceChildren(...rv.rows.map((row) => row.el));
+    renderRowLabels();
     // Its sets stay empty until its first notification, after the next frame, and a scroll that has
     // moved before its scroll event holds the loads (scheduleLoads): the rows at scrollTop 0 are never
     // requested on the way to where showStart or restoreAnchor goes.
@@ -1377,10 +1374,16 @@
     relayout({ keepAnchor: false });
   }
 
+  /** "Página n de N · k zonas": k counts the zones that will be censored on that page. ``counts``
+   *  saves recounting for every row (ReviewCore.zoneCounts). */
+  function rowLabel(i, counts = ReviewCore.zoneCounts(rvFindings(), S.rv.rows.length)) {
+    return `Página ${i + 1} de ${S.rv.rows.length} · ${plural(counts[i] || 0, "zona", "zonas")}`;
+  }
   /** The label under each row, from rowLabel: it follows the findings of that page. */
   function renderRowLabels() {
+    const counts = ReviewCore.zoneCounts(rvFindings(), S.rv.rows.length);
     for (const row of S.rv.rows) {
-      const text = rowLabel(row.i);
+      const text = rowLabel(row.i, counts);
       if (row.label.textContent !== text) row.label.textContent = text;
     }
   }
@@ -1547,6 +1550,11 @@
     if (!rows.length) return;
     const i = clamp(Math.round(Number(field.value)) || 1, 1, rows.length) - 1;
     field.value = String(i + 1);
+    showRow(i);
+  }
+  /** A page's row to the top of the visible area, the focus to the pages (the page field, a page leak). */
+  function showRow(i) {
+    if (!S.rv.rows[i]) return;
     scrollToY(rowMetrics()[i].top - headerHeight());
     focusViewport();
   }
@@ -1723,9 +1731,11 @@
     if (!cell.url) showCellState(cell, "Cargando…"); // the first image, or a retry
     else if (side === "after" && cell.version !== version) showUpdating(cell); // a zoom alone keeps it as is
     L.inFlight += 1;
-    let url = null, error = null;
+    let url = null, error = null, note = null;
     try {
-      url = await apiBlobUrl(path);
+      let headers;
+      ({ url, headers } = await apiBlob(path));
+      if (side === "after") note = exportNote(headers);
     } catch (err) {
       error = err;
     }
@@ -1736,7 +1746,7 @@
       if (!wanted) {
         if (url) URL.revokeObjectURL(url);
       } else if (url) {
-        showImage(row, side, { url, key, mp, version });
+        showImage(row, side, { url, key, mp, version, note });
       } else {
         showFailure(row, side, key, error);
       }
@@ -1747,11 +1757,14 @@
     }
   }
 
-  function showImage(row, side, { url, key, mp, version }) {
+  function showImage(row, side, { url, key, mp, version, note = null }) {
     const cell = row[side], old = cell.url;
     cell.img.src = url;
     Object.assign(cell, { url, key, mp, failed: "" });
-    if (side === "after") cell.version = version;
+    if (side === "after") {
+      cell.version = version;
+      showExportNote(cell, note);
+    }
     cell.state.hidden = true;
     cell.cell.classList.remove("updating");
     // The replaced image stays on screen until the new one is decoded; its URL goes then.
@@ -1885,6 +1898,26 @@
     if (cell.url) URL.revokeObjectURL(cell.url);
     Object.assign(cell, { url: null, key: "", mp: 0 });
     cell.img.removeAttribute("src");
+    showExportNote(cell, null);
+  }
+
+  /** The redacted page answer says when the export will flatten that page into an image
+   *  (``X-Page-As-Image: 1``, the reason URL-encoded in ``X-Page-As-Image-Reason``). Absent: null. */
+  function exportNote(headers) {
+    if (!headers || headers.get("X-Page-As-Image") !== "1") return null;
+    let reason = "";
+    try { reason = decodeURIComponent(headers.get("X-Page-As-Image-Reason") || ""); } catch { /* malformed: no reason */ }
+    return { reason: reason.trim() };
+  }
+  /** A small note on an after cell that stays while its image is shown; null removes it. */
+  function showExportNote(cell, note) {
+    if (cell.note) cell.note.remove();
+    cell.note = null;
+    if (!note) return;
+    cell.note = h("div", { class: "cnote", title: note.reason || null },
+      h("b", { text: "Esta página se exportará como imagen" }),
+      note.reason ? h("span", { text: note.reason }) : null);
+    cell.cell.append(cell.note);
   }
   function showCellState(cell, text) {
     cell.state.textContent = text;
@@ -1895,101 +1928,111 @@
     cell.fail = null;
   }
 
-  // Approximate size of a zone label (10px bold UI font), used to keep labels off other zones.
-  const LABEL_H = 16;
-  const labelWidth = (text) => 10 + text.length * 6.2;
-  const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  // --- zones over the before pages, selection and scrolling to it (spec 6.6) ---
+  const LABEL_H = 16; // approximate height of a zone label (10px bold UI font)
+  const SEL_MARGIN = 48; // a selected zone closer than this to the edge of the visible area is brought in
+  const zoneLabelText = (f) => typeLabel(f.type) + ({ removed: " · quitada", suggested: " · sin censurar" }[f.status] || "");
 
-  /** Label placement per zone: "top" (as in the design), "below", or "none" when the label
-   *  would cover another zone or label (it then shows on hover). The selected zone always
-   *  shows its label. */
-  function placeLabels(items) {
-    const placed = [];
-    const out = new Map();
-    const sel = S.rv.sel;
-    const order = [...items].sort((a, b) => (b.f.id === sel) - (a.f.id === sel) || a.r.y - b.r.y || a.r.x - b.r.x);
-    for (const it of order) {
-      const suffix = { removed: " · quitada", suggested: " · sin censurar" }[it.f.status] || "";
-      const text = typeLabel(it.f.type) + suffix;
-      const w = labelWidth(text);
-      const above = { x: it.r.x - 2, y: it.r.y - LABEL_H - 2, w, h: LABEL_H };
-      const below = { x: it.r.x - 2, y: it.r.y + it.r.h + 2, w, h: LABEL_H };
-      const free = (cand) => !placed.some((p) => overlaps(cand, p)) && !items.some((o) => o !== it && overlaps(cand, o.r));
-      let where = "none";
-      if (it.f.id === sel || free(above)) where = "top";
-      else if (free(below)) where = "below";
-      if (where !== "none") placed.push(where === "top" ? above : below);
-      out.set(it.f.id, where);
-    }
-    return out;
-  }
-
-  // Uncalled since the rows replaced the single page (callers use renderZonesAll): Task 12 turns it
-  // into renderRowZones(row).
-  function renderZones() {
+  /** The zones of one page over its before image, in display pixels of its cell (clipped to the
+   *  page), filtered by the type chips. Only while the row's before is shown or on its way: a
+   *  released row has none. Labels are placed over this page's zones only and never leave the page.
+   *  A zone being drawn on this row stays on top. */
+  function renderRowZones(row) {
     const rv = S.rv;
-    const layer = $("#zones");
-    const s = scaleNow();
+    if (rv.rows[row.i] !== row) return;
+    const ghost = drag && drag.row === row ? drag.ghost : null;
+    if (!row.before.url && !row.before.pending) { row.before.zones.replaceChildren(...(ghost ? [ghost] : [])); return; }
     const items = rvFindings()
-      .filter((f) => f.page === rv.page && !rv.hidden.has(f.type))
+      .filter((f) => f.page === row.i && !rv.hidden.has(f.type))
       .map((f) => {
-        const b = bbox(f.polygon);
-        return { f, r: { x: b.x * s, y: b.y * s, w: Math.max(4, b.w * s), h: Math.max(4, b.h * s) } };
+        const r = ReviewCore.zoneRect(bbox(f.polygon), row.scale, rv.rot, row.page);
+        return { f, id: f.id, text: zoneLabelText(f), r: { ...r, w: Math.max(4, r.w), h: Math.max(4, r.h) } };
       });
-    const labels = placeLabels(items);
-    const zones = items
-      .map(({ f, r }) => {
-        const cls = ["zone", typeClass(f.type)];
-        const where = labels.get(f.id);
-        if (where === "below") cls.push("label-below");
-        if (where === "none") cls.push("nolabel");
-        if (f.doubtful) cls.push("doubt");
-        if (f.status === "removed") cls.push("removed");
-        if (f.status === "suggested") cls.push("suggested");
-        if (f.id === rv.sel) cls.push("sel");
-        return h("div", {
-          class: cls.join(" "),
-          dataset: { id: f.id, label: typeLabel(f.type) },
-          title: `${typeLabel(f.type)}: ${findingValue(f)}${f.status === "suggested" ? " (sin censurar)" : ""}`,
-          style: { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` },
-          onclick: (e) => { e.stopPropagation(); if (!rv.draw) select(f.id); },
-        });
+    const labels = ReviewCore.placeLabels(items, { sel: rv.sel, pageHeight: row.h, labelH: LABEL_H });
+    const zones = items.map(({ f, r }) => {
+      const cls = ["zone", typeClass(f.type)];
+      const where = labels.get(f.id);
+      if (where === "below") cls.push("label-below");
+      if (where === "none") cls.push("nolabel");
+      if (f.doubtful) cls.push("doubt");
+      if (f.status === "removed") cls.push("removed");
+      if (f.status === "suggested") cls.push("suggested");
+      if (f.id === rv.sel) cls.push("sel");
+      return h("div", {
+        class: cls.join(" "),
+        dataset: { id: f.id, label: typeLabel(f.type) }, // a click selects it (see init)
+        title: `${typeLabel(f.type)}: ${findingValue(f)}${f.status === "suggested" ? " (sin censurar)" : ""}`,
+        style: { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` },
       });
-    layer.replaceChildren(...zones);
+    });
+    row.before.zones.replaceChildren(...zones, ...(ghost ? [ghost] : []));
+    if (ghost) placeGhost(); // the scale or the rotation may have changed under it
+  }
+  /** Every row whose before is shown or on its way (chips, edits, relayout, fonts). */
+  function renderZonesAll() {
+    for (const row of S.rv.rows) if (row.before.url || row.before.pending) renderRowZones(row);
   }
 
-  function scrollToSelected() {
+  // Where a smooth programmatic scroll is going, until it ends: a selection made meanwhile (J held
+  // down) is measured against where the view will be, not against a frame of the way there.
+  let smoothTo = null;
+  /** Scrolls the viewport, smoothly unless the motion is reduced, it is asked to be instant, or it is
+   *  long (more than two viewport heights). Its scroll events hold the image loads as any scroll. */
+  function scrollToY(y, { instant = false } = {}) {
+    const vp = $("#viewport");
+    const top = clamp(y, 0, Math.max(0, vp.scrollHeight - vp.clientHeight));
+    const jump = instant || reducedMotion() || ReviewCore.isLongScroll(vp.scrollTop, top, vp.clientHeight);
+    smoothTo = jump || Math.abs(top - vp.scrollTop) < 1 ? null : top;
+    vp.scrollTo({ top, behavior: jump ? "instant" : "smooth" });
+  }
+
+  /** Brings a finding's zone into view. The viewport scrolls only when the zone is less than 48 px
+   *  from the edge of the visible area (below the sticky header), and then centers it; a zone partly
+   *  or wholly off its page stops at the nearest edge of its own row. The shared pan moves the same
+   *  way, so both sides stay aligned. The findings list keeps the item in view. */
+  function revealFinding(id, { instant = false } = {}) {
+    const f = findingById(id), rv = S.rv, vp = $("#viewport");
+    const row = f && rv.rows[f.page];
+    if (row && vp.clientHeight) {
+      const z = ReviewCore.zoneRect(bbox(f.polygon), row.scale, rv.rot, row.page);
+      // The page box inside its row (stacked, below its caption); the zone clamped to that page.
+      const boxTop = row.before.box.getBoundingClientRect().top - row.el.getBoundingClientRect().top;
+      const y0 = clamp(z.y, 0, row.h), y1 = clamp(z.y + z.h, y0, row.h);
+      const view = { scrollTop: smoothTo != null ? smoothTo : vp.scrollTop, headerHeight: headerHeight(), height: vp.clientHeight };
+      const y = ReviewCore.scrollTarget({ y: boxTop + y0, h: y1 - y0 }, rowMetrics()[f.page], view, SEL_MARGIN);
+      if (y != null) scrollToY(y, { instant });
+      const pan = ReviewCore.panTarget(z, row.w, rv.layout.colWidth, rv.pan, SEL_MARGIN);
+      if (pan != null) setPan(pan);
+    }
+    scrollListToSelected();
+  }
+
+  /** The selected item of the findings list stays in view. */
+  function scrollListToSelected() {
     const rv = S.rv;
-    const behavior = reducedMotion() ? "auto" : "smooth";
-    const zone = rv.sel ? $(`#zones [data-id="${CSS.escape(rv.sel)}"]`) : null;
-    if (zone) {
-      const vp = $("#viewport");
-      const vr = vp.getBoundingClientRect(), zr = zone.getBoundingClientRect();
-      const m = 48;
-      let top = vp.scrollTop, left = vp.scrollLeft;
-      if (zr.top < vr.top + m || zr.bottom > vr.bottom - m) top += zr.top + zr.height / 2 - (vr.top + vr.height / 2);
-      if (zr.left < vr.left + m || zr.right > vr.right - m) left += zr.left + zr.width / 2 - (vr.left + vr.width / 2);
-      vp.scrollTo({ top, left, behavior });
-    }
     const item = rv.sel ? $(`#findlist .item[data-id="${CSS.escape(rv.sel)}"]`) : null;
-    if (item) {
-      const list = $("#findlist");
-      const lr = list.getBoundingClientRect(), ir = item.getBoundingClientRect();
-      if (ir.top < lr.top) list.scrollTo({ top: list.scrollTop + ir.top - lr.top - 40, behavior });
-      else if (ir.bottom > lr.bottom) list.scrollTo({ top: list.scrollTop + ir.bottom - lr.bottom + 12, behavior });
-    }
+    if (!item) return;
+    const behavior = reducedMotion() ? "instant" : "smooth";
+    const list = $("#findlist");
+    const lr = list.getBoundingClientRect(), ir = item.getBoundingClientRect();
+    if (ir.top < lr.top) list.scrollTo({ top: list.scrollTop + ir.top - lr.top - 40, behavior });
+    else if (ir.bottom > lr.bottom) list.scrollTo({ top: list.scrollTop + ir.bottom - lr.bottom + 12, behavior });
   }
 
+  /** Selects a finding (list, J/K, a click on its zone, a leak's "Ver"). Selecting marks it seen;
+   *  scrolling never does. ``auto``: chosen by the app, not seen yet. */
   function select(id, { auto = false } = {}) {
     const rv = S.rv;
     const f = findingById(id);
     if (!f) return;
+    const prev = findingById(rv.sel);
     rv.sel = id;
     if (!auto) seenSet(rv.id).add(id);
-    renderZonesAll(); // Task 12: only the rows of the old and the new selection, then revealFinding
+    // Only the rows of the old and the new selection change: the highlight and the labels' places.
+    for (const page of new Set([prev ? prev.page : -1, f.page])) if (rv.rows[page]) renderRowZones(rv.rows[page]);
     renderFindings();
     renderVerify();
-    requestAnimationFrame(scrollToSelected);
+    revealFinding(id);
   }
 
   function move(delta) {
@@ -2080,18 +2123,30 @@
       );
     });
 
-    // Leaks found by the last leak check (after an export attempt).
+    // Leaks found by the last leak check (after an export attempt). One with a finding selects it;
+    // one that names only a page brings that page's row to the top.
     const leaks = (rv.file && rv.file.leaks) || [];
     const lbox = $("#leaks");
     lbox.hidden = leaks.length === 0;
     if (leaks.length) {
+      const goTo = (l) => {
+        if (l.finding_id && findingById(l.finding_id)) {
+          return h("button", { type: "button", class: "btn ghost small", text: "Ver", onclick: () => select(l.finding_id) });
+        }
+        if (l.page != null && rv.rows[l.page]) {
+          return h("button", {
+            type: "button", class: "btn ghost small", text: "Ver página",
+            "aria-label": `Ver la página ${l.page + 1}`, onclick: () => showRow(l.page),
+          });
+        }
+        return null;
+      };
       lbox.replaceChildren(
         h("b", { text: `${plural(leaks.length, "fuga sin resolver", "fugas sin resolver")}` }),
-        h("ul", null, leaks.map((l) => h("li", null,
-          (l.page != null ? `Pág. ${l.page + 1}: ` : "") + (l.message || ""),
-          l.finding_id && findingById(l.finding_id)
-            ? [" ", h("button", { type: "button", class: "btn ghost small", text: "Ver", onclick: () => select(l.finding_id) })]
-            : null))),
+        h("ul", null, leaks.map((l) => {
+          const btn = goTo(l);
+          return h("li", null, (l.page != null ? `Pág. ${l.page + 1}: ` : "") + (l.message || ""), btn ? [" ", btn] : null);
+        })),
       );
     }
 
@@ -2236,14 +2291,17 @@
     const note = $("#dlg-note").value.trim();
     const btn = $("#dlg-remove-yes");
     btn.disabled = true;
+    const fileId = S.rv.id; // an answer for a file left meanwhile is not put in the open one's list
     try {
       const body = { action: "remove", reason };
       if (note) body.note = note;
-      const updated = await api(`/api/files/${enc(S.rv.id)}/findings/${enc(id)}`, { method: "PATCH", json: body });
-      replaceFinding(updated);
+      const updated = await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: body });
       $("#dlg-remove").close();
       toast("Censura quitada. Queda registrada en el informe de auditoría.");
-      focusFinding(id);
+      if (S.rv.id === fileId) {
+        replaceFinding(updated);
+        focusFinding(id);
+      }
       refreshState();
     } catch (err) {
       showError(err);
@@ -2253,11 +2311,14 @@
     }
   }
   async function restoreFinding(id) {
+    const fileId = S.rv.id;
     try {
-      const updated = await api(`/api/files/${enc(S.rv.id)}/findings/${enc(id)}`, { method: "PATCH", json: { action: "restore" } });
-      replaceFinding(updated);
+      const updated = await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: { action: "restore" } });
       toast("Censura restaurada.");
-      focusFinding(id);
+      if (S.rv.id === fileId) {
+        replaceFinding(updated);
+        focusFinding(id);
+      }
       refreshState();
     } catch (err) {
       showError(err);
@@ -2268,38 +2329,42 @@
     const f = findingById(id);
     if (!f || !f.optional) return;
     const action = f.status === "suggested" ? "apply" : "skip";
+    const fileId = S.rv.id;
     try {
-      const updated = await api(`/api/files/${enc(S.rv.id)}/findings/${enc(id)}`, { method: "PATCH", json: { action } });
-      replaceFinding(updated);
+      const updated = await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: { action } });
       toast(action === "apply"
         ? "Este enlace se censurará."
         : "Este enlace quedará visible. Queda registrado en el informe de auditoría.");
-      focusFinding(id);
+      if (S.rv.id === fileId) {
+        replaceFinding(updated);
+        focusFinding(id);
+      }
       refreshState();
     } catch (err) {
       showError(err);
     }
   }
   async function applyAllOptional() {
+    const fileId = S.rv.id;
     try {
-      const res = await api(`/api/files/${enc(S.rv.id)}/findings/apply-optional`, { method: "POST" });
+      const res = await api(`/api/files/${enc(fileId)}/findings/apply-optional`, { method: "POST" });
       const applied = (res && res.applied) || [];
-      if (S.rv.file) {
+      toast(applied.length
+        ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${plural(applied.length, "enlace más", "enlaces más")}.`
+        : "No quedaban otros enlaces sin censurar.");
+      if (S.rv.id === fileId && S.rv.file) { // not when the reviewer moved to another file meanwhile
         const list = S.rv.file.findings;
         for (const u of applied) {
           const i = list.findIndex((f) => f.id === u.id);
           if (i >= 0) list[i] = u;
         }
         refreshVersions();
+        renderZonesAll();
+        renderFindings();
+        renderVerify();
+        const first = applied[0] && $(`#findlist [data-fk="fa:${CSS.escape(applied[0].id)}"]`);
+        if (first) first.focus({ preventScroll: true });
       }
-      renderZonesAll();
-      renderFindings();
-      renderVerify();
-      toast(applied.length
-        ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${plural(applied.length, "enlace más", "enlaces más")}.`
-        : "No quedaban otros enlaces sin censurar.");
-      const first = applied[0] && $(`#findlist [data-fk="fa:${CSS.escape(applied[0].id)}"]`);
-      if (first) first.focus({ preventScroll: true });
       refreshState();
     } catch (err) {
       showError(err);
@@ -2342,14 +2407,18 @@
     relayout();
     toast(S.rv.rot ? `Vista girada ${S.rv.rot}°. El archivo exportado conserva su orientación.` : "Vista sin girar.");
   }
+  /** D: draw mode. Pressed, the button says so in its text and aria-pressed, and the before pages
+   *  are outlined (CSS .drawing). It never changes V. */
   function setDraw(on) {
     const rv = S.rv;
     if (rv.draw === on) return;
     rv.draw = on;
-    $("#b-draw").setAttribute("aria-pressed", String(on));
-    $("#pageinner").classList.toggle("drawing", on);
-    if (!on) cancelGhost();
-    if (on) toast("Arrastra sobre el documento para agregar una zona. Esc para salir.");
+    const btn = $("#b-draw");
+    btn.setAttribute("aria-pressed", String(on));
+    $(".lbl", btn).textContent = on ? "Dibujando · Esc para salir" : "Dibujar zona";
+    $("#viewport").classList.toggle("drawing", on);
+    if (!on) cancelDrag();
+    if (on) toast("Arrastra sobre una página del antes para agregar una zona. Esc para salir.");
   }
   /** V: shows or hides the after column. Kept across files; D and Esc never change it. */
   function setAfter(on) {
@@ -2358,69 +2427,83 @@
     relayout();
   }
 
-  // --- draw a manual zone (screen coordinates -> view space) ---
-  let drag = null;
-  function pointToInner(clientX, clientY) {
-    const p = currentPage();
-    const s = scaleNow();
-    const W = p.width * s, H = p.height * s;
-    const r = $("#pagebox").getBoundingClientRect();
-    const ox = clientX - r.left, oy = clientY - r.top;
-    let x, y;
-    switch (S.rv.rot) {
-      case 90: x = oy; y = H - ox; break;
-      case 180: x = W - ox; y = H - oy; break;
-      case 270: x = W - oy; y = ox; break;
-      default: x = ox; y = oy;
-    }
-    return { x: clamp(x, 0, W), y: clamp(y, 0, H) };
+  // --- drawing a zone on a before page (spec 6.6) ---
+  // The page is fixed at pointerdown: its page box captures the pointer, and every point is converted
+  // with that row's live rectangle (the scroll and the pan move it), its scale, page and the rotation,
+  // then clamped to that page. The ghost lives in that row's zone layer; ``row.busy`` keeps the row's
+  // images while the drag lasts. ``start``/``end`` are page units, ``last`` the last client point.
+  let drag = null; // { row, box, pointerId, ghost, start, end, last }
+  function drawPoint(clientX, clientY) {
+    const { row, box } = drag;
+    const r = box.getBoundingClientRect();
+    return ReviewCore.pointToPage(clientX - r.left, clientY - r.top, row.scale, S.rv.rot, row.page);
   }
-  function cancelGhost() {
-    if (drag && drag.ghost) drag.ghost.remove();
+  /** Places the ghost from the drag's two points; returns its rectangle in display pixels. */
+  function placeGhost() {
+    const { row, start, end, ghost } = drag;
+    const b = { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), w: Math.abs(end.x - start.x), h: Math.abs(end.y - start.y) };
+    const z = ReviewCore.zoneRect(b, row.scale, S.rv.rot, row.page);
+    Object.assign(ghost.style, { left: `${z.x}px`, top: `${z.y}px`, width: `${z.w}px`, height: `${z.h}px` });
+    return z;
+  }
+  function moveDrag(clientX, clientY) {
+    drag.last = { x: clientX, y: clientY };
+    drag.end = drawPoint(clientX, clientY);
+    return placeGhost();
+  }
+  /** Ends a drag without adding a zone (Esc, a lost pointer, draw mode off, another file). */
+  function cancelDrag() {
+    if (!drag) return;
+    const { row, box, pointerId, ghost } = drag;
     drag = null;
+    ghost.remove();
+    row.busy = false;
+    if (box.hasPointerCapture(pointerId)) box.releasePointerCapture(pointerId);
   }
   function initDrawing() {
-    const inner = $("#pageinner");
-    inner.addEventListener("pointerdown", (e) => {
-      if (!S.rv.draw || !currentPage() || e.button !== 0) return;
+    const rows = $("#rows");
+    const ours = (e) => drag && e.pointerId === drag.pointerId;
+    rows.addEventListener("pointerdown", (e) => {
+      const box = S.rv.draw && !drag && e.button === 0 && e.target.closest(".cell.before .pbox");
+      const row = box && S.rv.rows[Number(box.closest(".prow").dataset.row)];
+      if (!row || row.before.box !== box) return;
       e.preventDefault();
-      const start = pointToInner(e.clientX, e.clientY);
       const ghost = h("div", { class: "zone t-manual ghost", dataset: { label: TYPE_LABELS.manual } });
-      $("#zones").append(ghost);
-      drag = { start, ghost, rect: { x: start.x, y: start.y, w: 0, h: 0 } };
-      inner.setPointerCapture(e.pointerId);
+      drag = { row, box, pointerId: e.pointerId, ghost, start: null, end: null, last: null };
+      drag.start = drawPoint(e.clientX, e.clientY);
+      row.before.zones.append(ghost);
+      row.busy = true; // releaseFar and a zoom refresh leave its images alone
+      box.setPointerCapture(e.pointerId);
+      moveDrag(e.clientX, e.clientY);
     });
-    inner.addEventListener("pointermove", (e) => {
-      if (!drag) return;
-      const p = pointToInner(e.clientX, e.clientY);
-      const r = {
-        x: Math.min(p.x, drag.start.x), y: Math.min(p.y, drag.start.y),
-        w: Math.abs(p.x - drag.start.x), h: Math.abs(p.y - drag.start.y),
-      };
-      drag.rect = r;
-      Object.assign(drag.ghost.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
+    rows.addEventListener("pointermove", (e) => { if (ours(e)) moveDrag(e.clientX, e.clientY); });
+    rows.addEventListener("pointercancel", (e) => { if (ours(e)) cancelDrag(); });
+    rows.addEventListener("lostpointercapture", (e) => { if (ours(e)) cancelDrag(); });
+    // A scroll during the drag moves the page under a pointer that may not move.
+    $("#viewport").addEventListener("scroll", () => { if (drag && drag.last) moveDrag(drag.last.x, drag.last.y); }, { passive: true });
+    rows.addEventListener("pointerup", (e) => {
+      if (!ours(e)) return;
+      const z = moveDrag(e.clientX, e.clientY);
+      const { row, start, end } = drag;
+      cancelDrag();
+      if (z.w < 6 || z.h < 6) { toast("La zona es muy pequeña. Arrastra para dibujar un rectángulo."); return; }
+      addZone(row.i, ReviewCore.rectPolygon(start, end));
     });
-    inner.addEventListener("pointercancel", cancelGhost);
-    inner.addEventListener("pointerup", async () => {
-      if (!drag) return;
-      const { rect } = drag;
-      cancelGhost();
-      if (rect.w < 6 || rect.h < 6) { toast("La zona es muy pequeña. Arrastra para dibujar un rectángulo."); return; }
-      const s = scaleNow();
-      const x0 = rect.x / s, y0 = rect.y / s, x1 = (rect.x + rect.w) / s, y1 = (rect.y + rect.h) / s;
-      const r2 = (v) => Math.round(v * 100) / 100;
-      const polygon = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([x, y]) => [r2(x), r2(y)]);
-      try {
-        const f = await api(`/api/files/${enc(S.rv.id)}/findings`, { method: "POST", json: { page: S.rv.page, polygon } });
+  }
+  async function addZone(page, polygon) {
+    const fileId = S.rv.id; // an answer for a file left meanwhile is not put in the open one's list
+    try {
+      const f = await api(`/api/files/${enc(fileId)}/findings`, { method: "POST", json: { page, polygon } });
+      toast("Zona agregada.");
+      if (S.rv.id === fileId) {
         setDraw(false);
         replaceFinding(f);
         select(f.id);
-        toast("Zona agregada.");
-        refreshState();
-      } catch (err) {
-        showError(err);
       }
-    });
+      refreshState();
+    } catch (err) {
+      showError(err);
+    }
   }
 
   // --- keyboard ---
@@ -2444,10 +2527,10 @@
       else if (k === "+" || k === "=" || k === "Add") zoomBy(1.2);
       else if (k === "-" || k === "Subtract" || k === "−") zoomBy(1 / 1.2);
       else if (k === "Escape") {
-        if (drag) cancelGhost();
-        else if (S.rv.draw) setDraw(false);
+        if (drag) cancelDrag(); // draw mode stays on
+        else if (S.rv.draw) { setDraw(false); focusViewport(); }
         else handled = false; // Esc never hides the after column
-      } else handled = false;
+      } else handled = false; // PageUp/PageDown, Home/End, Space and the arrows scroll the focused viewport
       if (handled) e.preventDefault();
     });
   }
@@ -2743,8 +2826,6 @@
     });
     $("#rv-prev").addEventListener("click", () => { const f = neighbourFile(-1); if (f) openFile(f.id); });
     $("#rv-next").addEventListener("click", () => { const f = neighbourFile(1); if (f) openFile(f.id); });
-    $("#b-prev").addEventListener("click", () => move(-1));
-    $("#b-next").addEventListener("click", () => move(1));
     $("#b-zin").addEventListener("click", () => zoomBy(1.2));
     $("#b-zout").addEventListener("click", () => zoomBy(1 / 1.2));
     $("#b-zfit").addEventListener("click", zoomFit);
@@ -2752,9 +2833,15 @@
     $("#b-draw").addEventListener("click", () => setDraw(!S.rv.draw));
     $("#b-view").addEventListener("click", () => setAfter(!S.rv.after));
     const vp = $("#viewport");
+    // A click on a zone selects its finding (not while drawing: zones then let the pointer through).
+    $("#rows").addEventListener("click", (e) => {
+      const zone = e.target.closest(".zone[data-id]");
+      if (zone && !S.rv.draw) select(zone.dataset.id);
+    });
     let viewTick = false; // the page field and the zoom button follow the scroll, once per frame
     vp.addEventListener("scroll", () => {
       holdLoads(SCROLL_QUIET_MS); // rows passed on the way are not requested
+      if (smoothTo != null && Math.abs(vp.scrollTop - smoothTo) < 1) smoothTo = null; // arrived
       if (viewTick) return;
       viewTick = true;
       requestAnimationFrame(() => {
@@ -2762,6 +2849,7 @@
         if (S.screen === 3 && S.rv.rows.length) { updatePageField(); updateZoomButton(); }
       });
     }, { passive: true });
+    vp.addEventListener("scrollend", () => { smoothTo = null; }); // also when the reviewer interrupted it
     $("#hpan").addEventListener("scroll", () => {
       const bar = $("#hpan"), range = bar.scrollWidth - bar.clientWidth;
       if (bar.hidden || range <= 0 || bar.scrollLeft === panBarLeft) return;
