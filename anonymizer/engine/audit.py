@@ -183,7 +183,8 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
         "images_unread": _unread_images(file),
         "timings": dict(file.timings),
         "other_urls": _optional_record(_other_urls(file)),
-        "exceptions": _optional_record(_exceptions(file)),
+        # D10: the list in effect when the file was processed, and what it left unapplied.
+        "exceptions": {"entries": list(file.exceptions), **_optional_record(_exceptions(file))},
         "redactions_applied": len(active),
         "removed_by_reviewer": sum(1 for f in file.findings if f.status == "removed"),
         "added_by_reviewer": sum(1 for f in active if _is_added(f)),
@@ -359,8 +360,10 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
         if visible:
             parts.append(_table(["Página", "Queda visible"], [[f.page + 1, f.text or "—"] for f in visible]))
 
-    if listed:
+    if listed or file.exceptions:
         parts.append("<h3>Lista de excepciones (RUT de instituciones, números 600 y 800)</h3>")
+        if file.exceptions:
+            parts.append(f"<p class='muted'>Lista usada al procesar: {_e(', '.join(file.exceptions))}.</p>")
         applied = [f for f in listed if f.active]
         visible = [f for f in listed if f.status == "suggested"]
         parts.append(

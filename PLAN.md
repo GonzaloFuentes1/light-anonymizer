@@ -735,6 +735,20 @@ be confirmed with the transparency unit.
 > apart too (JSON `exceptions`, next to `other_urls`, and `optional_reason` per finding; a PDF
 > section with the values left visible). 600 numbers (10 digits) are now phones in every format;
 > before, "600 123 4567" was only caught as a RUT-shaped number and "600-123-4567" not at all.
+>
+> **Fixed after review (2026-10-05).** A zone is left unapplied only when, once the listed values
+> and the URLs that are not personal are blanked out of its text, nothing but label words is left
+> ("RUT", "Fono", "Mesa central", "N°"…): no digit and no other word. An OCR zone is a whole line
+> and a context value can hold more than the pattern found, so before this a listed number could
+> leave visible a direct line no pattern takes ("mesa central 600 123 4567, anexo directo (2) 234
+> 5678") or a name only a context rule found. When an OCR rule and a context rule find the same
+> box, the zone now keeps the most specific type (a name before a RUT or a phone), so a context
+> name always blocks the list. A RUT is compared only with the RUTs of the list and a phone only
+> with its phones (a phone entry no longer matches a RUT with the same digits). A 600 number
+> written with spaces is no longer read as an undashed RUT (no RUT has that body), so it is a
+> phone and not a doubtful RUT. "Censurar todo el texto de esta imagen" ignores the list. The
+> audit report records the list each file was processed with (JSON `exceptions.entries`, and a
+> line in the PDF).
 
 **D11. WebView2 and network traffic.** The app window uses WebView2, a Windows component that
 talks to Microsoft on its own (section 5.6). Options: (a) keep pywebview with the hardened

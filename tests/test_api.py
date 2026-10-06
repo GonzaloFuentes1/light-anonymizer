@@ -700,6 +700,9 @@ def test_listed_values_are_suggested_not_discarded(client, tmp_path):
     assert INSTITUTION_RUT in text and TOLL_FREE not in text and VALID_RUT not in text
     record = json.loads(Path(r.json()["audit"]["json_path"]).read_text(encoding="utf-8"))["files"][0]
     assert record["exceptions"]["applied"] == 1 and record["exceptions"]["left_visible"] == 1
+    assert record["exceptions"]["entries"] == [INSTITUTION_RUT, TOLL_FREE]  # the list in effect for this file
+    with pymupdf.open(r.json()["audit"]["pdf_path"]) as report:
+        assert f"Lista usada al procesar: {INSTITUTION_RUT}, {TOLL_FREE}" in " ".join(p.get_text() for p in report)
     visible = [i["visible_text"] for i in record["exceptions"]["items"] if "visible_text" in i]
     assert visible == [INSTITUTION_RUT]  # the censored one is never written in the report
     assert record["other_urls"]["left_visible"] == 1 and len(record["other_urls"]["items"]) == 1

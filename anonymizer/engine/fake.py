@@ -182,7 +182,8 @@ class FakeEngine:
                 else:
                     pages, findings = self._analyze_image(file, report)
             report(0.98, "Preparando la revisión")
-            exceptions.apply(findings, file.exceptions, names)  # D10: listed values start unapplied
+            if not file.all_text:  # "censurar todo el texto": every line is censored, listed ones too
+                exceptions.apply(findings, file.exceptions, names)  # D10: listed values start unapplied
             file.pages = pages
             file.findings = findings
             file.status = "ready"

@@ -42,11 +42,18 @@ _URL_CONTINUATION = re.compile(r"\n([\w\-./%?=&#~+:]+)(?=[ \t]*(?:\n|$))")
 
 
 def rut_valid_by_shape(m: re.Match[str]) -> bool:
-    """Avoids taking amounts or dates without a dash as a RUT: without a dash it requires 8-10 chars in a row."""
+    """Avoids taking amounts or dates without a dash as a RUT: without a dash it requires 8-10 chars in a row.
+
+    A 600 number written with spaces ("600 123 4567") has that shape too, but no RUT has a body of
+    600 million: it is left to ``phones`` (D10).
+    """
     text = m.group(0)
     if re.search(_DASH, text):
         return True
-    return bool(re.fullmatch(r"\d{7,9}[\dkK]", re.sub(r"\s", "", text))) and "." not in text
+    digits = re.sub(r"\s", "", text)
+    if len(digits) == 10 and digits.startswith("600"):
+        return False
+    return bool(re.fullmatch(r"\d{7,9}[\dkK]", digits)) and "." not in text
 
 
 def rut_check_digit(body: str) -> str:

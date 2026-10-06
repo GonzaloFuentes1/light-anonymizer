@@ -94,6 +94,7 @@ def test_app_js_syntax():
                 "No se censuran por defecto",
                 "en tu lista de excepciones",
                 "Censurar todas las excepciones",
+                "Otros enlaces y excepciones",  # the heading when the other URLs started censored
                 "Censurar todos los otros enlaces",
                 "No censurar",
                 "sin censurar",

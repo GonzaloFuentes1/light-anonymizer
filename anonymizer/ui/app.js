@@ -1687,9 +1687,11 @@
         const anyListed = all.some((f) => f.optional && isException(f));
         // With "Censurar también los otros enlaces" on, this file's other URLs started censored.
         const startedApplied = !!(rv.file && rv.file.options && rv.file.options.urls_other);
-        parts.push(h("h3", { class: "group", id: "g-other" },
-          h("span", { text: "No se censuran por defecto" }), h("span", { text: String(other.length) })));
         const urlsApplied = anyUrl && startedApplied;
+        // The heading never says "not censored" about URLs that started censored.
+        const heading = !urlsApplied ? "No se censuran por defecto" : anyListed ? "Otros enlaces y excepciones" : "Otros enlaces";
+        parts.push(h("h3", { class: "group", id: "g-other" },
+          h("span", { text: heading }), h("span", { text: String(other.length) })));
         const notes = [];
         if (anyUrl) {
           notes.push(urlsApplied

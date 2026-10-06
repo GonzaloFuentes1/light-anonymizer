@@ -163,6 +163,12 @@ def _text_zones(
 
 
 _TEXT_DETECTORS = ("ocr", "context", "name_list")
+# Which type a zone keeps when several rules found the same box: the first in this order.
+_MERGE_ORDER = (*TYPE_PRIORITY[:3], "signature", *TYPE_PRIORITY[3:])
+
+
+def _merge_rank(type_: str) -> int:
+    return _MERGE_ORDER.index(type_) if type_ in _MERGE_ORDER else len(_MERGE_ORDER)
 
 
 def _box(polygon) -> tuple[float, float, float, float, float]:
@@ -201,7 +207,9 @@ def _same_line(a, b, pa=None, pb=None, min_iou: float = 0.7) -> bool:
 def dedup(zones: list[Zone]) -> list[Zone]:
     """Joins repeated zones of the same text line.
 
-    - The same box found by several rules: the first one stays.
+    - The same box found by several rules: one zone, with the most specific type of them (an OCR
+      line read as a RUT that a context rule took as a name is a name: the D10 exceptions list
+      never leaves a name visible).
     - The same line read by several OCR passes (0°, 90° and 270°) or rules, with nearly the same
       shape and the same type: one zone that covers all of them (never smaller than either). An
       upright line keeps an upright rectangle (the union of both boxes); a tilted line (a photo, a
@@ -238,6 +246,8 @@ def dedup(zones: list[Zone]) -> list[Zone]:
             continue
         i, union = match
         kept = output[i]
+        if not union and _merge_rank(z.type) < _merge_rank(kept.type):
+            kept = kept._replace(type=z.type, detector=z.detector)
         if union:
             b = boxes[i]
             best = z if z.score > kept.score else kept

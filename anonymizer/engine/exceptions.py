@@ -8,8 +8,14 @@ finding. A finding whose every datum is on the list becomes an *optional* findin
 One value per line. Values are compared normalized: a RUT by its digits and check digit (no dots
 or dash, the check digit in uppercase), a phone by its digits without the country code (+56 or
 0056) or the old trunk 0. An entry written as a RUT (with a dash before the check digit, a K, or
-dots) is only a RUT; one written as a phone (with a + or parentheses, spaces or dashes between
-digit groups) is only a phone; bare digits can be either.
+the dots of a RUT) is only a RUT; one written as a phone (with a + or parentheses, spaces or
+dashes between digit groups) is only a phone; bare digits can be either. A RUT found in a
+document is compared only with the RUTs of the list, and a phone only with its phones.
+
+A zone is left unapplied only when nothing but listed values, URLs that are not personal and a
+few label words ("RUT", "Fono", "Mesa central"...) would stay visible: an OCR zone is a whole line,
+and a context value can hold more than the pattern found, so any other word or digit (a name, a
+direct line no pattern takes) keeps the zone applied.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from dataclasses import dataclass
 
 from anonymizer.engine.common import now_iso
 from anonymizer.engine.model import Finding, HistoryEntry
+from anonymizer.engine.patterns import norm
 from anonymizer.engine.text import dedup_spans, detect_spans, is_personal_url
 
 REASON = "exception"
@@ -30,11 +37,21 @@ TYPES = ("rut", "phone")
 
 _DASH = r"\-‐‑‒–—−"  # for character classes: the hyphen is escaped
 _RUT_DV = re.compile(rf"[{_DASH}]\s*[\dkK]\s*$")  # a dash right before a one-character check digit
-_DOTTED = re.compile(r"\d\.\d{3}\.\d{3}")
+_DOTTED = re.compile(rf"^\s*\d{{1,2}}\.\d{{3}}\.\d{{3}}\s*[{_DASH}]?\s*[\dkK]\s*$")  # 12.345.678-5
 _RUT_CHARS = re.compile(rf"[\d\s.{_DASH}kK]+")
 _PHONE_CHARS = re.compile(rf"[\d\s.{_DASH}+()]+")
 # A finding whose text is only a value (digits and separators), with no label or words around it.
 _VALUE_ONLY = re.compile(rf"[\d\s.,·+(){_DASH}kKxX]+")
+# Words that may stay visible next to a listed value (lowercase, without accents): the labels of a
+# RUT or a phone and the words around an institutional number. Any other word keeps the zone applied.
+LABEL_WORDS = frozenset(
+    """
+rut run ci cedula identidad telefono telefonos fono fonos tel telf cel celular movil whatsapp wsp fax contacto
+mesa central ayuda atencion informaciones consultas oficina partes linea gratuita gratis numero nro
+de del la el los las al a y o e en para su
+servicio institucion gobierno regional gore municipalidad ministerio
+""".split()
+)
 
 
 def rut_key(text: str) -> str | None:
@@ -98,32 +115,47 @@ class Exceptions:
     def __bool__(self) -> bool:
         return bool(self.ruts or self.phones)
 
-    def matches(self, value: str) -> bool:
-        """``value`` (a RUT or a phone, in any format) is on the list."""
-        return rut_key(value) in self.ruts or phone_key(value) in self.phones
+    def matches(self, value: str, type_: str) -> bool:
+        """``value``, a RUT or a phone (``type_``) in any format, is on the list as that type."""
+        if type_ == "rut":
+            return rut_key(value) in self.ruts
+        if type_ == "phone":
+            return phone_key(value) in self.phones
+        return False
+
+
+def only_labels(text: str) -> bool:
+    """``text`` has no digit and no word but label words (single letters, as in "N°", count as such)."""
+    if any(c.isdigit() for c in text):
+        return False
+    return all(len(w) == 1 or w in LABEL_WORDS for w in re.findall(r"[^\W\d_]+", norm(text)))
 
 
 def excepted(finding: Finding, exc: Exceptions, name_list: tuple[str, ...]) -> bool:
-    """Every datum ``finding`` covers is on the list (or a URL that is not personal, D12).
+    """Everything ``finding`` would leave visible is on the list, a URL that is not personal (D12)
+    or a label word.
 
-    The text of a finding is its value (text layer) or a whole OCR line: the data are found again
-    in it with the same detectors, so a line that also has a name, an e-mail or a RUT that is not
-    on the list is never an exception.
+    The text of a finding is its value (text layer, also the value of a context rule) or a whole
+    OCR line. The data are found again in it with the same detectors; the listed values and the
+    URLs are blanked out, and what is left must be label words only: a name, an e-mail, a RUT that
+    is not listed or digits no pattern takes keep the zone applied.
     """
     if finding.optional or finding.type not in TYPES or not finding.text:
         return False
     text = finding.text
     spans = dedup_spans(detect_spans(text, name_list, ocr=True))
     if not spans:  # a value the patterns do not take (a context rule found it): only digits count
-        return _VALUE_ONLY.fullmatch(text) is not None and exc.matches(text)
+        return _VALUE_ONLY.fullmatch(text) is not None and exc.matches(text, finding.type)
     listed = False
+    rest = list(text)
     for type_, a, b, _ in spans:
         value = text[a:b]
-        if type_ in TYPES and exc.matches(value):
+        if type_ in TYPES and exc.matches(value, type_):
             listed = True
         elif not (type_ == "url" and not is_personal_url(value, name_list)):
             return False
-    return listed
+        rest[a:b] = " " * (b - a)
+    return listed and only_labels("".join(rest))
 
 
 def apply(findings: list[Finding], entries: Iterable[str], name_list: Iterable[str] = ()) -> int:
