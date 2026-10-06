@@ -208,19 +208,27 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .rows { padding: 16px 24px 24px; }
 .prow { display: grid; grid-template-columns: var(--cw) var(--cw); column-gap: var(--gap); row-gap: 8px; justify-content: center; margin-bottom: 24px; }
 .plabel { grid-column: 1 / -1; text-align: center; font-size: 12px; color: var(--muted); }
-/* One fixed track: a page wider than its column overflows it (and is clipped) instead of widening the track. */
-.cell { position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 6px; }
-.cell .cap { display: none; }
+/* One fixed track: a page wider than its column overflows it (and is clipped) instead of widening the track.
+   clip, not hidden: the cell is no scroll container, so its state pill can stick in the viewport. The page
+   and its state pill share one grid area; when stacked, the caption has a row of its own above it. */
+.cell { position: relative; overflow: clip; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "page"; justify-items: center; gap: 6px; }
+.viewport.stacked .cell { grid-template-areas: "cap" "page"; }
+.cell .cap { display: none; grid-area: cap; }
+.cell .pbox { grid-area: page; }
 .pbox { position: relative; background: var(--page); box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
 .pinner { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .pinner img { display: block; max-width: none; user-select: none; -webkit-user-drag: none; }
 .pinner img:not([src]) { visibility: hidden; } /* no alt text or broken-image icon while it loads */
 .cell .zones { position: absolute; inset: 0; overflow: hidden; }
-/* Over the visible part of the page whatever the pan; readable on the white page in both themes. */
-.cell .cstate { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 4; background: #17212D; color: #FFFFFF; font-size: 12px; font-weight: 700; padding: 3px 11px; border-radius: 999px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
-.viewport.stacked .cell .cstate { top: 36px; } /* below the caption (18 px) and the gap (6 px) */
+/* Over the visible part of the page whatever the pan and the scroll: 12 px below the page top, or below the
+   sticky header (--head, set by relayout) once the page top has scrolled away. Its negative bottom margin
+   (12 + 22 px tall) keeps it from adding height to a short page. Readable on the white page in both themes. */
+.cell .cstate { grid-area: page; align-self: start; justify-self: center; position: sticky; top: calc(var(--head, 0px) + 12px); margin: 12px 0 -34px; z-index: 4; background: #17212D; color: #FFFFFF; font-size: 12px; line-height: 16px; font-weight: 700; padding: 3px 11px; border-radius: 999px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
 .cell.after.updating img { opacity: .45; }
-.cell .fail { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; padding: 16px; text-align: center; background: var(--surface); color: var(--ink); }
+/* No image: the error covers the cell. Its message is centered and stays in the visible part of a tall page:
+   one full-height row (a sticky grid item moves within its grid area), the column as wide as the text. */
+.cell .fail { position: absolute; inset: 0; display: grid; grid-template-rows: minmax(0, 1fr); justify-content: center; padding: 16px; background: var(--surface); color: var(--ink); }
+.cell .fail-msg { align-self: center; position: sticky; top: calc(var(--head, 0px) + 12px); bottom: 12px; display: grid; gap: 8px; text-align: center; }
 .viewport.stacked .cell .fail { top: 24px; } /* the caption (18 px) and the gap (6 px) stay visible */
 .viewport.drawing .cell.before .pbox { cursor: crosshair; touch-action: none; outline: 3px dashed var(--draw-edge); outline-offset: 3px; }
 .viewport.drawing .zone { pointer-events: none; }

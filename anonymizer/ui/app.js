@@ -1413,6 +1413,7 @@
     rv.layout = { colWidth: layout.colWidth, widest, stacked: layout.stacked };
     vp.style.setProperty("--cw", `${Math.max(1, Math.min(layout.colWidth, widest))}px`);
     vp.style.setProperty("--gap", `${COL_GAP}px`);
+    vp.style.setProperty("--head", `${headerHeight()}px`); // the state pills stick below the header
     if (anchor && anchor.fx != null) {
       const row = rv.rows[clamp(anchor.row, 0, rv.rows.length - 1)];
       rv.pan = ReviewCore.panFor(anchor.fx, row.w, layout.colWidth, rv.pan);
@@ -1773,18 +1774,25 @@
     }
     dropImage(cell);
     cell.state.hidden = true;
-    cell.fail = h("div", { class: "fail" },
+    // The message is a box of its own, so it can stay in the visible part of a tall page (app.css).
+    cell.fail = h("div", { class: "fail" }, h("div", { class: "fail-msg" },
       h("p", { text: "No se pudo mostrar el resultado de esta página" }),
       h("button", {
         type: "button", class: "btn small", text: "Reintentar",
         onclick: () => { requestAfter(row, { edited: true }); focusViewport(); }, // the button goes away
-      }));
+      })));
     cell.cell.append(cell.fail);
   }
 
-  /** Loads a row's after again ahead of the other jobs (an edit, "Reintentar"): its failure is
-   *  forgotten. A row away from the view loads when it comes near. */
-  function requestAfter(row, { edited = false } = {}) {
+  /** Loads a row's after again ahead of the other jobs ("Reintentar"): its failure is forgotten. A
+   *  row away from the view loads when it comes near. */
+  function requestAfter(row, opts) {
+    queueAfter(row, opts);
+    pump();
+  }
+  /** requestAfter without starting anything: the caller pumps once, after queueing every row. Only
+   *  queues when the wanted image is neither shown nor on its way (``edited`` ranks it ahead). */
+  function queueAfter(row, { edited = false } = {}) {
     const L = S.load, cell = row.after;
     if (S.rv.rows[row.i] !== row) return;
     cell.failed = "";
@@ -1795,7 +1803,6 @@
     L.queue = L.queue.filter((j) => !(j.row === row.i && j.side === "after"));
     const want = wantedKeyNow(row, "after");
     if (want && want !== cell.key && want !== cell.pending) L.queue.push({ row: row.i, side: "after", edited });
-    pump();
   }
 
   /** The findings changed (an edit, a keepView reload): the page versions are recomputed. An after
@@ -1816,15 +1823,20 @@
       });
       if (change === "update") {
         showUpdating(cell);
-        requestAfter(row, { edited: true });
+        queueAfter(row, { edited: true });
       } else if (change === "load") {
-        requestAfter(row, { edited: true });
-      } else if (change === "current" && cell.cell.classList.contains("updating")) {
-        // An edit undone before its update arrived: the image shown is right again.
-        cell.cell.classList.remove("updating");
-        cell.state.hidden = true;
+        queueAfter(row, { edited: true });
+      } else if (change === "current") {
+        if (cell.cell.classList.contains("updating")) {
+          // An edit undone before its update arrived: the image shown is right again.
+          cell.cell.classList.remove("updating");
+          cell.state.hidden = true;
+        }
+        // A zoom refresh overtaken by that update was dropped with it: it is queued again.
+        queueAfter(row);
       }
     }
+    pump(); // once, so the queue is planned with every changed row: the rows in view go first
     renderRowLabels();
   }
   /** An after on screen is out of date: dimmed, with "Actualizando…", until the new one is shown. */
