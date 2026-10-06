@@ -594,6 +594,16 @@ acceptable? If the answer is "strictly MIT/Apache/BSD", we build OpenCV without 
 > The fix, once decided, is an OpenCV built with `-DWITH_IPP=OFF`, or YuNet and the OCR
 > preprocessing without OpenCV (LICENSES.md, section 1).
 
+> **Decided (2026-10-06): accepted for version 1 and documented as a known risk.** `cv2.pyd`
+> (opencv-python-headless) links Intel IPP ICV statically under Intel's proprietary license (the
+> Intel Simplified Software License: free redistribution, but not free software; it forbids
+> modifying and reverse engineering IPP). In one program with AGPL code (PyMuPDF) that is a grey
+> area, since the AGPL asks that the whole program be modifiable under its terms. Version 1 is
+> free and for internal use, so the risk is accepted there. Planned exit: before the app is handed
+> to other institutions, OpenCV is removed (YuNet and the OCR preprocessing on onnxruntime and
+> numpy) or rebuilt without IPP (`-DWITH_IPP=OFF`). Recorded in LICENSES.md (OpenCV) and in
+> section 13.
+
 **D4. macOS.** With the PyPI wheels it is not viable (GPL FFmpeg inside OpenCV). It is viable
 by building OpenCV without FFmpeg, or by running YuNet directly with onnxruntime. It requires a
 Mac with macOS 14 or later to build and test. Is it a requirement for version 1?
@@ -870,6 +880,7 @@ the list still rules. Agreed?
 | Dependencies that bring network code | port the OCR inference, a network-traffic test, onnxruntime without telemetry |
 | URL changes in the face sources | catalog with SHA-256 and a local cache |
 | The repository lives in OneDrive | `.venv` and generated data get synced; better to move it or exclude folders |
+| Intel IPP (proprietary, linked statically into OpenCV's `cv2.pyd`) ships with AGPL code: a licensing grey area (D3) | accepted for version 1, which is free and internal (decided 2026-10-06); before handing the app to other institutions, remove OpenCV or rebuild it without IPP |
 
 ## 14. Limits that will be documented in the app and in the README
 
