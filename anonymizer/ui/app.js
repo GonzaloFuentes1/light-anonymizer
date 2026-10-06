@@ -1337,6 +1337,7 @@
 
   // --- rows, geometry and the shared horizontal pan (spec 6.1, 6.2) ---
   const COL_GAP = 24; // between the before and after columns (--gap)
+  const MIN_COL = 160; // a column never narrower than this: a small page still has room for its state pill
   // Applied by the next relayout that can measure the viewport: { anchor } saved on leaving Revisar
   // or by restoreAnchor while it was hidden, or { start: true } for a file that loaded meanwhile.
   let pendingView = null;
@@ -1411,7 +1412,7 @@
       sizeCell(row.after, row);
     });
     rv.layout = { colWidth: layout.colWidth, widest, stacked: layout.stacked };
-    vp.style.setProperty("--cw", `${Math.max(1, Math.min(layout.colWidth, widest))}px`);
+    vp.style.setProperty("--cw", `${Math.max(1, Math.min(layout.colWidth, Math.max(widest, MIN_COL)))}px`);
     vp.style.setProperty("--gap", `${COL_GAP}px`);
     vp.style.setProperty("--head", `${headerHeight()}px`); // the state pills stick below the header
     if (anchor && anchor.fx != null) {

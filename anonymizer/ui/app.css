@@ -209,9 +209,10 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .prow { display: grid; grid-template-columns: var(--cw) var(--cw); column-gap: var(--gap); row-gap: 8px; justify-content: center; margin-bottom: 24px; }
 .plabel { grid-column: 1 / -1; text-align: center; font-size: 12px; color: var(--muted); }
 /* One fixed track: a page wider than its column overflows it (and is clipped) instead of widening the track.
-   clip, not hidden: the cell is no scroll container, so its state pill can stick in the viewport. The page
+   clip, not hidden: the cell is no scroll container, so its state pill can stick in the viewport. Clipped
+   across only: on a very short page the pill or the error message overflows it instead of being cut. The page
    and its state pill share one grid area; when stacked, the caption has a row of its own above it. */
-.cell { position: relative; overflow: clip; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "page"; justify-items: center; gap: 6px; }
+.cell { position: relative; overflow: clip visible; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "page"; justify-items: center; gap: 6px; }
 .viewport.stacked .cell { grid-template-areas: "cap" "page"; }
 .cell .cap { display: none; grid-area: cap; }
 .cell .pbox { grid-area: page; }
@@ -222,13 +223,14 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .cell .zones { position: absolute; inset: 0; overflow: hidden; }
 /* Over the visible part of the page whatever the pan and the scroll: 12 px below the page top, or below the
    sticky header (--head, set by relayout) once the page top has scrolled away. Its negative bottom margin
-   (12 + 22 px tall) keeps it from adding height to a short page. Readable on the white page in both themes. */
-.cell .cstate { grid-area: page; align-self: start; justify-self: center; position: sticky; top: calc(var(--head, 0px) + 12px); margin: 12px 0 -34px; z-index: 4; background: #17212D; color: #FFFFFF; font-size: 12px; line-height: 16px; font-weight: 700; padding: 3px 11px; border-radius: 999px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
+   (12 + 22 px tall) keeps it from adding height to a short page; in a narrow column it wraps. Readable on the
+   white page in both themes. */
+.cell .cstate { grid-area: page; align-self: start; justify-self: center; position: sticky; top: calc(var(--head, 0px) + 12px); margin: 12px 0 -34px; max-width: calc(100% - 12px); z-index: 4; background: #17212D; color: #FFFFFF; font-size: 12px; line-height: 16px; font-weight: 700; text-align: center; padding: 3px 11px; border-radius: 11px; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
 .cell.after.updating img { opacity: .45; }
-/* No image: the error covers the cell. Its message is centered and stays in the visible part of a tall page:
-   one full-height row (a sticky grid item moves within its grid area), the column as wide as the text. */
-.cell .fail { position: absolute; inset: 0; display: grid; grid-template-rows: minmax(0, 1fr); justify-content: center; padding: 16px; background: var(--surface); color: var(--ink); }
-.cell .fail-msg { align-self: center; position: sticky; top: calc(var(--head, 0px) + 12px); bottom: 12px; display: grid; gap: 8px; text-align: center; }
+/* No image: the error covers the cell. Its message is a card, centered, that stays in the visible part of a tall
+   page (one full-height row: a sticky grid item moves within its grid area) and overflows a very short one. */
+.cell .fail { position: absolute; inset: 0; display: grid; grid-template-rows: minmax(0, 1fr); justify-content: center; padding: 8px; background: var(--surface); color: var(--ink); }
+.cell .fail-msg { align-self: center; position: sticky; top: calc(var(--head, 0px) + 12px); bottom: 12px; z-index: 5; display: grid; gap: 8px; padding: 10px 12px; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
 .viewport.stacked .cell .fail { top: 24px; } /* the caption (18 px) and the gap (6 px) stay visible */
 .viewport.drawing .cell.before .pbox { cursor: crosshair; touch-action: none; outline: 3px dashed var(--draw-edge); outline-offset: 3px; }
 .viewport.drawing .zone { pointer-events: none; }
