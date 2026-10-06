@@ -674,6 +674,15 @@ you prefer to fix it now.
 > little tighter than a letter would have left that letter's path in the file under the black
 > box. The time estimate counts those areas as OCR regions.
 >
+> **Fixed after review (2026-10-05).** The unit is the subpath, not the path: some programs write a
+> whole line or block of drawn text as one path with one subpath per letter, and those blocks were
+> missed on pages with a text layer. MuPDF removes line art subpath by subpath, only the ones a zone
+> covers whole, so on export every zone, the reviewer's too, is grown to the whole letter subpaths
+> it covers at least 2 % of, and the leak check (`verify.glyph_leaks`) reports any letter subpath
+> left under an applied zone (before, a drawn zone 0.6 pt short exported with its letters still in
+> the file and no leak). The grouping of shapes uses a grid, so 20 000 markers on a page take well
+> under a second instead of about 9 s.
+>
 > **Measured (2026-10-05).** The test set's drawn-text case is a page with no text layer at all,
 > already read whole as a scan (9 of 9, unchanged). For the case D8 is about, that page with two
 > neutral lines of real text added at its foot (so it is no longer treated as a scan, same ground
@@ -843,4 +852,9 @@ the list still rules. Agreed?
   legible as it is (D6): a mirrored sign in a photo that also has legible text is not read.
 - Profile, very small or occluded faces may not be detected.
 - HEIC/HEIF photos (iPhone) are not supported: they must be converted to JPG first (D5).
+- Text drawn as paths (D8) is found when its letters are filled shapes. Two kinds are not: letters
+  drawn as a single rectangle (l, I, a hyphen, a period: they look like table cells or bullets,
+  so a word made only of them is not counted) and text drawn with strokes instead of fills, such
+  as the SHX fonts of CAD drawings. On a page with almost no text layer both are still read, as
+  that page is read whole by OCR.
 - Human review of every document before publishing is mandatory.

@@ -379,6 +379,7 @@ class RealEngine:
                 staged = Path(tmp) / "output.pdf"
                 self._export_pdf(file, active, staged)
                 leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer)
+                leaks += verify.glyph_leaks(staged, active)
             else:
                 from anonymizer.engine import image
 

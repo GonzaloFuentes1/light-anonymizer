@@ -2,12 +2,14 @@
 
 PDF: the text of every active finding read from the text layer must be gone from the output,
 the text-layer patterns (RUT, e-mail, phone) run again over the output must find nothing, and
-metadata, XMP and attachments must be empty. Images: no EXIF, XMP, comments or text chunks.
+metadata, XMP and attachments must be empty, and no letter drawn as a path may be left under an
+active zone (``glyph_leaks``, D8). Images: no EXIF, XMP, comments or text chunks.
 Both: the zone of every active finding must be solid black in the output (``uncovered``), which
 also checks what OCR, faces, QR and the reviewer marked, whose text is not in the text layer.
 
 What the reviewer chose to keep (removed findings) and the suggestions left unapplied (D12: URLs
-that are not personal) stay visible on purpose and are never a leak. Messages are Spanish: they
+that are not personal; D10: values of the exceptions list) stay visible on purpose and are never
+a leak. Messages are Spanish: they
 are shown to the user.
 """
 
@@ -21,7 +23,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
-from anonymizer.engine import pdf
+from anonymizer.engine import pdf, vectors
 from anonymizer.engine.common import bbox_of
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import TYPE_LABELS, Finding, Leak
@@ -153,6 +155,42 @@ def _inner_mask(shape: tuple[int, int], polygon: np.ndarray) -> np.ndarray:
     cv2.fillPoly(mask, [np.round(polygon).astype(np.int32)], 1)
     kernel = np.ones((2 * _EDGE_PX + 1, 2 * _EDGE_PX + 1), np.uint8)
     return cv2.erode(mask, kernel).astype(bool)
+
+
+def glyph_leaks(path: Path, active: list[Finding]) -> list[Leak]:
+    """Letters drawn as paths (D8) still under an active zone of an exported PDF.
+
+    The black box hides them, but they are still in the file (MuPDF keeps a path the zone does not
+    cover whole): ``vectors.under`` with the same share that grew the zones on export.
+    """
+    by_page: dict[int, list[Finding]] = {}
+    for f in active:
+        by_page.setdefault(f.page, []).append(f)
+    leaks: list[Leak] = []
+    with PDF_LOCK:
+        with pymupdf.open(path) as doc:
+            for n in sorted(by_page):
+                if not 0 <= n < doc.page_count:
+                    continue
+                page = doc[n]
+                glyphs = vectors.glyph_paths(page)
+                if not glyphs:
+                    continue
+                to_page = pymupdf.Matrix(page.derotation_matrix)
+                for f in by_page[n]:
+                    zone = (pymupdf.Rect(*bbox_of(f.polygon)) * to_page).normalize()
+                    if vectors.under(zone, glyphs):
+                        label = TYPE_LABELS.get(f.type, f.type)
+                        leaks.append(
+                            Leak(
+                                page=n,
+                                type=f.type,
+                                message=f"Una zona marcada en la página {n + 1} ({label}) todavía tiene letras "
+                                "dibujadas como trazos debajo de la censura.",
+                                finding_id=f.id,
+                            )
+                        )
+    return leaks
 
 
 def uncovered(path: Path, kind: str, active: list[Finding]) -> list[Leak]:

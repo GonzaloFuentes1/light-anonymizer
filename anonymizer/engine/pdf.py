@@ -471,8 +471,12 @@ def redact(source: str, dest: str, rects_by_page: dict[int, list[pymupdf.Rect]])
                 rotation = page.rotation
                 if rotation:
                     page.set_rotation(0)
-                for r in rects_by_page.get(n, []):
-                    page.add_redact_annot(r, fill=(0, 0, 0))
+                rects = rects_by_page.get(n, [])
+                # D8: MuPDF removes a letter drawn as a path only when the zone covers all of it, so
+                # every zone (the reviewer's too) is grown to the whole letters it covers.
+                glyphs = vectors.glyph_paths(page) if rects else []
+                for r in rects:
+                    page.add_redact_annot(vectors.snap(r, glyphs) if glyphs else r, fill=(0, 0, 0))
                 page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
                 if rotation:
                     page.set_rotation(rotation)
