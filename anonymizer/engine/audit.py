@@ -185,6 +185,10 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
         "other_urls": _optional_record(_other_urls(file)),
         # D10: the list in effect when the file was processed, and what it left unapplied.
         "exceptions": {"entries": list(file.exceptions), **_optional_record(_exceptions(file))},
+        # D8: zones that also took whole letters drawn as paths under them (small rectangles, view space).
+        "letters_covered": [
+            {**g, "page_number": g["page"] + 1} for g in (result.grown if result and result.exported else [])
+        ],
         "redactions_applied": len(active),
         "removed_by_reviewer": sum(1 for f in file.findings if f.status == "removed"),
         "added_by_reviewer": sum(1 for f in active if _is_added(f)),
@@ -373,6 +377,21 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
         if visible:
             rows = [[TYPE_LABELS.get(f.type, f.type), f.page + 1, f.text or "—"] for f in visible]
             parts.append(_table(["Tipo", "Página", "Queda visible"], rows))
+
+    grown = result.grown if result is not None and result.exported else []
+    if grown:  # D8: what was removed beyond the zones themselves
+        by_id = {f.id: f for f in file.findings}
+        parts.append("<h3>Letras dibujadas cubiertas enteras</h3>")
+        parts.append(
+            "<p>Estas zonas tapaban en parte letras dibujadas como trazos; se taparon enteras para "
+            "quitarlas del archivo.</p>"
+        )
+        rows = [
+            [g["page"] + 1, TYPE_LABELS.get(by_id[g["finding_id"]].type, "") if g["finding_id"] in by_id else "—",
+             len(g["rects"])]
+            for g in grown
+        ]  # fmt: skip
+        parts.append(_table(["Página", "Zona", "Letras cubiertas"], rows))
 
     parts.append("<h3>Zonas agregadas por quien revisó</h3>")
     if added:

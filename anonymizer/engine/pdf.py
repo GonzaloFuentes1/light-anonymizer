@@ -359,10 +359,6 @@ def _pixel_boxes(
     return boxes
 
 
-# Detectors of the zones read from text in pixels (OCR lines and the rules applied to them).
-_TEXT_DETECTORS = ("ocr", "context", "name_list")
-
-
 def raster_zones(
     doc: pymupdf.Document,
     tp: TextPage,
@@ -386,12 +382,10 @@ def raster_zones(
     with waiting_for(PDF_LOCK):
         page = doc[tp.index]
         info = page.get_image_info()
-        glyphs: list[pymupdf.Rect] = []
         drawn: list[pymupdf.Rect] = []
-        if options.ocr:  # D8: letters drawn as paths, which only OCR can read
+        if options.ocr and not tp.scanned:  # D8: letters drawn as paths, which only OCR can read
             with stage("text"):
-                glyphs = vectors.glyph_paths(page)
-                drawn = [] if tp.scanned else vectors.text_regions(page, tp.boxes, glyphs)
+                drawn = vectors.text_regions(page, tp.boxes)
         if not (tp.scanned or info or drawn) or not options.raster:
             return []
         with stage("render"):
@@ -444,8 +438,6 @@ def raster_zones(
     for z in raster.dedup(zones):
         (x0, y0), (x1, y1) = np.asarray(z.polygon).min(axis=0), np.asarray(z.polygon).max(axis=0)
         r = (pymupdf.Rect(float(x0), float(y0), float(x1), float(y1)) * inverse) + (-1, -1, 1, 1)
-        if glyphs and z.detector in _TEXT_DETECTORS:
-            r = vectors.snap(r, glyphs)  # a path is only removed when the zone covers all of it
         output.append(PageZone(tp.index, r, z.type, z.text, z.detector, z.score, z.doubt, "raster", z.optional))
     return output
 
@@ -455,10 +447,42 @@ def raster_zones(
 # ---------------------------------------------------------------------------
 
 
-def redact(source: str, dest: str, rects_by_page: dict[int, list[pymupdf.Rect]]) -> None:
+def snap_rects(
+    page: pymupdf.Page, rects: list[pymupdf.Rect], keep: list[pymupdf.Rect] | tuple = ()
+) -> list[list[pymupdf.Rect]]:
+    """The rectangles that applying ``rects`` (unrotated page space) on ``page`` takes: for each zone,
+    the zone itself and one small rectangle per letter drawn as a path under it (D8,
+    ``vectors.cover``), since MuPDF removes such a letter only when one rectangle covers all of it.
+    ``keep``: areas the reviewer left visible, which no added rectangle enters. Apply them in the
+    order of ``apply_order``. Call with ``PDF_LOCK`` held; the same function serves the export and
+    any preview of it."""
+    letters = vectors.letters(page) if rects else []
+    return [[r, *vectors.cover(r, letters, keep)] if letters else [r] for r in rects]
+
+
+def apply_order(groups: list[list[pymupdf.Rect]], keep: list[pymupdf.Rect] | tuple = ()) -> list[pymupdf.Rect]:
+    """The rectangles of ``snap_rects`` in the order to add them as redactions: the letters' first
+    (overlapping ones joined), then the zones. MuPDF lets the first rectangle that touches a shape
+    decide whether it is removed, so a zone that cuts a letter must not come before the rectangle
+    that covers that letter whole; a letter a zone only grazes (not under it) stays."""
+    letters = [r for r in vectors.join_overlapping([r for group in groups for r in group[1:]])]
+    letters = [r for r in letters if not any(r.intersects(k) for k in keep)]
+    return [*letters, *(group[0] for group in groups)]
+
+
+def redact(
+    source: str,
+    dest: str,
+    rects_by_page: dict[int, list[pymupdf.Rect]],
+    keep_by_page: dict[int, list[pymupdf.Rect]] | None = None,
+) -> dict[int, list[list[pymupdf.Rect]]]:
     """Writes ``dest``: ``source`` with the zones really removed (text, vector paths and image pixels)
     and the document cleaned (metadata, XMP, annotations, forms, attachments, layers, bookmarks,
-    JavaScript actions), fully rewritten."""
+    JavaScript actions), fully rewritten.
+
+    ``keep_by_page``: areas left visible on purpose (``snap_rects``). Returns, per page, the
+    rectangles applied for each zone of ``rects_by_page``, in the same order."""
+    applied: dict[int, list[list[pymupdf.Rect]]] = {}
     with PDF_LOCK:
         doc = pymupdf.open(source, filetype="pdf")
         try:
@@ -471,12 +495,12 @@ def redact(source: str, dest: str, rects_by_page: dict[int, list[pymupdf.Rect]])
                 rotation = page.rotation
                 if rotation:
                     page.set_rotation(0)
-                rects = rects_by_page.get(n, [])
-                # D8: MuPDF removes a letter drawn as a path only when the zone covers all of it, so
-                # every zone (the reviewer's too) is grown to the whole letters it covers.
-                glyphs = vectors.glyph_paths(page) if rects else []
-                for r in rects:
-                    page.add_redact_annot(vectors.snap(r, glyphs) if glyphs else r, fill=(0, 0, 0))
+                # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
+                keep = (keep_by_page or {}).get(n, ())
+                groups = snap_rects(page, rects_by_page.get(n, []), keep)
+                applied[n] = groups
+                for r in apply_order(groups, keep):
+                    page.add_redact_annot(r, fill=(0, 0, 0))
                 page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
                 if rotation:
                     page.set_rotation(rotation)
@@ -496,3 +520,4 @@ def redact(source: str, dest: str, rects_by_page: dict[int, list[pymupdf.Rect]])
             doc.save(dest, garbage=4, deflate=True, clean=True)
         finally:
             doc.close()
+    return applied

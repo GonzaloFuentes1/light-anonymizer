@@ -158,10 +158,12 @@ def _inner_mask(shape: tuple[int, int], polygon: np.ndarray) -> np.ndarray:
 
 
 def glyph_leaks(path: Path, active: list[Finding]) -> list[Leak]:
-    """Letters drawn as paths (D8) still under an active zone of an exported PDF.
+    """Filled letters drawn as paths (D8) still under an active zone of an exported PDF.
 
-    The black box hides them, but they are still in the file (MuPDF keeps a path the zone does not
-    cover whole): ``vectors.under`` with the same share that grew the zones on export.
+    The black box hides them, but they are still in the file (MuPDF keeps a shape no rectangle covers
+    whole). "Under" is ``vectors.under``, the rule ``pdf.snap_rects`` covered them by on export; one
+    left is a letter that was not covered (it reached too far beyond the zone, or into an area left
+    visible). Shapes that are also stroked are not letters here (``vectors.letters``).
     """
     by_page: dict[int, list[Finding]] = {}
     for f in active:
@@ -173,7 +175,7 @@ def glyph_leaks(path: Path, active: list[Finding]) -> list[Leak]:
                 if not 0 <= n < doc.page_count:
                     continue
                 page = doc[n]
-                glyphs = vectors.glyph_paths(page)
+                glyphs = vectors.letters(page)
                 if not glyphs:
                     continue
                 to_page = pymupdf.Matrix(page.derotation_matrix)
@@ -185,8 +187,9 @@ def glyph_leaks(path: Path, active: list[Finding]) -> list[Leak]:
                             Leak(
                                 page=n,
                                 type=f.type,
-                                message=f"Una zona marcada en la página {n + 1} ({label}) todavía tiene letras "
-                                "dibujadas como trazos debajo de la censura.",
+                                message=f"Una zona marcada en la página {n + 1} ({label}) tapa solo en parte "
+                                "letras dibujadas como trazos, que siguen en el archivo. Agranda la zona para "
+                                "que las cubra enteras.",
                                 finding_id=f.id,
                             )
                         )

@@ -6,10 +6,12 @@ import importlib.util
 import time
 from pathlib import Path
 
+import numpy as np
 import pymupdf
 import pytest
 
-from anonymizer.engine import common, estimate, faces, pdf, raster, vectors, verify
+from anonymizer.engine import audit, common, estimate, faces, pdf, raster, vectors, verify
+from anonymizer.engine.common import Zone
 from anonymizer.engine.model import AnalyzedFile, DetectionOptions, Finding, HistoryEntry
 from anonymizer.engine.patterns import rut_check_digit
 from anonymizer.engine.real import RealEngine
@@ -128,7 +130,7 @@ def test_drawn_text_is_read_redacted_and_its_paths_removed(tmp_path):
         left = vectors.glyph_paths(page)
     for f in drawn.values():
         zone = pymupdf.Rect(common.bbox_of(f.polygon))
-        assert not [g for g in left if g.intersects(zone)]  # no letter drawn as a path is left under it
+        assert not vectors.under(zone, left)  # no letter drawn as a path is left under it
 
 
 def test_the_time_estimate_counts_drawn_text(tmp_path):
@@ -190,7 +192,7 @@ def test_letters_left_under_an_applied_zone_are_a_leak(tmp_path, monkeypatch):
     zone = common.rect_polygon(min(g.x0 for g in line), min(g.y0 for g in line), max(g.x1 for g in line), 420)
     drawn = Finding(id="m1", file_id="b", page=0, type="manual", polygon=zone, detector="reviewer", status="added")
     file = AnalyzedFile(id="b", name="a.pdf", path=str(path), kind="pdf", findings=[drawn], status="confirmed")
-    monkeypatch.setattr(vectors, "snap", lambda rect, glyphs: rect)  # as if the zone were not grown
+    monkeypatch.setattr(pdf, "snap_rects", lambda page, rects, keep=(): [[r] for r in rects])  # not grown
     result = RealEngine().export(file, str(tmp_path / "out"))
     assert not result.exported
     assert any("trazos" in leak.message and leak.finding_id == "m1" for leak in result.leaks)
@@ -207,3 +209,205 @@ def test_many_small_shapes_are_grouped_quickly(tmp_path):
     dense = [pymupdf.Rect(40 + (k % 80) * 6.5, 40 + (k // 80) * 14, 45.5 + (k % 80) * 6.5, 50 + (k // 80) * 14)
              for k in range(3000)]  # fmt: skip
     assert [count for _, count in vectors.clusters(dense)] == [3000]  # lines of letters: one block
+
+
+def drawn_page(path: Path, lines: list[tuple[float, float, str, float]]) -> Path:
+    """A page with a text layer and the given lines drawn as paths: (x, baseline, text, size)."""
+    src = pymupdf.open()
+    page = src.new_page(width=595, height=842)
+    for x, y, text, size in lines:
+        page.insert_text((x, y), text, fontsize=size)
+    with pymupdf.open("svg", page.get_svg_image(text_as_path=True).encode("utf-8")) as as_svg:
+        doc = pymupdf.open("pdf", as_svg.convert_to_pdf())
+    src.close()
+    for i, line in enumerate(NEUTRAL):
+        doc[0].insert_text((72, 100 + 22 * i), line, fontsize=11)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def letters_of(path) -> list[tuple[float, float, float, float]]:
+    with pymupdf.open(path) as doc:
+        return [tuple(round(v, 2) for v in g) for g in vectors.letters(doc[0])]
+
+
+def export_zones(path: Path, zones: dict[str, tuple], out: Path, kept: dict[str, tuple] | None = None):
+    """Exports ``path`` with active OCR-like findings on ``zones`` and findings left visible on ``kept``."""
+    findings = [
+        Finding(id=fid, file_id="z", page=0, type="email", polygon=common.rect_polygon(*z), text="x", detector="ocr")
+        for fid, z in zones.items()
+    ]
+    findings += [
+        Finding(id=fid, file_id="z", page=0, type="url", polygon=common.rect_polygon(*z), text="y", detector="ocr",
+                status="suggested", optional=True, optional_reason="url")
+        for fid, z in (kept or {}).items()
+    ]  # fmt: skip
+    file = AnalyzedFile(id="z", name=path.name, path=str(path), kind="pdf", findings=findings, status="confirmed")
+    return file, RealEngine().export(file, str(out))
+
+
+BLOCK = [
+    "Primera linea neutra del bloque dibujado, sin datos de nadie.",
+    "Segunda linea neutra: texto de relleno para la prueba.",
+    "Contacto: ana.prueba@ejemplo.cl fono +56 9 8123 4567",
+    "Cuarta linea neutra, tambien de relleno y sin datos.",
+    "Quinta linea neutra que cierra el bloque de prueba.",
+]
+
+
+@pytest.mark.parametrize(
+    "size,leading,zone",
+    [
+        # The OCR boxes of the middle line measured in the review (font 10 and 12, single spacing).
+        (10, 10, (68.5, 429.2, 326.1, 444.9)),
+        (12, 12, (68.8, 430.6, 377.6, 449.2)),
+    ],
+)
+def test_only_the_letters_under_a_zone_are_removed(tmp_path, size, leading, zone):
+    path = drawn_page(tmp_path / "block.pdf", [(72, 420 + leading * i, line, size) for i, line in enumerate(BLOCK)])
+    before = letters_of(path)
+    _, result = export_zones(path, {"z1": zone}, tmp_path / "out")
+    assert result.exported, [leak.message for leak in result.leaks]
+    after = set(letters_of(result.output_path))
+
+    def line_of(g) -> int:  # the line whose letters' middle is closest
+        return min(range(5), key=lambda i: abs(420 + leading * i - size * 0.3 - (g[1] + g[3]) / 2))
+
+    lines = [[g for g in before if line_of(g) == i] for i in range(5)]
+    assert not [g for g in lines[2] if g in after]  # the line with the data is gone
+    for i in (0, 1, 3, 4):  # the neighbours keep their letters (before the fix, lines 1 to 3 went)
+        assert sum(g in after for g in lines[i]) >= 0.9 * len(lines[i]), (i, sum(g in after for g in lines[i]))
+    # Besides the letters under the zone, MuPDF also drops the thin shapes it touches (the stem of
+    # an "l" of the next line, about 1 pt wide): measured, not something the engine can prevent.
+    removed = [pymupdf.Rect(g) for g in before if g not in after]
+    stray = [g for g in removed if g not in vectors.under(pymupdf.Rect(zone), removed)]
+    assert all(min(g.width, g.height) <= 1.5 for g in stray), stray
+
+
+def test_a_zone_whose_edges_fall_exactly_on_letters_removes_them(tmp_path):
+    # The union of the letters of a line: its edges are those of letters, and MuPDF does not count a
+    # shape as covered when the edges are equal. The rectangles added per letter are a little larger.
+    path = drawn_page(tmp_path / "block.pdf", [(72, 420 + 12.65 * i, line, 11) for i, line in enumerate(BLOCK)])
+    middle = [g for g in letters_of(path) if abs((g[1] + g[3]) / 2 - (420 + 12.65 * 2 - 3.3)) < 6]
+    zone = (min(g[0] for g in middle), min(g[1] for g in middle), max(g[2] for g in middle), max(g[3] for g in middle))
+    _, result = export_zones(path, {"z1": zone}, tmp_path / "out")
+    assert result.exported, [leak.message for leak in result.leaks]
+    after = set(letters_of(result.output_path))
+    assert not [g for g in middle if g in after]
+
+
+def test_a_zone_touching_the_ascenders_of_the_next_line_leaves_them(tmp_path):
+    path = drawn_page(tmp_path / "two.pdf", [(72, 420, BLOCK[1], 12), (72, 434, BLOCK[2], 12)])
+    before = letters_of(path)
+    second = [g for g in before if g[3] > 428]
+    top = min(g[1] for g in second)
+    # A reviewer zone over the second line whose top edge goes 1.5 pt into the first line's letters.
+    first_bottom = max(g[3] for g in before if g[3] <= 428)
+    zone = (60, first_bottom - 1.5, 400, max(g[3] for g in second) + 1)
+    assert zone[1] < top
+    _, result = export_zones(path, {"z1": zone}, tmp_path / "out")
+    assert result.exported
+    after = set(letters_of(result.output_path))
+    assert all(g in after for g in before if g[3] <= 428)  # the first line is untouched
+
+
+def test_a_chart_next_to_a_zone_keeps_its_bars(tmp_path):
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    for i, line in enumerate(NEUTRAL):
+        page.insert_text((72, 300 + 22 * i), line, fontsize=11)
+    shape = page.new_shape()
+    for k in range(12):
+        x, h = 80 + k * 20, 10 + (k * 7) % 35
+        shape.draw_polyline([(x, 260), (x + 12, 260), (x + 12, 260 - h), (x, 260 - h), (x, 260)])
+        shape.finish(fill=(0.2, 0.4, 0.8), color=None)
+    shape.commit()
+    page.insert_text((80, 275), "Ventas por mes (ficticio)  Responsable: Ana Prueba", fontsize=9)
+    doc.save(tmp_path / "chart.pdf")
+    doc.close()
+    before = letters_of(tmp_path / "chart.pdf")
+    zone = (75, 252, 330, 278)
+    _, result = export_zones(tmp_path / "chart.pdf", {"z1": zone}, tmp_path / "out")
+    assert result.exported
+    after = set(letters_of(result.output_path))
+    removed = [pymupdf.Rect(g) for g in before if g not in after]
+    assert vectors.under(pymupdf.Rect(zone), removed) == removed  # only bars mostly inside the zone
+    assert sum(1 for g in before if g in after) >= 6  # the tall bars stay (all 12 were erased before)
+
+
+def test_letters_in_an_area_the_reviewer_kept_visible_are_never_covered(tmp_path):
+    path = drawn_page(tmp_path / "a.pdf", [(72, 420, f"Correo: {EMAIL} y www.goreficticio.cl", 14)])
+    with pymupdf.open(path) as doc:
+        page = doc[0]
+        line = sorted(vectors.letters(page), key=lambda g: g.x0)
+        mid = line[len(line) // 2]
+        active = pymupdf.Rect(line[0].x0, mid.y0 - 1, (mid.x0 + mid.x1) / 2 + 0.5, mid.y1 + 1)
+        kept = pymupdf.Rect(mid.x1 - 0.5, mid.y0 - 1, line[-1].x1, mid.y1 + 1)
+        groups = pdf.snap_rects(page, [active], keep=[kept])
+    for r in groups[0][1:]:
+        assert not r.intersects(kept)
+
+
+def test_fill_and_stroke_chart_markers_do_not_block_the_export(tmp_path):
+    # Chart markers drawn as filled and outlined circles, next to a name: they are not letters.
+    for stroke in (None, (0.3, 0.2, 0)):
+        doc = pymupdf.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), NEUTRAL[0], fontsize=11)
+        shape = page.new_shape()
+        points = [(100 + 40 * k, 300 - (k * 13) % 60) for k in range(8)]
+        for x, y in points:
+            shape.draw_circle((x, y), 3)
+            shape.finish(fill=(1, 0.6, 0), color=stroke, width=1.0)
+        shape.commit()
+        x, y = points[3]
+        page.insert_text((x + 2, y + 3), "Quintanilla Brito", fontsize=8)
+        path = tmp_path / f"markers_{stroke is None}.pdf"
+        doc.save(path)
+        doc.close()
+        engine = RealEngine()
+        options = DetectionOptions(ocr=False, faces=False, qr=False).to_dict()
+        file = AnalyzedFile(id="m", name=path.name, path=str(path), options=options)
+        engine.analyze(file, ["Quintanilla Brito"])
+        assert any(f.type == "name" for f in file.findings)
+        result = engine.export(file, str(tmp_path / f"out_{stroke is None}"))
+        assert result.exported, (stroke, [leak.message for leak in result.leaks])
+
+
+def test_two_overlapping_areas_of_drawn_text_are_both_read(tmp_path):
+    lines = [(72, 380, "Datos de la solicitud recibida por la oficina ficticia", 14)]
+    lines += [(72, 398 + 14 * i, t, 11) for i, t in enumerate(["Columna izquierda de relleno",
+              "sin datos personales, texto", "neutro para la prueba."])]  # fmt: skip
+    lines += [(300, 432 + 14 * i, t, 11) for i, t in enumerate(["Columna derecha que empieza",
+              "mas abajo y llega mas lejos:", "escribir a la persona en", f"{EMAIL} hoy"])]  # fmt: skip
+    path = drawn_page(tmp_path / "two_areas.pdf", lines)
+    with pymupdf.open(path) as doc:
+        page = doc[0]
+        regions = vectors.text_regions(page, pdf.read_text_page(page, ()).boxes)
+    email_area = pymupdf.Rect(300, 470, 450, 482)  # the last line of the right column
+    assert any(r.contains(email_area) for r in regions), regions
+    assert any(r.contains(pymupdf.Rect(72, 368, 380, 430)) for r in regions)
+
+
+def test_the_audit_lists_the_letters_a_zone_was_grown_to(tmp_path):
+    path = drawn_page(tmp_path / "a.pdf", [(72, 420, f"Correo: {EMAIL}", 14)])
+    with pymupdf.open(path) as doc:
+        line = vectors.letters(doc[0])
+    zone = (min(g.x0 for g in line) - 2, min(g.y0 for g in line) + 1, max(g.x1 for g in line) + 2, 421)
+    file, result = export_zones(path, {"z1": zone}, tmp_path / "out")
+    assert result.exported and result.grown and result.grown[0]["finding_id"] == "z1"
+    record = audit.build_report([file], [result])["files"][0]
+    assert record["letters_covered"][0]["finding_id"] == "z1" and record["letters_covered"][0]["rects"]
+
+
+def test_the_analysis_does_not_grow_ocr_zones(tmp_path, monkeypatch):
+    # Zones are grown once, when they are applied (``pdf.snap_rects``), not already in the analysis.
+    path = vector_text_pdf(tmp_path / "a.pdf", [f"Correo: {EMAIL}", f"RUT: {VALID_RUT}"])
+    box = np.array([[10.0, 10.0], [300.0, 10.0], [300.0, 22.0], [10.0, 22.0]])  # pixels of the crop
+    monkeypatch.setattr(raster, "detect_in_image", lambda *a, **k: [Zone("email", box, EMAIL, "ocr", 0.99)])
+    file = AnalyzedFile(id="f1", name="a.pdf", path=str(path), options=DetectionOptions(qr=False).to_dict())
+    RealEngine().analyze(file, [])
+    (zone,) = [f for f in file.findings if f.detector == "ocr"]
+    x0, y0, x1, y1 = common.bbox_of(zone.polygon)
+    assert y1 - y0 <= 12 * 72 / 200 + 2.01  # the 12 px box at 200 dpi plus the 1 pt margin

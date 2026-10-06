@@ -687,6 +687,31 @@ you prefer to fix it now.
 > PDFs of the test set the elements found, the leaks and the neutral text covered are the same as
 > before these fixes, and no export was blocked by the new check.
 >
+> **Fixed after a second review (2026-10-06).** Growing whole zones erased content nobody marked:
+> any letter with 2 % of its box in a zone pulled the zone's edge out across its whole width, twice
+> for OCR zones (analysis and export), so at single spacing the lines above and below an OCR line
+> were erased, a chart next to a zone lost all its bars, and nothing of it showed in the review or
+> the audit. Now a letter belongs to a zone only when its centre, or half its box, is inside it
+> (`vectors.under`); each such letter gets a small rectangle of its own (`vectors.cover`), at most
+> 6 pt beyond the zone and never into an area the reviewer left visible (a removed censure, an
+> unapplied suggestion), and nothing else is added. That happens once, when the zone is applied:
+> `pdf.snap_rects(page, rects, keep)` per page, called by `pdf.redact` (and meant for any preview
+> of the export), with `pdf.apply_order`. The order matters because MuPDF 1.28 lets the first
+> redaction rectangle that touches a shape decide: the letters' rectangles go first, then the
+> zones, so a zone that cuts a letter of the next line leaves it. Each letter rectangle is 0.02 pt
+> larger than the letter (equal edges do not count as covered). The rectangles added are reported
+> by the export (`ExportResult.grown`) and the audit (`letters_covered` in the JSON, a table in the
+> PDF). The leak check counts only filled letters (shapes also stroked, such as chart markers drawn
+> filled and outlined, are not letters and MuPDF does not remove them as such), with the same
+> `under` rule, so exports that passed before the first fix pass again. Two drawn-text areas that
+> overlap are joined into one (a `Rect |=` that did not change the list dropped the second one,
+> and its e-mail was never read). Measured, re-running the review's sweep (a drawn block of five
+> lines, the middle one with an e-mail and a phone, OCR then export, fonts 10 and 12, spacing 1.0
+> to 1.5): every export passes, the middle line is removed whole, and the neighbouring lines keep
+> all their letters from spacing 1.15 up; at single spacing they keep 45 of 46 and 41 of 44 (MuPDF
+> also drops the shapes under about 1 pt wide a zone touches, such as the stem of an "l"), where
+> before the three middle lines were erased.
+>
 > **Measured (2026-10-05).** The test set's drawn-text case is a page with no text layer at all,
 > already read whole as a scan (9 of 9, unchanged). For the case D8 is about, that page with two
 > neutral lines of real text added at its foot (so it is no longer treated as a scan, same ground
@@ -860,5 +885,8 @@ the list still rules. Agreed?
   drawn as a single rectangle (l, I, a hyphen, a period: they look like table cells or bullets,
   so a word made only of them is not counted) and text drawn with strokes instead of fills, such
   as the SHX fonts of CAD drawings. On a page with almost no text layer both are still read, as
-  that page is read whole by OCR.
+  that page is read whole by OCR. Letters drawn filled and outlined are found and read, but
+  censoring them hides them without removing their shapes from the file: removing stroked paths is
+  left to the handling of strokes. When a zone is applied, MuPDF also drops shapes under about
+  1 pt wide that the zone only touches (the stem of an "l" of the next line).
 - Human review of every document before publishing is mandatory.

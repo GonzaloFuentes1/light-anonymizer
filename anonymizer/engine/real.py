@@ -372,12 +372,13 @@ class RealEngine:
         removed = sum(1 for f in file.findings if f.status == "removed")
         kind = file.kind or sniff(file.path)
         name = Path(file.name).name or "archivo"
+        grown: list[dict] = []
         with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
             if kind == "pdf":
                 if Path(name).suffix.lower() != ".pdf":
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
-                self._export_pdf(file, active, staged)
+                grown = self._export_pdf(file, active, kept, staged)
                 leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer)
                 leaks += verify.glyph_leaks(staged, active)
             else:
@@ -414,10 +415,15 @@ class RealEngine:
             removed_by_reviewer=removed,
             exported=not leaks,
             message=message,
+            grown=grown if not leaks else [],
         )
 
     @staticmethod
-    def _export_pdf(file: AnalyzedFile, active: list[Finding], staged: Path) -> None:
+    def _export_pdf(file: AnalyzedFile, active: list[Finding], kept: list[Finding], staged: Path) -> list[dict]:
+        """Applies the active findings; nothing is added over what was left visible (``kept``).
+
+        Returns the letters drawn as paths that each zone also took (D8, ``pdf.snap_rects``), in view
+        space, for the audit report."""
         import pymupdf
 
         from anonymizer.engine import pdf
@@ -425,9 +431,27 @@ class RealEngine:
         with PDF_LOCK:
             with pymupdf.open(file.path, filetype="pdf") as doc:
                 to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
+                to_view = [pymupdf.Matrix(page.rotation_matrix) for page in doc]
+
+        def page_rect(f: Finding) -> pymupdf.Rect:
+            return (pymupdf.Rect(*bbox_of(f.polygon)) * to_page[f.page]).normalize()
+
         rects: dict[int, list[pymupdf.Rect]] = {}
+        owners: dict[int, list[Finding]] = {}
+        keep: dict[int, list[pymupdf.Rect]] = {}
         for f in active:
             if 0 <= f.page < len(to_page):
-                x0, y0, x1, y1 = bbox_of(f.polygon)
-                rects.setdefault(f.page, []).append((pymupdf.Rect(x0, y0, x1, y1) * to_page[f.page]).normalize())
-        pdf.redact(file.path, str(staged), rects)
+                rects.setdefault(f.page, []).append(page_rect(f))
+                owners.setdefault(f.page, []).append(f)
+        for f in kept:
+            if 0 <= f.page < len(to_page):
+                keep.setdefault(f.page, []).append(page_rect(f))
+        applied = pdf.redact(file.path, str(staged), rects, keep)
+        grown = []
+        for n, groups in applied.items():
+            for f, group in zip(owners.get(n, []), groups, strict=False):
+                extra = [(r * to_view[n]).normalize() for r in group[1:]]
+                if extra:
+                    rects_view = [[round(v, 2) for v in (r.x0, r.y0, r.x1, r.y1)] for r in extra]
+                    grown.append({"finding_id": f.id, "page": n, "rects": rects_view})
+        return grown

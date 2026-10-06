@@ -129,6 +129,9 @@ class ExportResult:
     removed_by_reviewer: int
     exported: bool  # False when a leak blocked the export
     message: str  # Spanish
+    # D8: per finding, the small rectangles (view space) added to cover whole the letters drawn as
+    # paths under its zone: {"finding_id", "page", "rects": [[x0, y0, x1, y1], ...]}.
+    grown: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
