@@ -12,10 +12,11 @@ the dots of a RUT) is only a RUT; one written as a phone (with a + or parenthese
 dashes between digit groups) is only a phone; bare digits can be either. A RUT found in a
 document is compared only with the RUTs of the list, and a phone only with its phones.
 
-A zone is left unapplied only when nothing but listed values, URLs that are not personal and a
-few label words ("RUT", "Fono", "Mesa central"...) would stay visible: an OCR zone is a whole line,
-and a context value can hold more than the pattern found, so any other word or digit (a name, a
-direct line no pattern takes) keeps the zone applied.
+A zone is left unapplied only when nothing but listed values, URLs that are not personal and one
+label phrase right before each value ("RUT:", "Fono", "Mesa central:"...) would stay visible: an
+OCR zone is a whole line, and a context value can hold more than the pattern found, so any other
+word, initial or digit (a name, a direct line no pattern takes) keeps the zone applied. Label
+words that are also names (Rut, Mesa) count only before a colon, or as "RUT" in capitals.
 """
 
 from __future__ import annotations
@@ -42,16 +43,21 @@ _RUT_CHARS = re.compile(rf"[\d\s.{_DASH}kK]+")
 _PHONE_CHARS = re.compile(rf"[\d\s.{_DASH}+()]+")
 # A finding whose text is only a value (digits and separators), with no label or words around it.
 _VALUE_ONLY = re.compile(rf"[\d\s.,·+(){_DASH}kKxX]+")
-# Words that may stay visible next to a listed value (lowercase, without accents): the labels of a
-# RUT or a phone and the words around an institutional number. Any other word keeps the zone applied.
-LABEL_WORDS = frozenset(
-    """
-rut run ci cedula identidad telefono telefonos fono fonos tel telf cel celular movil whatsapp wsp fax contacto
-mesa central ayuda atencion informaciones consultas oficina partes linea gratuita gratis numero nro
-de del la el los las al a y o e en para su
-servicio institucion gobierno regional gore municipalidad ministerio
-""".split()
+# Label phrases that may stay visible right before a listed value (words in lowercase, without
+# accents). Any other text keeps the zone applied: recall comes first.
+LABEL_PHRASES = frozenset(
+    tuple(phrase.split())
+    for phrase in """
+rut|rut n|n rut|r u t|run|rut del servicio|rut de la institucion|rol unico tributario
+fono|fonos|telefono|telefonos|tel|telf|cel|celular|movil|whatsapp|fax|contacto|fono contacto|telefono contacto
+mesa central|fono mesa central|telefono mesa central|mesa de ayuda|linea gratuita|call center|central telefonica
+atencion ciudadana|informaciones|oficina de partes|numero|nro|n|web|sitio web|pagina web
+""".replace("\n", "|").split("|")
+    if phrase.strip()
 )
+# Words of those phrases that are also names: they count as a label only before a colon, or as the
+# uppercase "RUT" ("Rut Mesa" is a person; "Mesa central:" and "RUT N°" are labels).
+_NAME_LIKE = frozenset({"rut", "mesa"})
 
 
 def rut_key(text: str) -> str | None:
@@ -124,11 +130,18 @@ class Exceptions:
         return False
 
 
-def only_labels(text: str) -> bool:
-    """``text`` has no digit and no word but label words (single letters, as in "N°", count as such)."""
-    if any(c.isdigit() for c in text):
+def is_label(gap: str) -> bool:
+    """``gap``, the text right before a listed value, is nothing, punctuation or one label phrase."""
+    if any(c.isdigit() for c in gap):
         return False
-    return all(len(w) == 1 or w in LABEL_WORDS for w in re.findall(r"[^\W\d_]+", norm(text)))
+    words = tuple(re.findall(r"[^\W\d_]+", norm(gap)))
+    if not words:
+        return True
+    if words not in LABEL_PHRASES:
+        return False
+    if _NAME_LIKE.isdisjoint(words):
+        return True
+    return re.search(r":\s*$", gap) is not None or re.search(r"\bRUT\b", gap) is not None
 
 
 def excepted(finding: Finding, exc: Exceptions, name_list: tuple[str, ...]) -> bool:
@@ -136,9 +149,10 @@ def excepted(finding: Finding, exc: Exceptions, name_list: tuple[str, ...]) -> b
     or a label word.
 
     The text of a finding is its value (text layer, also the value of a context rule) or a whole
-    OCR line. The data are found again in it with the same detectors; the listed values and the
-    URLs are blanked out, and what is left must be label words only: a name, an e-mail, a RUT that
-    is not listed or digits no pattern takes keep the zone applied.
+    OCR line. The data are found again in it with the same detectors: each must be a listed value
+    or a URL that is not personal, with nothing but one label phrase before it (``is_label``) and
+    nothing but punctuation after the last one. A name, an initial, an e-mail, a RUT that is not
+    listed or digits no pattern takes keep the zone applied.
     """
     if finding.optional or finding.type not in TYPES or not finding.text:
         return False
@@ -147,15 +161,17 @@ def excepted(finding: Finding, exc: Exceptions, name_list: tuple[str, ...]) -> b
     if not spans:  # a value the patterns do not take (a context rule found it): only digits count
         return _VALUE_ONLY.fullmatch(text) is not None and exc.matches(text, finding.type)
     listed = False
-    rest = list(text)
-    for type_, a, b, _ in spans:
+    end = 0
+    for type_, a, b, _ in sorted(spans, key=lambda s: s[1]):
         value = text[a:b]
         if type_ in TYPES and exc.matches(value, type_):
             listed = True
         elif not (type_ == "url" and not is_personal_url(value, name_list)):
             return False
-        rest[a:b] = " " * (b - a)
-    return listed and only_labels("".join(rest))
+        if a >= end and not is_label(text[end:a]):
+            return False
+        end = max(end, b)
+    return listed and re.search(r"[^\W_]", text[end:]) is None  # after the last value: punctuation only
 
 
 def apply(findings: list[Finding], entries: Iterable[str], name_list: Iterable[str] = ()) -> int:

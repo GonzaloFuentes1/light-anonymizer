@@ -210,9 +210,32 @@ def test_a_line_with_anything_else_than_the_listed_value_and_its_label_stays_cen
 
 
 def test_a_line_with_only_labels_and_listed_values_is_an_exception():
-    for text in (f"Mesa central: {CALL_CENTER}", f"Línea gratuita {TOLL_FREE}", f"RUT N° {INSTITUTION_RUT}"):
+    for text in (
+        f"Mesa central: {CALL_CENTER}",
+        f"Línea gratuita {TOLL_FREE}",
+        f"RUT N° {INSTITUTION_RUT}",
+        f"RUT: {INSTITUTION_RUT}",
+        f"Fono: {CALL_CENTER}.",
+    ):
         (line,) = ocr_findings([ocr_line(text)], [CALL_CENTER, TOLL_FREE, INSTITUTION_RUT])
         assert line.status == "suggested" and line.optional_reason == "exception", text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"Contacto: Rut Mesa {CALL_CENTER}",  # a person called Rut Mesa, not two labels
+        f"Fono Mesa {CALL_CENTER}",  # Mesa is a surname: as a label it needs a colon
+        f"Rut {INSTITUTION_RUT}",  # the given name Rut, not the uppercase label RUT
+        f"J U A N P E R E Z {CALL_CENTER}",  # a name written letter by letter
+        f"J. P. {CALL_CENTER}",  # initials
+        f"Whatsapp {CALL_CENTER} · Cel. E. Rut",  # words after the value
+        f"Fono: {CALL_CENTER} Ana",
+    ],
+)
+def test_names_and_initials_next_to_a_listed_value_keep_it_censored(text):
+    (line,) = ocr_findings([ocr_line(text)], [CALL_CENTER, INSTITUTION_RUT])
+    assert line.status == "proposed" and not line.optional, text
 
 
 def test_a_context_value_with_another_number_stays_censored(tmp_path):
