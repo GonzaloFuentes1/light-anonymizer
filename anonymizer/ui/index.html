@@ -10,6 +10,7 @@
 <title>Anonimizador</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="app.css">
+<script src="review-core.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -96,42 +97,40 @@
         <div class="row"><button type="button" class="btn" data-go="1">Elegir archivos</button><button type="button" class="btn primary" data-go="2">Ver el procesamiento</button></div>
       </div>
       <div class="review" id="review">
-        <aside class="col col-files" aria-label="Archivos y páginas">
-          <h3>Archivos</h3>
-          <div id="rfiles"></div>
-          <h3>Páginas <span class="pageno" id="pageno"></span></h3>
-          <div class="thumbs" id="thumbs"></div>
-        </aside>
-
         <section class="col col-doc" aria-label="Documento">
+          <div class="rv-bar" id="rv-bar">
+            <label class="fname" for="rv-file">Archivo</label>
+            <select id="rv-file"></select>
+            <span id="rv-chip"></span>
+            <button type="button" class="tool filestep" id="rv-prev" aria-label="Archivo anterior" title="Archivo anterior">‹</button>
+            <button type="button" class="tool filestep" id="rv-next" aria-label="Archivo siguiente" title="Archivo siguiente">›</button>
+            <label class="pageind" for="rv-page">pág. <input type="number" class="pagefield mono" id="rv-page" min="1" value="1" inputmode="numeric"> <span id="rv-pages">de 1</span></label>
+          </div>
+          <p class="rv-status" id="rv-status" role="status" hidden></p>
           <div class="tools" role="toolbar" aria-label="Herramientas del visor">
-            <button type="button" class="tool" id="b-prev" aria-label="Hallazgo anterior (K)">↑ <kbd>K</kbd></button>
-            <button type="button" class="tool" id="b-next" aria-label="Hallazgo siguiente (J)">↓ <kbd>J</kbd></button>
-            <span class="sep" aria-hidden="true"></span>
             <button type="button" class="tool" id="b-zout" aria-label="Alejar (−)">−</button>
             <button type="button" class="tool zoomval mono" id="b-zfit" title="Ajustar al ancho">100 %</button>
             <button type="button" class="tool" id="b-zin" aria-label="Acercar (+)">+</button>
             <button type="button" class="tool" id="b-rot">Girar vista <kbd>R</kbd></button>
             <span class="sep" aria-hidden="true"></span>
-            <button type="button" class="tool" id="b-draw" aria-pressed="false">Dibujar zona <kbd>D</kbd></button>
-            <button type="button" class="tool" id="b-view" aria-pressed="false">Ver como quedará <kbd>V</kbd></button>
+            <button type="button" class="tool draw" id="b-draw" aria-pressed="false"><span aria-hidden="true">✎</span> <span class="lbl">Dibujar zona</span> <kbd>D</kbd></button>
+            <button type="button" class="tool" id="b-view" aria-pressed="true">Mostrar el después <kbd>V</kbd></button>
           </div>
-          <div class="viewport" id="viewport">
-            <div class="pagebox" id="pagebox">
-              <div class="pageinner" id="pageinner">
-                <img class="pageimg" id="pageimg" alt="">
-                <div class="zones" id="zones" aria-hidden="true"></div>
-              </div>
-            </div>
-            <p class="loading fmeta" id="page-loading" hidden>Cargando la página…</p>
+          <div class="viewport" id="viewport" tabindex="0" role="region" aria-label="Páginas del documento">
+            <div class="vp-head" id="vp-head" aria-hidden="true"><span class="h-before">Antes</span><span class="h-after">Después</span></div>
+            <div class="rows" id="rows"></div>
+            <p class="loading fmeta" id="review-loading" hidden>Cargando el archivo…</p>
           </div>
+          <div class="hpan" id="hpan" hidden><div id="hpan-inner"></div></div>
           <div>
-            <div class="keys" aria-label="Atajos de teclado"><span><kbd>J</kbd> <kbd>K</kbd> siguiente y anterior</span><span><kbd>Supr</kbd> quitar censura</span><span><kbd>D</kbd> dibujar zona</span><span><kbd>+</kbd> <kbd>−</kbd> zoom</span><span><kbd>R</kbd> girar vista</span><span><kbd>V</kbd> ver como quedará</span></div>
+            <div class="keys" aria-label="Atajos de teclado"><span><kbd>J</kbd> <kbd>K</kbd> siguiente y anterior</span><span><kbd>Supr</kbd> quitar censura</span><span><kbd>D</kbd> dibujar zona</span><span><kbd>+</kbd> <kbd>−</kbd> zoom</span><span><kbd>R</kbd> girar vista</span><span><kbd>V</kbd> mostrar u ocultar el después</span></div>
             <div class="verify">
               <div class="msg"><span class="dot" id="vdot" aria-hidden="true"></span><div><strong id="vtitle">Revisión lista para confirmar</strong><div class="fmeta" id="vsum"></div></div></div>
               <div class="row" id="vactions"><button type="button" class="btn primary" id="b-confirm">Confirmar este archivo</button></div>
             </div>
           </div>
+          <!-- removed in Task 12: placeholders so init() in app.js does not crash on the old ids -->
+          <button type="button" id="b-prev" hidden></button><button type="button" id="b-next" hidden></button><div id="pageinner" hidden></div>
         </section>
 
         <aside class="col col-find" aria-label="Hallazgos">
