@@ -17,7 +17,7 @@ def read(name: str) -> str:
     return (UI / name).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("name", ["index.html", "app.css", "app.js"])
+@pytest.mark.parametrize("name", ["index.html", "app.css", "app.js", "review-core.js"])
 def test_no_remote_urls(name):
     text = read(name)
     assert "http://" not in text and "https://" not in text, f"{name} references a remote URL"
@@ -55,9 +55,10 @@ def test_fonts_are_bundled_with_their_licenses():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-def test_app_js_syntax():
+@pytest.mark.parametrize("name", ["app.js", "review-core.js"])
+def test_js_syntax(name):
     result = subprocess.run(
-        ["node", "--check", str(UI / "app.js")], capture_output=True, text=True, timeout=60, check=False
+        ["node", "--check", str(UI / name)], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
 
@@ -77,6 +78,11 @@ def test_app_js_syntax():
                 "Software libre: puedes usarlo, estudiarlo, modificarlo y compartirlo según la licencia GNU AGPL v3 "
                 "o posterior. Se entrega sin ninguna garantía.",
                 "Funciona sin conexión: no envía tus documentos ni datos a ningún lado.",
+                "Mostrar el después",
+                "Páginas del documento",
+                "Antes",
+                "Después",
+                "Dibujar zona",
             ],
         ),
         (
@@ -101,13 +107,21 @@ def test_app_js_syntax():
                 "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir.",
             ],
         ),
-        ("app.css", [".zone.suggested", ".result .zone.suggested", ".detect", ".license", "td .warntxt"]),
+        (
+            "app.css",
+            [".zone.suggested", ".detect", ".license", "td .warntxt", "--draw:", "--draw-ink:", "--draw-edge:", ".prow", ".vp-head"],
+        ),
     ],
 )
 def test_new_spanish_strings_are_present(name, strings):
     text = read(name)
     for s in strings:
         assert s in text, f"{name} is missing {s!r}"
+
+
+def test_review_core_loads_before_app():
+    html = read("index.html")
+    assert html.index('src="review-core.js"') < html.index('src="app.js"')
 
 
 def test_the_source_url_comes_from_the_api():

@@ -17,7 +17,7 @@ import numpy as np
 import pymupdf
 
 from anonymizer.engine import context, faces, raster, signatures, strokes, vectors
-from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, stage, waiting_for
+from anonymizer.engine.common import OCR_DPI, SCANNED_MAX_CHARS, FileError, Zone, bbox_of, stage, waiting_for
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import DetectionOptions
 from anonymizer.engine.ocr import OcrLine
@@ -646,6 +646,60 @@ def apply_page_zones(
     return groups
 
 
+def redaction_rects(doc: pymupdf.Document, polygons_by_page: dict[int, list]) -> dict[int, list[pymupdf.Rect]]:
+    """The bounding box of each polygon (view space) in the unrotated space of its page, where
+    ``redact_page`` places the zones. Pages out of range are skipped. The caller holds ``PDF_LOCK``."""
+    rects: dict[int, list[pymupdf.Rect]] = {}
+    for n, polygons in polygons_by_page.items():
+        if not 0 <= n < doc.page_count:
+            continue
+        to_page = pymupdf.Matrix(doc[n].derotation_matrix)
+        rects[n] = [(pymupdf.Rect(*bbox_of(p)) * to_page).normalize() for p in polygons]
+    return rects
+
+
+def redact_page(
+    doc: pymupdf.Document,
+    n: int,
+    rects: list[pymupdf.Rect],
+    *,
+    keep: list[pymupdf.Rect] | tuple = (),
+    drawn: list[pymupdf.Rect] | tuple = (),
+    whole_out: list | None = None,
+) -> list[list[pymupdf.Rect]]:
+    """Removes ``rects`` from page ``n`` for real (text, vector paths and image pixels) and cleans
+    the page (annotations, form fields, page-level actions and metadata). The one per-page
+    redaction of the export and of the review's after. The caller holds ``PDF_LOCK``.
+
+    Stroked paths under the zones are removed by ``strokes.remove`` (``drawn``: the zones whose
+    content may be a drawing; ``whole_out`` receives the box of each stroke removed whole), then
+    the zones are applied with the letters drawn as paths under them (``apply_page_zones``;
+    ``keep``: areas left visible on purpose). Returns what ``snap_rects`` took for each zone."""
+    page = doc[n]
+    # MuPDF misplaces redaction zones on a rotated page whose CropBox or MediaBox does not
+    # start at (0, 0): the zone moved or fell off the page and left the data visible.
+    # Unrotated, the page space is exactly the space of the zones; the rotation is put back.
+    rotation = page.rotation
+    if rotation:
+        page.set_rotation(0)
+    if rects:
+        whole: list = []
+        strokes.remove(page, rects, list(drawn), whole)
+        if whole_out is not None:
+            whole_out += [pymupdf.Rect(box) for box in whole]
+    # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
+    groups = apply_page_zones(page, rects, keep)
+    if rotation:
+        page.set_rotation(rotation)
+    for annot in list(page.annots() or []):
+        page.delete_annot(annot)
+    for widget in list(page.widgets() or []):
+        page.delete_widget(widget)
+    for key in _PAGE_KEYS:
+        doc.xref_set_key(page.xref, key, "null")
+    return groups
+
+
 def redact(
     source: str,
     dest: str,
@@ -669,29 +723,17 @@ def redact(
         try:
             reveal_layers(doc)
             for n in range(doc.page_count):
-                page = doc[n]
-                # MuPDF misplaces redaction zones on a rotated page whose CropBox or MediaBox does not
-                # start at (0, 0): the zone moved or fell off the page and left the data visible.
-                # Unrotated, the page space is exactly the space of the zones; the rotation is put back.
-                rotation = page.rotation
-                if rotation:
-                    page.set_rotation(0)
-                if rects_by_page.get(n):
-                    whole: list = []
-                    strokes.remove(page, rects_by_page[n], (drawn_by_page or {}).get(n, []), whole)
-                    if whole_out is not None:
-                        whole_out += [(n, pymupdf.Rect(box)) for box in whole]
-                # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
-                keep = (keep_by_page or {}).get(n, ())
-                applied[n] = apply_page_zones(page, rects_by_page.get(n, []), keep)
-                if rotation:
-                    page.set_rotation(rotation)
-                for annot in list(page.annots() or []):
-                    page.delete_annot(annot)
-                for widget in list(page.widgets() or []):
-                    page.delete_widget(widget)
-                for key in _PAGE_KEYS:
-                    doc.xref_set_key(page.xref, key, "null")
+                whole: list = []
+                applied[n] = redact_page(
+                    doc,
+                    n,
+                    rects_by_page.get(n, []),
+                    keep=(keep_by_page or {}).get(n, ()),
+                    drawn=(drawn_by_page or {}).get(n, ()),
+                    whole_out=whole,
+                )
+                if whole_out is not None:
+                    whole_out += [(n, box) for box in whole]
             for name in list(doc.embfile_names()):
                 doc.embfile_del(name)
             doc.set_toc([])

@@ -53,6 +53,30 @@ from anonymizer.engine.text import needle
 
 log = logging.getLogger(__name__)
 
+
+def _png(mode: str, size: tuple[int, int], samples: bytes) -> bytes:
+    """PNG of raw pixels, encoded outside ``PDF_LOCK`` (lossless; level 1 is fast)."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.frombytes(mode, size, samples).save(buf, "PNG", compress_level=1)
+    return buf.getvalue()
+
+
+def _pdf_zones(active: list[Finding], kept: list[Finding], to_page: list) -> tuple[dict, dict, dict, dict]:
+    """The zones of a PDF's redaction, per page, in unrotated page space: the export and the review's
+    after are made from exactly these. ``to_page``: each page's derotation matrix. Returns the
+    active zones as (rectangle, finding) pairs (``strokes.zones_by_page``), their rectangles, the
+    areas left visible on purpose (``kept``) and the zones whose content may be a drawing."""
+    from anonymizer.engine import strokes
+
+    zones = strokes.zones_by_page(active, to_page)
+    rects = {n: [r for r, _ in items] for n, items in zones.items()}
+    drawn = {n: [r for r, f in items if f.type in strokes.DRAWN_TYPES] for n, items in zones.items()}
+    keep = {n: [r for r, _ in items] for n, items in strokes.zones_by_page(kept, to_page).items()}
+    return zones, rects, keep, drawn
+
+
 _STAGE_TEXT = {
     "ocr": "Leyendo texto en imágenes (OCR)",
     "faces": "Buscando rostros",
@@ -348,7 +372,8 @@ class RealEngine:
                 with pymupdf.open(file.path, filetype="pdf") as doc:
                     pdf.reveal_layers(doc)
                     pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-                    return pix.tobytes("png")
+                    size, samples = (pix.width, pix.height), bytes(pix.samples)
+            return _png("RGB", size, samples)
         from PIL import Image, ImageOps
 
         with Image.open(file.path) as img:
@@ -362,6 +387,46 @@ class RealEngine:
             buf = io.BytesIO()
             frame.save(buf, "PNG")
             return buf.getvalue()
+
+    def render_result(self, file: AnalyzedFile, page: int, zoom: float, findings: list[Finding]) -> bytes:
+        """PNG of page ``page`` as it will be exported: the active findings of that page applied
+        with the export's own redaction, on an in-memory copy. Nothing is written to disk."""
+        zoom = max(0.05, min(8.0, float(zoom)))
+        polygons = [f.polygon for f in findings if f.page == page and f.active]
+        kind = file.kind or sniff(file.path)
+        if kind == "pdf":
+            import pymupdf
+
+            from anonymizer.engine import pdf
+
+            with PDF_LOCK:
+                with pymupdf.open(file.path, filetype="pdf") as doc:
+                    pdf.reveal_layers(doc)
+                    to_page: list = [None] * doc.page_count  # only this page's findings are used
+                    if 0 <= page < doc.page_count:
+                        to_page[page] = pymupdf.Matrix(doc[page].derotation_matrix)
+                    mine = [f for f in findings if f.page == page]
+                    _, rects, keep, drawn = _pdf_zones(
+                        [f for f in mine if f.active], [f for f in mine if not f.active], to_page
+                    )
+                    pdf.redact_page(doc, page, rects.get(page, []), keep=keep.get(page, ()), drawn=drawn.get(page, ()))
+                    pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+                    size, samples = (pix.width, pix.height), bytes(pix.samples)
+            return _png("RGB", size, samples)
+        import numpy as np
+        from PIL import Image
+
+        from anonymizer.engine import image
+
+        arr = image.redact_frame(np.array(image.frame(file.path, page)), polygons)
+        out = Image.fromarray(arr)
+        if zoom != 1.0:
+            out = out.resize(
+                (max(1, round(out.width * zoom)), max(1, round(out.height * zoom))), Image.Resampling.LANCZOS
+            )
+        buf = io.BytesIO()
+        out.save(buf, "PNG", compress_level=1)
+        return buf.getvalue()
 
     # ------------------------------------------------------------------
     # export
@@ -444,17 +509,13 @@ class RealEngine:
         took (D8, ``pdf.snap_rects``; ``ExportResult.grown``)."""
         import pymupdf
 
-        from anonymizer.engine import pdf, strokes
+        from anonymizer.engine import pdf
 
         with PDF_LOCK:
             with pymupdf.open(file.path, filetype="pdf") as doc:
                 to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
                 to_view = [pymupdf.Matrix(page.rotation_matrix) for page in doc]
-        # The leak check (strokes.leaks) uses these same rectangles.
-        zones = strokes.zones_by_page(active, to_page)
-        rects = {n: [r for r, _ in items] for n, items in zones.items()}
-        drawn = {n: [r for r, f in items if f.type in strokes.DRAWN_TYPES] for n, items in zones.items()}
-        keep = {n: [r for r, _ in items] for n, items in strokes.zones_by_page(kept, to_page).items()}
+        zones, rects, keep, drawn = _pdf_zones(active, kept, to_page)
         whole: list[tuple[int, pymupdf.Rect]] = []
         applied = pdf.redact(file.path, str(staged), rects, keep, drawn, whole)
         out = []

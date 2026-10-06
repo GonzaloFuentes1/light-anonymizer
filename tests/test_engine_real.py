@@ -628,3 +628,311 @@ def test_ocr_starts_without_network(monkeypatch):
     img = np.array(_text_image([EMAIL], size=(700, 120)))[:, :, ::-1].copy()
     assert any(EMAIL in txt for txt in reader(img).txts or ())
     assert not attempts
+
+
+# ---------------------------------------------------------------------------
+# after: image helpers (spec 4.1)
+# ---------------------------------------------------------------------------
+
+
+def _tiff(path: Path, sizes) -> Path:
+    frames = []
+    for i, (w, h) in enumerate(sizes):
+        img = Image.new("RGB", (w, h), (255, 255, 255))
+        ImageDraw.Draw(img).rectangle((10, 10, 60 + 10 * i, 40), fill=(200, 30 * i, 0))
+        frames.append(img)
+    frames[0].save(path, "TIFF", save_all=True, append_images=frames[1:], compression="tiff_deflate")
+    return path
+
+
+def test_image_frame_equals_the_frames_generator(tmp_path):
+    import numpy as np
+
+    from anonymizer.engine import image
+
+    path = _tiff(tmp_path / "multi.tif", [(300, 200), (240, 320), (500, 260)])
+    every = list(image.frames(str(path)))
+    for n in range(3):
+        assert np.array_equal(np.array(image.frame(str(path), n)), np.array(every[n]))
+    with pytest.raises(IndexError):
+        image.frame(str(path), 3)
+
+
+def test_image_frame_applies_exif_orientation(tmp_path):
+    from anonymizer.engine import image
+
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    Image.new("RGB", (300, 200), "white").save(tmp_path / "o6.png", exif=exif.tobytes())
+    assert image.frame(str(tmp_path / "o6.png"), 0).size == (200, 300)
+
+
+def test_redact_frame_fills_the_grown_polygon_only():
+    import numpy as np
+
+    from anonymizer.engine import image
+
+    arr = np.full((100, 200, 3), 255, np.uint8)
+    out = image.redact_frame(arr, [[[50, 40], [150, 40], [150, 60], [50, 60]]])
+    assert out is arr
+    assert arr[45:56, 55:146].max() == 0
+    assert arr[5:20, 5:40].min() == 255
+
+
+# ---------------------------------------------------------------------------
+# after: PDF helpers (spec 4.1)
+# ---------------------------------------------------------------------------
+
+
+def test_redaction_rects_move_view_boxes_to_the_unrotated_page(tmp_path):
+    from anonymizer.engine import pdf
+    from anonymizer.engine.locks import PDF_LOCK
+
+    path = _boxed_pdf(tmp_path / "r.pdf", 90, "cropbox")
+    with PDF_LOCK, pymupdf.open(path) as doc:
+        rects = pdf.redaction_rects(doc, {0: [common.rect_polygon(10, 20, 110, 60)], 5: [common.rect_polygon(0, 0, 1, 1)]})
+        assert list(rects) == [0]
+        expected = (pymupdf.Rect(10, 20, 110, 60) * pymupdf.Matrix(doc[0].derotation_matrix)).normalize()
+        assert rects[0] == [expected]
+
+
+def test_redact_page_removes_text_and_annotations_of_that_page_only(tmp_path):
+    from anonymizer.engine import pdf
+    from anonymizer.engine.locks import PDF_LOCK
+
+    path = make_pdf(tmp_path / "a.pdf")
+    with pymupdf.open(path) as doc:
+        doc[0].add_freetext_annot(pymupdf.Rect(300, 600, 500, 640), "Nota de Persona Inventada")
+        doc.save(tmp_path / "b.pdf")
+    with PDF_LOCK, pymupdf.open(tmp_path / "b.pdf") as doc:
+        hit = doc[0].search_for(EMAIL)[0]
+        pdf.redact_page(doc, 0, [hit])
+        assert EMAIL not in doc[0].get_text()
+        assert VALID_RUT in doc[0].get_text()
+        assert not list(doc[0].annots() or [])
+
+
+# ---------------------------------------------------------------------------
+# after: parity with the export (spec 9.1)
+# ---------------------------------------------------------------------------
+
+
+def _pixels(png: bytes):
+    import numpy as np
+
+    with Image.open(io.BytesIO(png)) as img:
+        return np.array(img.convert("RGB"))
+
+
+def _exported_render(engine, file: AnalyzedFile, page: int, zoom: float, tmp_path: Path):
+    result = engine.export(file, str(tmp_path / f"out{page}{zoom}"))
+    assert result.exported, [leak.message for leak in result.leaks]
+    out = AnalyzedFile(id="o", name=Path(result.output_path).name, path=result.output_path, kind=file.kind)
+    return _pixels(engine.render_page(out, page, zoom))
+
+
+def _manual(page: int, x0, y0, x1, y1, fid="m", status="added") -> Finding:
+    return Finding(id=f"{fid}{page}", file_id="f1", page=page, type="manual",
+                   polygon=common.rect_polygon(x0, y0, x1, y1), detector="reviewer", status=status)  # fmt: skip
+
+
+def _assert_parity(engine, file, page, zoom, tmp_path, lossy=False):
+    import numpy as np
+
+    after = _pixels(engine.render_result(file, page, zoom, list(file.findings)))
+    exported = _exported_render(engine, file, page, zoom, tmp_path)
+    assert after.shape == exported.shape
+    before = _pixels(engine.render_page(file, page, zoom))  # the before column: same size, rows align
+    assert before.shape[:2] == after.shape[:2]
+    if lossy:
+        assert np.abs(after.astype(int) - exported.astype(int)).mean() < 2
+    else:
+        assert np.array_equal(after, exported)
+
+
+def _file(path: Path, kind: str, findings) -> AnalyzedFile:
+    return AnalyzedFile(id="f1", name=path.name, path=str(path), kind=kind, status="ready", findings=findings)
+
+
+def test_after_equals_export_text_page(tmp_path):
+    file = analyzed(make_pdf(tmp_path / "a.pdf"))
+    _assert_parity(RealEngine(), file, 0, 1.0, tmp_path)
+
+
+def test_after_equals_export_page_with_annotation_and_no_findings(tmp_path):
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=400, height=300)
+        page.insert_text((40, 60), "Texto neutro de relleno.", fontsize=11)
+        page.add_freetext_annot(pymupdf.Rect(40, 100, 300, 140), "Nota de Persona Inventada")
+        doc.save(tmp_path / "n.pdf")
+    _assert_parity(RealEngine(), _file(tmp_path / "n.pdf", "pdf", []), 0, 1.0, tmp_path)
+
+
+@pytest.mark.parametrize("zoom", [1.0, 1.9])
+def test_after_equals_export_scanned_page(tmp_path, zoom):
+    scan = Image.new("RGB", (1240, 1754), "white")
+    draw = ImageDraw.Draw(scan)
+    draw.text((100, 200), f"RUT {VALID_RUT}", fill=(0, 0, 0), font=font("sans", 40))
+    buf = io.BytesIO()
+    scan.save(buf, "JPEG", quality=85)
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=595, height=842)
+        page.insert_image(page.rect, stream=buf.getvalue())
+        doc.save(tmp_path / "s.pdf")
+    file = _file(tmp_path / "s.pdf", "pdf", [_manual(0, 40, 85, 320, 125)])
+    _assert_parity(RealEngine(), file, 0, zoom, tmp_path)
+
+
+def test_after_equals_export_rotated_cropped_page(tmp_path):
+    path = _boxed_pdf(tmp_path / "b.pdf", 90, "cropbox")
+    file = analyzed(path)
+    file.findings.append(_manual(0, 30, 30, 200, 80))
+    _assert_parity(RealEngine(), file, 0, 1.0, tmp_path)
+
+
+def test_after_hides_an_annotation_with_a_name(tmp_path):
+    path = make_pdf(tmp_path / "a.pdf")
+    with pymupdf.open(path) as doc:
+        doc[0].add_freetext_annot(pymupdf.Rect(300, 600, 560, 640), "Persona Inventada Rojas")
+        doc.save(tmp_path / "an.pdf")
+    file = analyzed(tmp_path / "an.pdf")
+    _assert_parity(RealEngine(), file, 0, 1.0, tmp_path)
+
+
+def _shared_resource_pdf(path: Path, kind: str) -> Path:
+    """Two pages that draw the same Form XObject (letterhead) or the same image XObject."""
+    with pymupdf.open() as src:
+        head = src.new_page(width=400, height=80)
+        head.draw_rect(pymupdf.Rect(0, 0, 400, 80), color=(0, 0, 0), fill=(0.8, 0.8, 0.9))
+        head.insert_text((20, 40), "Membrete institucional de prueba", fontsize=12)
+        src.save(path.with_suffix(".head.pdf"))
+    img = Image.new("RGB", (400, 80), "white")
+    ImageDraw.Draw(img).text((20, 30), f"RUT {VALID_RUT}", fill=(0, 0, 0), font=font("sans", 20))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    with pymupdf.open() as doc, pymupdf.open(path.with_suffix(".head.pdf")) as head_doc:
+        for _ in range(2):
+            page = doc.new_page(width=400, height=300)
+            if kind == "form":
+                page.show_pdf_page(pymupdf.Rect(0, 0, 400, 80), head_doc, 0)
+            else:
+                page.insert_image(pymupdf.Rect(0, 0, 400, 80), stream=buf.getvalue())
+        doc.save(path)
+    return path
+
+
+@pytest.mark.parametrize("kind", ["form", "image"])
+def test_after_equals_export_with_a_resource_shared_by_two_pages(tmp_path, kind):
+    path = _shared_resource_pdf(tmp_path / "shared.pdf", kind)
+    engine = RealEngine()
+    file = _file(path, "pdf", [_manual(1, 10, 10, 200, 70)])
+    with pymupdf.open(path) as doc:  # guard: both pages really share the resource
+        if kind == "image":
+            shared = {img[0] for img in doc[0].get_images()} & {img[0] for img in doc[1].get_images()}
+        else:
+            shared = {x[0] for x in doc[0].get_xobjects()} & {x[0] for x in doc[1].get_xobjects()}
+    assert shared
+    for page in (0, 1):
+        _assert_parity(engine, file, page, 1.0, tmp_path)
+    # guard: the finding does change page 1, and only page 1
+    assert not (_pixels(engine.render_result(file, 1, 1.0, file.findings)) == _pixels(engine.render_page(file, 1, 1.0))).all()
+    assert (_pixels(engine.render_result(file, 0, 1.0, file.findings)) == _pixels(engine.render_page(file, 0, 1.0))).all()
+
+
+def test_after_reveals_and_redacts_a_hidden_layer(tmp_path):
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=400, height=300)
+        xref = doc.add_ocg("Capa oculta", on=False)
+        page.insert_text((40, 60), f"RUT {VALID_RUT}", fontsize=12, oc=xref)
+        page.insert_text((40, 200), "Texto neutro visible.", fontsize=12)
+        doc.save(tmp_path / "ocg.pdf")
+    file = analyzed(tmp_path / "ocg.pdf")
+    assert any(f.type == "rut" for f in file.findings)
+    _assert_parity(RealEngine(), file, 0, 1.0, tmp_path)
+
+
+@pytest.mark.parametrize("mode", ["exif6", "rgba", "palette"])
+def test_after_equals_export_png(tmp_path, mode):
+    img = Image.new("RGBA" if mode == "rgba" else "RGB", (300, 200), (255, 255, 255, 255) if mode == "rgba" else "white")
+    ImageDraw.Draw(img).rectangle((20, 20, 120, 80), fill=(10, 10, 10) if mode != "rgba" else (10, 10, 10, 128))
+    kwargs = {}
+    if mode == "exif6":
+        exif = Image.Exif()
+        exif[0x0112] = 6
+        kwargs["exif"] = exif.tobytes()
+    if mode == "palette":
+        img = img.convert("P")
+    img.save(tmp_path / "p.png", **kwargs)
+    file = _file(tmp_path / "p.png", "image", [_manual(0, 15, 15, 130, 90)])
+    _assert_parity(RealEngine(), file, 0, 1.0, tmp_path)
+    _assert_parity(RealEngine(), file, 0, 0.62, tmp_path)
+
+
+def test_after_equals_export_tiff_page_2(tmp_path):
+    path = _tiff(tmp_path / "t.tif", [(300, 200), (240, 320), (500, 260)])
+    file = _file(path, "image", [_manual(1, 10, 10, 100, 50), _manual(2, 5, 5, 50, 50)])
+    _assert_parity(RealEngine(), file, 1, 1.0, tmp_path)
+
+
+@pytest.mark.parametrize("fmt,ext", [("JPEG", "jpg"), ("WEBP", "webp")])
+def test_after_close_to_export_lossy(tmp_path, fmt, ext):
+    img = Image.new("RGB", (300, 200), "white")
+    ImageDraw.Draw(img).text((20, 80), f"RUT {VALID_RUT}", fill=(0, 0, 0), font=font("sans", 18))
+    img.save(tmp_path / f"f.{ext}", fmt, quality=92)
+    file = _file(tmp_path / f"f.{ext}", "image", [_manual(0, 15, 70, 250, 110)])
+    _assert_parity(RealEngine(), file, 0, 1.0, tmp_path, lossy=True)
+
+
+def test_after_ignores_removed_suggested_and_other_pages(tmp_path):
+    import numpy as np
+
+    path = _tiff(tmp_path / "t.tif", [(300, 200), (300, 200)])
+    engine = RealEngine()
+    file = _file(path, "image", [])
+    plain = _pixels(engine.render_result(file, 0, 1.0, []))
+    kept = [
+        _manual(0, 10, 10, 100, 50, fid="r", status="removed"),
+        _manual(0, 10, 60, 100, 90, fid="s", status="suggested"),
+        _manual(1, 10, 10, 100, 50, fid="o"),
+    ]
+    assert np.array_equal(_pixels(engine.render_result(file, 0, 1.0, kept)), plain)
+
+
+def test_redacted_route_equals_export_and_writes_nothing(tmp_path, monkeypatch):
+    import hashlib
+    import tempfile
+
+    import numpy as np
+
+    from anonymizer.api.server import create_app
+    from tests.live_client import LiveClient
+    from tests.test_api import TOKEN, upload, wait_status
+
+    app = create_app(RealEngine(), TOKEN)
+    with LiveClient(app) as client:
+        client.headers["X-Session-Token"] = TOKEN
+        file_id = upload(client, "informe.pdf", make_pdf(tmp_path / "a.pdf").read_bytes())
+        client.post("/api/process", json={"file_ids": [file_id]})
+        assert wait_status(client, file_id)["status"] == "ready"
+        file = client.get(f"/api/files/{file_id}").json()
+        signer = next(f for f in file["findings"] if f["text"] == SIGNER)
+        client.patch(f"/api/files/{file_id}/findings/{signer['id']}", json={"action": "remove", "reason": "Otro motivo"})
+        session = app.state.session
+        working = Path(session.get(file_id).path)
+        digest = hashlib.sha256(working.read_bytes()).hexdigest()
+        listing = sorted((p.name, p.stat().st_mtime_ns) for p in Path(session.dir).iterdir())
+        empty = tmp_path / "tmp"
+        empty.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(empty))
+        monkeypatch.setenv("TMP", str(empty))
+        monkeypatch.setenv("TEMP", str(empty))
+        after = client.get(f"/api/files/{file_id}/pages/0.png?redacted=true").content
+        assert list(empty.iterdir()) == []
+        assert sorted((p.name, p.stat().st_mtime_ns) for p in Path(session.dir).iterdir()) == listing
+        assert hashlib.sha256(working.read_bytes()).hexdigest() == digest
+        monkeypatch.undo()
+        client.post(f"/api/files/{file_id}/confirm")
+        dest = tmp_path / "salida"
+        client.post("/api/export", json={"dest_dir": str(dest), "audit_pdf": False, "audit_json": False})
+        out = AnalyzedFile(id="o", name="informe.pdf", path=str(dest / "informe.pdf"), kind="pdf")
+        assert np.array_equal(_pixels(after), _pixels(RealEngine().render_page(out, 0, 1.0)))

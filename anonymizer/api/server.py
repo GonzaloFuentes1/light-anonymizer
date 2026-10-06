@@ -21,6 +21,7 @@ Routes (JSON unless noted)::
     POST   /api/cancel                     {file_id?: str}
     GET    /api/files/{id}                 full AnalyzedFile
     GET    /api/files/{id}/pages/{n}.png?zoom=1.5   image/png
+    GET    /api/files/{id}/pages/{n}.png?zoom=1.5&redacted=true  image/png (the page as it will be exported)
     POST   /api/files/{id}/findings        {page, polygon, note?}
     PATCH  /api/files/{id}/findings/{fid}  {action: remove|restore|apply|skip, reason?, note?}
     POST   /api/files/{id}/findings/apply-optional   {reason?: url|exception}   apply the suggested findings
@@ -912,20 +913,39 @@ def create_app(
             return file.to_dict()
 
     @app.get("/api/files/{file_id}/pages/{page}.png")
-    def page_png(file_id: str, page: int, zoom: float = 1.0):
-        file = session.get(file_id)
+    def page_png(file_id: str, page: int, zoom: float = 1.0, redacted: bool = False):
+        if redacted:
+            # One critical section: a re-process that starts in between empties the findings under
+            # this lock, so the after can never be rendered with nothing applied.
+            with session.lock:
+                file = session.get(file_id)
+                check_render(file, page, zoom)
+                if file.status not in ("ready", "confirmed", "exported"):
+                    raise ApiError(409, "not_ready", "Este archivo todavía no está listo para revisar.")
+                snapshot = [
+                    replace(f, text=None, history=[], polygon=[list(p) for p in f.polygon])
+                    for f in file.findings
+                    if f.page == page
+                ]
+            render = lambda: session.engine.render_result(file, page, min(max(zoom, 0.05), 8.0), snapshot)  # noqa: E731
+        else:
+            file = session.get(file_id)
+            check_render(file, page, zoom)
+            render = lambda: session.engine.render_page(file, page, min(max(zoom, 0.05), 8.0))  # noqa: E731
+        try:
+            png = render()
+        except Exception:
+            log.exception("render of %s page %d failed (redacted=%s)", file_id, page, redacted)
+            raise ApiError(409, "render", "No se pudo mostrar esta página.") from None
+        return Response(png, media_type="image/png")
+
+    def check_render(file: AnalyzedFile, page: int, zoom: float) -> None:
         if not math.isfinite(zoom) or zoom <= 0:
             raise ApiError(422, "invalid", "El zoom no es válido.")
         if file.kind is None or file.status == "error":
             raise ApiError(409, "not_viewable", "Este archivo no se puede mostrar.")
         if page < 0 or (file.pages and page >= len(file.pages)):
             raise ApiError(404, "not_found", "Esa página no existe.")
-        try:
-            png = session.engine.render_page(file, page, min(max(zoom, 0.05), 8.0))
-        except Exception:
-            log.exception("render of %s page %d failed", file_id, page)
-            raise ApiError(409, "render", "No se pudo mostrar esta página.") from None
-        return Response(png, media_type="image/png")
 
     # -- review ---------------------------------------------------------
 

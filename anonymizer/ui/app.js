@@ -254,15 +254,35 @@
     rv: {
       id: null,
       file: null, // full AnalyzedFile
-      page: 0,
+      gen: 0, // load generation: increased by every teardown, carried by every image request
       sel: null,
       hidden: new Set(), // finding types hidden by the filter chips
-      scale: null, // CSS px per view unit; null = fit to width
+      zoom: 1, // factor over "fit to the column width"
       rot: 0,
       draw: false,
-      result: false,
+      after: true, // the after column is shown (V); kept across files
       seen: new Map(), // file id -> Set of finding ids the reviewer opened
       loadingId: null,
+      rows: [], // one per page of the open file (see buildRows)
+      versions: [], // per page: hash of its active findings (ReviewCore.pageVersions)
+      pan: 0, // shared horizontal offset, as a fraction of the overflow
+      layout: { colWidth: 0, widest: 0, stacked: false }, // the last relayout (display pixels)
+    },
+    // Page images (spec 6.4): which rows are near the view, the jobs waiting and the requests sent.
+    load: {
+      observer: null, // rows within one viewport height of the view (inMargin)
+      viewObserver: null, // rows in view (inView)
+      marginPx: 0, // the viewport height the observers' margin was made with
+      inView: new Set(),
+      inMargin: new Set(),
+      queue: [], // { row, side, edited }
+      inFlight: 0, // requests sent and not answered, of any generation
+      scrolling: false, // no request starts: a scroll or a zoom has not settled yet
+      settleTimer: null,
+      settleAt: 0,
+      seenTop: 0, // the viewport's scrollTop at the last scroll event or settle
+      refresh: false, // a zoom is settling: rows outside the margin drop their images
+      toastedGen: -1, // the load generation that already showed the toast of a failed before
     },
     exp: { dest: "", results: new Map(), busy: false, last: null },
   };
@@ -302,11 +322,15 @@
   // Navigation between the four steps
   // ---------------------------------------------------------------------------------------------
   function go(n, { focus = true } = {}) {
+    if (S.screen === 3 && n !== 3) rememberView(); // a hidden viewport loses its scroll position
     S.screen = n;
     $$(".screen").forEach((s) => s.classList.toggle("on", s.dataset.screen === String(n)));
     if (n !== 3) { setDraw(false); }
     renderSteps();
-    if (n === 3) renderReview();
+    if (n === 3) {
+      renderReview(); // loads nothing when a file is open: the rows and the anchor stay
+      requestAnimationFrame(() => { if (S.screen === 3) relayout(); });
+    }
     if (n === 4) enterExport();
     schedulePoll();
     if (focus) {
@@ -351,7 +375,6 @@
     }
     S.loaded = true;
     setFatal("");
-    const before = new Map(S.files.map((f) => [f.id, f.status]));
     S.files = Array.isArray(data.files) ? data.files : [];
     S.namesCount = data.names_count || 0;
     S.exceptionsCount = data.exceptions_count || 0;
@@ -372,17 +395,25 @@
     $("#engine-chip").hidden = S.engine !== "fake";
     renderAll();
 
-    // Keep the open review file in sync (for example after processing again or exporting).
+    // Keep the open review file in sync, on any screen. Processed again, removed or failed: the
+    // review forgets it. Between reviewable statuses (first edit after confirming, an export):
+    // reloaded keeping the view.
     const rv = S.rv;
     if (rv.id) {
       const sum = fileById(rv.id);
-      if (!sum) {
-        closeReviewFile();
+      if (!sum || !REVIEWABLE.has(sum.status)) {
+        const why = sum && sum.status === "error"
+          ? `${sum.name} necesita tu ayuda. ${sum.error_message || "Este archivo no se pudo procesar."}`
+          : "";
+        dropReviewFile();
+        showReviewStatus(why);
+        renderFileBar();
         if (S.screen === 3) renderReview();
-      } else if (rv.file && sum.status !== rv.file.status && before.get(rv.id) !== undefined) {
-        if (REVIEWABLE.has(sum.status)) loadReviewFile(rv.id, { keepView: true });
-        else if (S.screen === 3) renderReview();
+      } else if (rv.file && sum.status !== rv.file.status && rv.loadingId !== rv.id) {
+        openFile(rv.id, { keepView: true }); // not while one is on its way: a slow one would never land
       }
+    } else if (S.screen === 3 && S.files.some((f) => REVIEWABLE.has(f.status))) {
+      renderReview(); // Revisar showed no file and one became reviewable: open it
     }
     schedulePoll();
   }
@@ -397,28 +428,32 @@
     renderSteps();
     renderHome();
     renderJobs();
-    if (S.screen === 3) renderReviewFiles();
+    renderFileBar();
     if (S.screen === 4) renderExport();
   }
 
   // ---------------------------------------------------------------------------------------------
   // Screen 1: choose files
   // ---------------------------------------------------------------------------------------------
-  function statusChip(f) {
+  /** The text of a file's status chip, except "Procesando" instead of the percentage. */
+  function statusText(f) {
     const c = f.counts || {};
     switch (f.status) {
-      case "processing": return h("span", { class: "state run", text: `${Math.round((f.progress || 0) * 100)} %` });
-      case "queued": return h("span", { class: "state wait", text: S.requested.has(f.id) ? "En espera" : "Sin procesar" });
-      case "ready":
-        return c.doubtful
-          ? h("span", { class: "state warn", text: `${c.doubtful} por revisar` })
-          : h("span", { class: "state ok", text: "Listo para revisar" });
-      case "confirmed": return h("span", { class: "state ok", text: "Confirmado" });
-      case "exported": return h("span", { class: "state ok", text: "Exportado" });
-      case "error": return h("span", { class: "state bad", text: "Necesita tu ayuda" });
-      case "cancelled": return h("span", { class: "state wait", text: "Cancelado" });
-      default: return h("span", { class: "state wait", text: f.status || "" });
+      case "processing": return "Procesando";
+      case "queued": return S.requested.has(f.id) ? "En espera" : "Sin procesar";
+      case "ready": return c.doubtful ? `${c.doubtful} por revisar` : "Listo para revisar";
+      case "confirmed": return "Confirmado";
+      case "exported": return "Exportado";
+      case "error": return "Necesita tu ayuda";
+      case "cancelled": return "Cancelado";
+      default: return f.status || "";
     }
+  }
+  const STATUS_TONE = { processing: "run", confirmed: "ok", exported: "ok", error: "bad" };
+  function statusChip(f) {
+    const tone = f.status === "ready" ? ((f.counts || {}).doubtful ? "warn" : "ok") : STATUS_TONE[f.status] || "wait";
+    const text = f.status === "processing" ? `${Math.round((f.progress || 0) * 100)} %` : statusText(f);
+    return h("span", { class: `state ${tone}`, text });
   }
 
   function fileMeta(f) {
@@ -1130,87 +1165,223 @@
     ];
   }
 
+  // --- opening and closing a file: every way in goes through openFile ---
+  /** Procesar's "Revisar" and "Revisar los listos". The open file only shows Revisar again. */
   function openReview(id) {
-    if (id && id !== S.rv.id) {
-      const sum = fileById(id);
-      if (sum && REVIEWABLE.has(sum.status)) {
-        S.rv.id = id;
-        S.rv.file = null;
-      }
-    }
+    if (id && id !== S.rv.id) openFile(id);
     go(3);
   }
 
-  function closeReviewFile() {
-    S.rv.id = null;
-    S.rv.file = null;
-    S.rv.sel = null;
+  // Stubs of the scrolling viewer, each replaced by the task that builds that part.
+  function renderZonesAll() {} // replaced in Task 12
+  function renderRowZones() {} // replaced in Task 12
+  function revealFinding() {} // replaced in Task 12
+  function rowLabel(i) { return `Página ${i + 1} de ${S.rv.file.pages.length}`; } // replaced in Task 12
+  function scrollToY(y) { $("#viewport").scrollTop = y; } // replaced in Task 12
+
+  function focusViewport() { $("#viewport").focus({ preventScroll: true }); }
+
+  /** Empty the viewport. The new generation makes every image response still on its way stale. */
+  function teardownRows() {
+    S.rv.gen += 1;
+    stopObserver();
+    clearQueue();
+    for (const row of S.rv.rows) releaseRow(row, { all: true });
+    S.rv.rows = [];
+    $("#rows").replaceChildren();
+    $("#hpan").hidden = true;
+    pendingView = null;
   }
 
-  async function loadReviewFile(id, { keepView = false } = {}) {
+  /** The open file can no longer be reviewed (processed again, removed, failed): forget it. */
+  function dropReviewFile() {
+    const id = S.rv.id;
+    teardownRows();
+    if (id) S.rv.seen.delete(id);
+    S.rv.id = null; S.rv.file = null; S.rv.sel = null; S.rv.versions = [];
+  }
+
+  /** Under the file bar: why the review closed a file ("" hides the line). */
+  function showReviewStatus(text) {
+    const el = $("#rv-status");
+    el.hidden = !text;
+    el.textContent = text || "";
+  }
+
+  /** Opens a file for review: fit zoom, no rotation, every type shown, draw mode off; V is kept.
+   *  ``keepView`` reloads the open file in place. ``focus``: the viewport takes the focus once the
+   *  file is loaded (an open from the select). ``auto``: the automatic choice, which keeps the
+   *  status line and a choice still pending in the select. */
+  async function openFile(id, { keepView = false, focus = false, auto = false } = {}) {
+    try {
+      const sum = fileById(id);
+      if (!sum || !REVIEWABLE.has(sum.status)) return;
+      const fresh = !keepView || id !== S.rv.id;
+      if (fresh) {
+        teardownRows();
+        Object.assign(S.rv, { id, file: null, sel: null, zoom: 1, rot: 0, pan: 0, versions: [] });
+        S.rv.hidden.clear();
+        setDraw(false);
+        $("#review-loading").hidden = false;
+        if (!auto) {
+          clearTimeout(fileSwitchTimer);
+          fileSwitchTimer = null;
+          showReviewStatus("");
+        }
+      }
+      renderFileBar();
+      const load = loadReviewFile(id, { keepView, focus }).catch(reportError); // sets rv.loadingId at once
+      // The findings column and the verify bar leave the previous file now, not when this one arrives.
+      if (fresh && S.screen === 3) renderReview();
+      await load;
+    } catch (err) {
+      reportError(err);
+    }
+  }
+
+  /** A failure in a flow started without await (polls, clicks): one message, no unhandled rejection. */
+  function reportError(err) {
+    console.error(err);
+    showError(err instanceof ApiError ? err : null);
+  }
+
+  let loadSeq = 0; // only the latest load is applied
+  async function loadReviewFile(id, { keepView = false, focus = false } = {}) {
     const rv = S.rv;
+    const seq = ++loadSeq;
     rv.loadingId = id;
     let file;
     try {
       file = await api(`/api/files/${enc(id)}`);
     } catch (err) {
-      if (rv.loadingId === id) rv.loadingId = null;
+      if (seq !== loadSeq) return;
+      rv.loadingId = null;
+      if (rv.id !== id) return;
+      $("#review-loading").hidden = true;
+      if (!rv.file && S.screen === 3) {
+        // Not renderReview(): it would try again at once, and again on every failure.
+        renderReviewPlaceholder("No se pudo cargar el archivo.");
+        $("#findlist").append(h("button", { type: "button", class: "btn small", text: "Reintentar", onclick: () => openFile(id) }));
+      }
       showError(err);
       return;
     }
-    if (rv.loadingId === id) rv.loadingId = null;
+    if (seq !== loadSeq) return;
+    rv.loadingId = null;
     if (rv.id !== id) return; // the user moved on to another file
-    const same = !!rv.file && rv.file.id === id;
-    rv.id = id;
+    const keep = keepView && !!rv.file && rv.file.id === id;
+    const pages = file.pages || [];
+    const samePages = keep && rv.rows.length === pages.length
+      && rv.rows.every((row, i) => row.page.width === pages[i].width && row.page.height === pages[i].height);
     rv.file = file;
-    clearThumbCache(id);
-    if (!(keepView && same)) {
-      rv.page = 0;
-      rv.scale = null;
-      rv.rot = 0;
-      rv.result = false;
-      rv.hidden.clear();
-      setDraw(false);
+    $("#review-loading").hidden = true;
+    if (keep) {
+      if (rv.sel && !findingById(rv.sel)) rv.sel = null;
+    } else {
       // The first finding (doubtful ones come first) starts selected and highlighted.
       const first = orderedVisible()[0];
       rv.sel = first ? first.id : null;
-      if (first) { rv.page = first.page; seenSet(id).add(first.id); }
-    } else {
-      if (rv.sel && !findingById(rv.sel)) rv.sel = null;
-      rv.page = clamp(rv.page, 0, Math.max(0, (file.pages || []).length - 1));
+      if (first) seenSet(id).add(first.id);
     }
-    lastImageKey = "";
+    let anchor = null;
+    if (samePages) {
+      // Same pages: the rows, the anchor and the loaded befores stay; only the afters may change.
+      rv.rows.forEach((row, i) => { row.page = pages[i]; });
+      refreshVersions(); // the afters whose findings changed load again
+      renderZonesAll();
+    } else {
+      if (keep && rv.rows.length) anchor = anchorNow();
+      if (rv.rows.length) teardownRows();
+      rv.versions = ReviewCore.pageVersions(file.findings, pages.length);
+      buildRows();
+    }
     if (S.screen === 3) renderReview();
+    if (anchor) restoreAnchor(anchor); // the page list changed: back to the same page, clamped
+    else if (!keep) showStart();
+    // Unless the reviewer moved the focus elsewhere meanwhile.
+    const active = document.activeElement;
+    if (focus && S.screen === 3 && (!active || active === document.body || active.id === "rv-file")) focusViewport();
   }
 
   function renderReview() {
-    const reviewable = S.files.filter((f) => REVIEWABLE.has(f.status));
     const rv = S.rv;
-    if (rv.id) {
-      const sum = fileById(rv.id);
-      if (!sum || !REVIEWABLE.has(sum.status)) closeReviewFile();
-    }
-    if (!rv.id && reviewable.length) {
+    if (!rv.id) {
+      // Automatic choice: the first file ready for review, else any reviewable one.
+      const reviewable = S.files.filter((f) => REVIEWABLE.has(f.status));
       const next = reviewable.find((f) => f.status === "ready") || reviewable[0];
-      rv.id = next.id;
-      rv.file = null;
+      if (next) openFile(next.id, { auto: true });
+    } else if (!rv.file && rv.loadingId !== rv.id) {
+      openFile(rv.id, { auto: true }); // its last load failed: try again
     }
     $("#review-empty").hidden = !!rv.id || S.files.some((f) => REVIEWABLE.has(f.status));
     $("#review").hidden = !rv.id;
     if (!rv.id) return;
-    renderReviewFiles();
-    if (!rv.file || rv.file.id !== rv.id) {
-      $("#pagebox").hidden = true;
-      $("#zones").replaceChildren();
-      $("#findlist").replaceChildren(h("p", { class: "nofind", text: "Cargando el archivo…" }));
-      if (rv.loadingId !== rv.id) loadReviewFile(rv.id);
+    renderFileBar();
+    if (!rv.file) {
+      renderReviewPlaceholder("Cargando el archivo…");
       return;
     }
-    renderThumbs();
-    layoutPage();
     renderSkipped();
     renderFindings();
     renderVerify();
+  }
+
+  /** The findings column and the verify bar with no file in them (loading, or the load failed). */
+  function renderReviewPlaceholder(text) {
+    $("#fcount").textContent = "";
+    $("#chips").replaceChildren();
+    for (const id of ["#skipped", "#leaks"]) { $(id).hidden = true; $(id).replaceChildren(); }
+    $("#findlist").replaceChildren(h("p", { class: "nofind", text }));
+    $("#vdot").className = "dot";
+    $("#vtitle").textContent = "";
+    $("#vsum").textContent = "";
+    $("#vactions").replaceChildren();
+  }
+
+  // --- the file bar ---
+  let fileSwitchTimer = null; // a choice in the select, waiting for its pause
+  /** The reviewable file before (-1) or after (1) the open one, in list order, without wrapping. */
+  function neighbourFile(delta) {
+    const i = S.files.findIndex((f) => f.id === S.rv.id);
+    if (i < 0) return null;
+    for (let k = i + delta; k >= 0 && k < S.files.length; k += delta) {
+      if (REVIEWABLE.has(S.files[k].status)) return S.files[k];
+    }
+    return null;
+  }
+
+  /** Runs on every poll, on any screen. The select and its options are never replaced, only
+   *  updated where they changed, so an open dropdown stays open. */
+  function renderFileBar() {
+    const rv = S.rv;
+    const select = $("#rv-file");
+    const byId = new Map([...select.options].map((o) => [o.value, o]));
+    S.files.forEach((f, i) => {
+      let opt = byId.get(f.id);
+      if (opt) byId.delete(f.id);
+      else opt = h("option", { value: f.id });
+      if (select.options[i] !== opt) select.insertBefore(opt, select.options[i] || null);
+      const text = `${f.name} · ${statusText(f)}`;
+      if (opt.textContent !== text) opt.textContent = text;
+      const off = !REVIEWABLE.has(f.status);
+      if (opt.disabled !== off) opt.disabled = off;
+    });
+    for (const gone of byId.values()) gone.remove();
+    if (!fileSwitchTimer && select.value !== (rv.id || "")) select.value = rv.id || "";
+    const sum = rv.id ? fileById(rv.id) : null;
+    select.title = sum ? sum.name : "";
+    const box = $("#rv-chip");
+    const chip = sum ? statusChip(sum) : null;
+    const old = box.firstElementChild;
+    if (!chip) box.replaceChildren();
+    else if (!old || old.className !== chip.className || old.textContent !== chip.textContent) box.replaceChildren(chip);
+    for (const [delta, btn] of [[-1, $("#rv-prev")], [1, $("#rv-next")]]) {
+      const off = !neighbourFile(delta);
+      if (btn.disabled === off) continue;
+      const focused = document.activeElement === btn;
+      btn.disabled = off;
+      if (off && focused) focusViewport();
+    }
   }
 
   /** Banner when the file was analyzed with detection groups off: what was not searched. */
@@ -1234,212 +1405,564 @@
     box.replaceChildren(...parts);
   }
 
-  function renderReviewFiles() {
-    const box = $("#rfiles");
-    keepFocus(box, () => {
-      box.replaceChildren(
-        ...S.files.map((f) => {
-          const ok = REVIEWABLE.has(f.status);
-          return h("button", {
-            type: "button",
-            class: "fbtn",
-            dataset: { fk: `rf:${f.id}` },
-            "aria-current": f.id === S.rv.id ? "true" : null,
-            "aria-disabled": ok ? null : "true",
-            onclick: () => {
-              if (!ok) {
-                toast(f.status === "error" ? f.error_message || "Este archivo no se pudo procesar." : "Este archivo todavía no está listo para revisar.");
-                return;
-              }
-              if (f.id !== S.rv.id) {
-                S.rv.id = f.id;
-                S.rv.file = null;
-                renderReview();
-              }
-            },
-          }, h("span", { class: "fname" }, nameNode(f.name)), statusChip(f));
-        }),
-      );
+  // --- rows, geometry and the shared horizontal pan (spec 6.1, 6.2) ---
+  const COL_GAP = 24; // between the before and after columns (--gap)
+  const MIN_COL = 160; // a column never narrower than this: a small page still has room for its state pill
+  // Applied by the next relayout that can measure the viewport: { anchor } saved on leaving Revisar
+  // or by restoreAnchor while it was hidden, or { start: true } for a file that loaded meanwhile.
+  let pendingView = null;
+
+  /** One row per page: the before cell (image, zone layer), the after cell and the label. The
+   *  images load lazily (see the image loading section); until its first one arrives each cell
+   *  reserves its size and says "Cargando…". Per cell: ``key`` of the image shown, ``pending`` key
+   *  on its way, ``failed`` key that could not be shown, ``mp`` of the image shown. */
+  function buildRows() {
+    const rv = S.rv;
+    const pages = (rv.file && rv.file.pages) || [];
+    const n = pages.length;
+    const cell = (side, i) => {
+      const before = side === "before";
+      const img = h("img", { alt: `Página ${i + 1} de ${n}, ${before ? "original" : "como quedará"}` });
+      const inner = h("div", { class: "pinner" }, img);
+      const zones = before ? h("div", { class: "zones" }) : null; // not rotated: zones are in display pixels
+      const box = h("div", { class: "pbox" }, inner, zones);
+      const state = h("div", { class: "cstate", text: "Cargando…" });
+      const el = h("div", { class: `cell ${side}` },
+        h("span", { class: "cap", "aria-hidden": "true", text: before ? "Antes" : "Después: como quedará" }), box, state);
+      const parts = { cell: el, box, inner, img, state, key: "", url: null, mp: 0, pending: "", pendingMp: 0, failed: "", fail: null };
+      return before ? { ...parts, zones } : { ...parts, version: null };
+    };
+    rv.rows = pages.map((page, i) => {
+      const before = cell("before", i), after = cell("after", i);
+      const label = h("div", { class: "plabel", text: rowLabel(i) });
+      const el = h("div", { class: "prow", role: "group", "aria-label": `Página ${i + 1} de ${n}`, dataset: { row: String(i) } },
+        before.cell, after.cell, label);
+      return { i, page, el, label, fit: 1, scale: 1, w: 0, h: 0, before, after };
     });
+    $("#rows").replaceChildren(...rv.rows.map((row) => row.el));
+    // Its sets stay empty until its first notification, after the next frame, and a scroll that has
+    // moved before its scroll event holds the loads (scheduleLoads): the rows at scrollTop 0 are never
+    // requested on the way to where showStart or restoreAnchor goes.
+    startObserver();
+    relayout({ keepAnchor: false });
   }
 
-  // --- thumbnails (real page renders, loaded lazily, two at a time) ---
-  const thumbCache = new Map(); // "fileId:page" -> object URL
-  const thumbQueue = [];
-  let thumbRunning = 0;
-  let thumbObserver = null;
-  function clearThumbCache(fileId) {
-    for (const [k, url] of thumbCache) {
-      if (k.startsWith(`${fileId}:`)) { URL.revokeObjectURL(url); thumbCache.delete(k); }
+  /** The label under each row, from rowLabel: it follows the findings of that page. */
+  function renderRowLabels() {
+    for (const row of S.rv.rows) {
+      const text = rowLabel(row.i);
+      if (row.label.textContent !== text) row.label.textContent = text;
     }
   }
-  function pumpThumbs() {
-    while (thumbRunning < 2 && thumbQueue.length) {
-      const job = thumbQueue.shift();
-      thumbRunning += 1;
-      apiBlobUrl(job.path)
-        .then((url) => {
-          thumbCache.set(job.key, url);
-          const img = document.querySelector(`img[data-thumb="${CSS.escape(job.key)}"]`);
-          if (img) img.src = url;
-        })
-        .catch(() => { /* the main viewer reports page errors */ })
-        .finally(() => { thumbRunning -= 1; pumpThumbs(); });
-    }
-  }
-  function requestThumb(img) {
-    const key = img.dataset.thumb;
-    if (thumbCache.has(key)) { img.src = thumbCache.get(key); return; }
-    if (thumbQueue.some((j) => j.key === key)) return;
-    thumbQueue.push({ key, path: img.dataset.path });
-    pumpThumbs();
-  }
 
-  function renderThumbs() {
-    const rv = S.rv;
-    const file = rv.file;
-    const box = $("#thumbs");
-    if (thumbObserver) thumbObserver.disconnect();
-    thumbQueue.length = 0;
-    const width = Math.max(80, box.clientWidth - 28 || 170);
-    const dpr = window.devicePixelRatio || 1;
-    const counts = new Map();
-    for (const f of rvFindings()) if (isApplied(f)) counts.set(f.page, (counts.get(f.page) || 0) + 1);
-    thumbObserver = "IntersectionObserver" in window
-      ? new IntersectionObserver((entries) => {
-        for (const e of entries) if (e.isIntersecting) { requestThumb(e.target); thumbObserver.unobserve(e.target); }
-      }, { root: $(".col-files"), rootMargin: "300px" })
-      : null;
-    keepFocus(box, () => {
-      box.replaceChildren(
-        ...(file.pages || []).map((p, i) => {
-          const zoom = Math.max(0.02, Math.round(((width * dpr) / (p.width || 1)) * 100) / 100);
-          const key = `${file.id}:${i}`;
-          const n = counts.get(i) || 0;
-          const img = h("img", {
-            alt: "",
-            dataset: { thumb: key, path: `/api/files/${enc(file.id)}/pages/${i}.png?zoom=${zoom}` },
-            style: { aspectRatio: `${p.width} / ${p.height}` },
-          });
-          const btn = h("button", {
-            type: "button",
-            class: "thumb",
-            dataset: { fk: `th:${i}` },
-            "aria-current": i === rv.page ? "true" : null,
-            "aria-label": `Página ${i + 1}, ${plural(n, "zona", "zonas")}`,
-            onclick: () => setPage(i),
-          }, img, h("span", { class: "pn", "aria-hidden": "true", text: String(i + 1) }), h("b", { "aria-hidden": "true", text: String(n) }));
-          if (thumbCache.has(key)) img.src = thumbCache.get(key);
-          else if (thumbObserver) thumbObserver.observe(img);
-          else requestThumb(img);
-          return btn;
-        }),
-      );
+  /** Columns, scales and reserved sizes from the viewport width, zoom and rotation. Keeps the
+   *  anchor: the point at the center of the visible area stays there (its page, its relative y in
+   *  that row and its x in that page). Runs on resize, V, rotation, zoom and when Revisar shows. */
+  function relayout({ keepAnchor = true } = {}) {
+    const rv = S.rv, vp = $("#viewport");
+    if (!rv.file || !rv.rows.length || !vp.clientWidth) return;
+    const pending = pendingView;
+    pendingView = null;
+    const anchor = pending ? pending.anchor || null : keepAnchor ? anchorNow() : null;
+    const rowsStyle = getComputedStyle($("#rows"));
+    const pad = parseFloat(rowsStyle.paddingLeft) + parseFloat(rowsStyle.paddingRight);
+    const layout = ReviewCore.columns({ areaWidth: vp.clientWidth - pad, gap: COL_GAP, after: rv.after });
+    vp.classList.toggle("no-after", !rv.after);
+    vp.classList.toggle("stacked", layout.stacked);
+    const fits = ReviewCore.fitScales(rv.rows.map((row) => row.page), { colWidth: layout.colWidth, rot: rv.rot });
+    let widest = 0;
+    rv.rows.forEach((row, i) => {
+      row.fit = fits[i];
+      row.scale = ReviewCore.effectiveScale(row.fit, rv.zoom);
+      const size = ReviewCore.displaySize(row.page, row.scale, rv.rot);
+      row.w = size.w;
+      row.h = size.h;
+      widest = Math.max(widest, row.w);
+      sizeCell(row.before, row);
+      sizeCell(row.after, row);
     });
+    rv.layout = { colWidth: layout.colWidth, widest, stacked: layout.stacked };
+    vp.style.setProperty("--cw", `${Math.max(1, Math.min(layout.colWidth, Math.max(widest, MIN_COL)))}px`);
+    vp.style.setProperty("--gap", `${COL_GAP}px`);
+    vp.style.setProperty("--head", `${headerHeight()}px`); // the state pills stick below the header
+    if (anchor && anchor.fx != null) {
+      const row = rv.rows[clamp(anchor.row, 0, rv.rows.length - 1)];
+      rv.pan = ReviewCore.panFor(anchor.fx, row.w, layout.colWidth, rv.pan);
+    }
+    updatePan();
+    if (anchor) restoreAnchor(anchor);
+    else if (pending && pending.start) showStart();
+    updateZoomButton();
+    updatePageField();
+    renderZonesAll();
+    fitObserverMargin();
+    scheduleLoads(); // a row whose request zoom changed loads again, keeping its image until then
   }
 
-  function setPage(i) {
-    const rv = S.rv;
-    if (!rv.file) return;
-    const n = (rv.file.pages || []).length;
-    if (!n) return;
-    i = clamp(i, 0, n - 1);
-    if (i === rv.page) return;
-    rv.page = i;
-    $("#viewport").scrollTo({ top: 0, left: 0 });
-    renderThumbs();
-    layoutPage();
-    renderFindings();
+  /** One cell of a row: the box at the shown (rotated) size; inside it the page layer and its image at
+   *  the unrotated size, turned by the view rotation. */
+  function sizeCell(side, row) {
+    const W = row.page.width * row.scale, H = row.page.height * row.scale;
+    Object.assign(side.box.style, { width: `${row.w}px`, height: `${row.h}px` });
+    Object.assign(side.inner.style, { width: `${W}px`, height: `${H}px`, transform: ReviewCore.innerTransform(S.rv.rot, W, H) });
+    Object.assign(side.img.style, { width: `${W}px`, height: `${H}px` });
   }
 
-  // --- viewer geometry ---
-  function currentPage() {
-    const rv = S.rv;
-    return rv.file && rv.file.pages ? rv.file.pages[rv.page] || null : null;
+  let panWheelOn = false;
+  /** The shared scrollbar under the columns shows when the widest page is wider than its column. */
+  function updatePan() {
+    const { colWidth, widest } = S.rv.layout;
+    const bar = $("#hpan");
+    bar.hidden = !ReviewCore.overflow(widest, colWidth);
+    if (!bar.hidden) $("#hpan-inner").style.width = `${(bar.clientWidth * widest) / colWidth}px`;
+    // Only while there is something to pan: a non-passive wheel listener keeps the browser from
+    // scrolling the pages off the main thread.
+    if (panWheelOn === bar.hidden) {
+      panWheelOn = !bar.hidden;
+      $("#viewport")[panWheelOn ? "addEventListener" : "removeEventListener"]("wheel", panWheel, { passive: false });
+    }
+    setPan(S.rv.pan);
   }
-  function fitScale() {
-    const p = currentPage();
-    if (!p) return 1;
+
+  let panBarLeft = 0; // where setPan put the scrollbar: its own scroll event is not a move by the reviewer
+  /** Shifts both cells of every row by the same fraction of their overflow, so the before and the
+   *  after show the same region; no image is requested again. */
+  function setPan(fraction, { moveBar = true } = {}) {
+    const rv = S.rv;
+    rv.pan = clamp(Number(fraction) || 0, 0, 1);
+    for (const row of rv.rows) {
+      const over = ReviewCore.overflow(row.w, rv.layout.colWidth) > 0;
+      const shift = ReviewCore.panShift(rv.pan, row.w, rv.layout.colWidth);
+      for (const side of [row.before, row.after]) {
+        side.box.style.justifySelf = over ? "start" : ""; // an overflowing page starts at the column's left edge
+        side.box.style.transform = shift ? `translateX(${shift}px)` : "";
+      }
+    }
+    const bar = $("#hpan");
+    if (moveBar && !bar.hidden) bar.scrollLeft = rv.pan * (bar.scrollWidth - bar.clientWidth);
+    panBarLeft = bar.scrollLeft;
+  }
+
+  /** Shift+wheel and horizontal trackpad gestures over the pages move the shared pan. */
+  function panWheel(e) {
+    const bar = $("#hpan");
+    if (e.ctrlKey || bar.hidden) return;
+    let dx = e.deltaX, dy = e.deltaY;
+    if (!dx && e.shiftKey) { dx = dy; dy = 0; }
+    if (Math.abs(dx) <= Math.abs(dy)) return; // mostly vertical: the browser scrolls the pages
+    const unit = e.deltaMode === 1 ? 16 : 1;
     const vp = $("#viewport");
-    const avail = Math.max(200, vp.clientWidth - 56);
-    const w = S.rv.rot % 180 ? p.height : p.width;
-    const cap = p.unit === "pt" ? 1.6 : 1;
-    return clamp(avail / (w || 1), 0.05, cap);
+    e.preventDefault();
+    bar.scrollLeft += dx * (e.deltaMode === 2 ? vp.clientWidth : unit);
+    if (dy) vp.scrollTop += dy * (e.deltaMode === 2 ? vp.clientHeight : unit); // the vertical part still scrolls
   }
-  const scaleNow = () => S.rv.scale ?? fitScale();
 
-  function layoutPage() {
+  // Positions in the viewport's scroll coordinates. The visible area is below the sticky header.
+  const headerHeight = () => $("#vp-head").offsetHeight; // 0 when stacked (hidden)
+  const visibleHeight = () => Math.max(0, $("#viewport").clientHeight - headerHeight());
+  /** Top and height of each row in the viewport's scroll coordinates. */
+  function rowMetrics() {
+    const rows = S.rv.rows, box = $("#rows");
+    const base = rows.length && rows[0].el.offsetParent === box ? box.offsetTop : 0; // the viewport is positioned
+    return rows.map((row) => ({ top: base + row.el.offsetTop, height: row.el.offsetHeight }));
+  }
+  /** The row crossing the vertical center of the visible area. */
+  function currentPageIndex() {
+    if (!S.rv.rows.length) return 0;
+    return ReviewCore.currentRow(rowMetrics(), $("#viewport").scrollTop + headerHeight(), visibleHeight());
+  }
+  const scaleOf = (row) => (row ? row.scale : 1);
+
+  /** The point at the center of the visible area: row, relative y in it (fy) and x as a fraction of
+   *  its page width (fx). While Revisar is hidden, the anchor saved when it was left. */
+  function anchorNow() {
+    const rv = S.rv, vp = $("#viewport");
+    if (!vp.clientWidth) return (pendingView && pendingView.anchor) || null;
+    if (!rv.rows.length) return null;
+    const anchor = ReviewCore.anchorOf(rowMetrics(), vp.scrollTop + headerHeight(), visibleHeight());
+    return { ...anchor, fx: ReviewCore.panCenter(rv.pan, rv.rows[anchor.row].w, rv.layout.colWidth) };
+  }
+  /** Scrolls back to an anchor (its row clamped to the rows that exist). */
+  function restoreAnchor(anchor) {
+    const vp = $("#viewport");
+    if (!anchor || !S.rv.rows.length) return;
+    if (!vp.clientWidth) { pendingView = { anchor }; return; }
+    vp.scrollTop = ReviewCore.scrollTopFor(anchor, rowMetrics(), visibleHeight(), headerHeight());
+  }
+  /** Leaving Revisar: keep the anchor for when it shows again (unless one is still waiting). */
+  function rememberView() {
+    if (pendingView) return;
+    const anchor = anchorNow();
+    if (anchor) pendingView = { anchor };
+  }
+  /** A newly opened file starts at its selected finding, else at the top; once Revisar can measure. */
+  function showStart() {
+    const vp = $("#viewport");
+    if (!vp.clientWidth) { pendingView = { start: true }; return; }
+    if (S.rv.sel) revealFinding(S.rv.sel, { instant: true });
+    else vp.scrollTop = 0;
+  }
+
+  /** The page field follows the scroll, except while the reviewer types in it. Not a live region. */
+  function updatePageField() {
+    const n = S.rv.rows.length;
+    const field = $("#rv-page");
+    field.max = String(Math.max(1, n));
+    $("#rv-pages").textContent = `de ${n}`;
+    if (document.activeElement !== field) field.value = String(currentPageIndex() + 1);
+  }
+  /** Enter in the page field: that page's row to the top of the visible area, focus to the pages. */
+  function goToPageField() {
+    const rows = S.rv.rows, field = $("#rv-page");
+    if (!rows.length) return;
+    const i = clamp(Math.round(Number(field.value)) || 1, 1, rows.length) - 1;
+    field.value = String(i + 1);
+    scrollToY(rowMetrics()[i].top - headerHeight());
+    focusViewport();
+  }
+  /** The zoom button shows the effective scale of the current page. */
+  function updateZoomButton() {
+    const pct = Math.round(scaleOf(S.rv.rows[currentPageIndex()]) * 100);
+    const btn = $("#b-zfit");
+    if (btn.textContent === `${pct} %`) return;
+    btn.textContent = `${pct} %`;
+    btn.setAttribute("aria-label", `Zoom ${pct} %. Ajustar al ancho`);
+  }
+
+  // --- page images: lazy loading, the request queue and the memory budget (spec 6.4, 6.5) ---
+  const MAX_IN_FLIGHT = 3; // requests sent are never aborted: the server cannot stop a render
+  const BUDGET_MP = 150; // megapixels of images held, both sides of every row
+  const KEEP_HEIGHTS = 3; // images are kept for rows within this many viewport heights of the view
+  const SCROLL_QUIET_MS = 150; // no request starts until the scroll has been still this long
+  const SIDES = ["before", "after"];
+
+  const requestZoomOf = (row) => ReviewCore.requestZoom(row.scale, window.devicePixelRatio || 1, row.page);
+  /** The key of the image a cell wants now; "" when it wants none (a row of another file or load
+   *  generation, or the after while V hides it). */
+  function wantedKeyNow(row, side) {
     const rv = S.rv;
-    const p = currentPage();
-    const box = $("#pagebox"), inner = $("#pageinner"), img = $("#pageimg");
-    if (!p) {
-      box.hidden = true;
-      $("#pageno").textContent = "";
+    if (!rv.file || rv.rows[row.i] !== row || (side === "after" && !rv.after)) return "";
+    return ReviewCore.imageKey({ file: rv.id, gen: rv.gen, page: row.i, zoom: requestZoomOf(row), side, version: rv.versions[row.i] });
+  }
+  const holdsImage = (row) => SIDES.some((side) => row[side].url || row[side].pending);
+  /** Megapixels of the images shown and on their way. */
+  function imagesMp() {
+    let mp = 0;
+    for (const row of S.rv.rows) for (const side of SIDES) mp += row[side].mp + (row[side].pending ? row[side].pendingMp : 0);
+    return mp;
+  }
+
+  /** Two observers of the rows, rooted at the viewport: with a margin of one viewport height
+   *  (inMargin) and without one (inView). A row entering or leaving either schedules loads. */
+  function startObserver() {
+    const L = S.load, vp = $("#viewport");
+    disconnectObservers();
+    const track = (set) => (entries, observer) => {
+      if (observer !== L.observer && observer !== L.viewObserver) return; // disconnected meanwhile
+      for (const e of entries) {
+        const i = Number(e.target.dataset.row), row = S.rv.rows[i];
+        if (e.isIntersecting) set.add(i);
+        else {
+          set.delete(i);
+          // A before that failed is tried again when its row comes back near, never in a loop meanwhile.
+          if (observer === L.observer && row && row.el === e.target) row.before.failed = "";
+        }
+      }
+      scheduleLoads();
+    };
+    L.marginPx = vp.clientHeight;
+    L.observer = new IntersectionObserver(track(L.inMargin), { root: vp, rootMargin: `${L.marginPx}px 0px` });
+    L.viewObserver = new IntersectionObserver(track(L.inView), { root: vp, rootMargin: "0px" });
+    for (const row of S.rv.rows) {
+      L.observer.observe(row.el);
+      L.viewObserver.observe(row.el);
+    }
+  }
+  function disconnectObservers() {
+    const L = S.load;
+    for (const o of [L.observer, L.viewObserver]) if (o) o.disconnect();
+    L.observer = null;
+    L.viewObserver = null;
+  }
+  function stopObserver() {
+    disconnectObservers();
+    S.load.inView.clear();
+    S.load.inMargin.clear();
+  }
+  /** The margin is one viewport height, and the viewport measures 0 while Revisar is hidden: the
+   *  observers are made again when its height changed. The sets stay, since new observers report
+   *  every row at once. */
+  function fitObserverMargin() {
+    const L = S.load, height = $("#viewport").clientHeight;
+    if (L.observer && height && height !== L.marginPx) startObserver();
+  }
+
+  /** No job waits any more, and a zoom that was settling no longer applies (teardown). */
+  function clearQueue() {
+    S.load.queue = [];
+    S.load.refresh = false;
+  }
+
+  /** No request starts for ``ms`` (a scroll, a zoom); the latest deadline wins. */
+  function holdLoads(ms) {
+    const L = S.load;
+    L.scrolling = true;
+    L.seenTop = $("#viewport").scrollTop;
+    const at = performance.now() + ms;
+    if (L.settleTimer && L.settleAt >= at) return;
+    clearTimeout(L.settleTimer);
+    L.settleAt = at;
+    L.settleTimer = setTimeout(settleLoads, ms);
+  }
+  /** The scroll (or the zoom pause) is over: free what is far, then load what is near. */
+  function settleLoads() {
+    const L = S.load, vp = $("#viewport");
+    L.settleTimer = null;
+    L.scrolling = false;
+    L.seenTop = vp.scrollTop;
+    if (S.screen !== 3 || !vp.clientHeight) return; // hidden: showing Revisar relays out and loads
+    if (L.refresh) {
+      // After a zoom only the rows near the view load again; the others drop their old images.
+      L.refresh = false;
+      for (const row of S.rv.rows) {
+        if (!L.inMargin.has(row.i) && !L.inView.has(row.i) && !row.busy && holdsImage(row)) releaseRow(row);
+      }
+    }
+    releaseFar();
+    scheduleLoads();
+  }
+  /** A zoom: no request for ``ms``, then the rows outside the margin drop their images and the rows
+   *  inside load them at the new zoom. Called before the relayout, so its loads wait as well. */
+  function scheduleImageRefresh(ms) {
+    S.load.refresh = true;
+    holdLoads(ms);
+  }
+
+  /** Queues the image of every cell near the view whose wanted key is not shown, on its way, failed
+   *  or queued already, then starts what it can. While loads are held, settleLoads calls it again. */
+  function scheduleLoads() {
+    const L = S.load, rv = S.rv;
+    if (!rv.file || !rv.rows.length || L.scrolling) return;
+    // The scroll moved without a scroll event yet (one set in an animation frame, or by a relayout,
+    // reaches the observers first): it is held like any other, so the rows on its way never load.
+    if ($("#viewport").scrollTop !== L.seenTop) { holdLoads(SCROLL_QUIET_MS); return; }
+    const queued = new Set(L.queue.map((j) => `${j.row}|${j.side}`));
+    for (const i of new Set([...L.inView, ...L.inMargin])) {
+      const row = rv.rows[i];
+      if (!row) continue;
+      for (const side of SIDES) {
+        const cell = row[side], want = wantedKeyNow(row, side);
+        if (!want || want === cell.key || want === cell.pending || want === cell.failed || queued.has(`${i}|${side}`)) continue;
+        // An after shown with an older version changed because of an edit: it goes ahead.
+        L.queue.push({ row: i, side, edited: side === "after" && !!cell.key && cell.version !== rv.versions[i] });
+      }
+    }
+    pump();
+  }
+
+  /** Starts jobs while fewer than three requests are on their way and nothing is settling. The queue
+   *  is planned first: rows that left the margin drop out, the rest go in view and distance order.
+   *  A job outside the view starts only within the memory budget. */
+  function pump() {
+    const L = S.load, rv = S.rv;
+    if (L.scrolling || S.screen !== 3 || !rv.rows.length || L.inFlight >= MAX_IN_FLIGHT || !L.queue.length) return;
+    const inMargin = new Set([...L.inMargin, ...L.inView]); // planQueue expects the view inside the margin
+    L.queue = ReviewCore.planQueue(L.queue, { inView: L.inView, inMargin, center: currentPageIndex() });
+    while (L.inFlight < MAX_IN_FLIGHT && L.queue.length) {
+      const job = L.queue.shift();
+      const row = rv.rows[job.row], cell = row && row[job.side];
+      const want = row ? wantedKeyNow(row, job.side) : "";
+      if (!want || want === cell.key || want === cell.pending) continue;
+      const zoom = requestZoomOf(row);
+      const mp = (row.page.width * zoom * row.page.height * zoom) / 1e6;
+      if (!ReviewCore.admits({ totalMp: imagesMp(), oldMp: cell.mp, newMp: mp, budgetMp: BUDGET_MP, inView: L.inView.has(job.row) })) continue;
+      loadImage(row, job.side, want, zoom, mp);
+    }
+  }
+
+  /** One request. Its answer is shown only if the cell still wants that key and was not released
+   *  meanwhile; any other answer is revoked and dropped silently (an older file or generation too). */
+  async function loadImage(row, side, key, zoom, mp) {
+    const L = S.load, rv = S.rv, cell = row[side];
+    const version = rv.versions[row.i] || "";
+    let path = `/api/files/${enc(rv.id)}/pages/${row.i}.png?zoom=${zoom}`;
+    if (side === "after") path += `&redacted=true&v=${enc(version)}`;
+    cell.pending = key;
+    cell.pendingMp = mp;
+    clearFail(cell);
+    if (!cell.url) showCellState(cell, "Cargando…"); // the first image, or a retry
+    else if (side === "after" && cell.version !== version) showUpdating(cell); // a zoom alone keeps it as is
+    L.inFlight += 1;
+    let url = null, error = null;
+    try {
+      url = await apiBlobUrl(path);
+    } catch (err) {
+      error = err;
+    }
+    L.inFlight -= 1;
+    try {
+      const wanted = cell.pending === key && ReviewCore.acceptResponse(wantedKeyNow(row, side), key);
+      if (cell.pending === key) cell.pending = "";
+      if (!wanted) {
+        if (url) URL.revokeObjectURL(url);
+      } else if (url) {
+        showImage(row, side, { url, key, mp, version });
+      } else {
+        showFailure(row, side, key, error);
+      }
+    } catch (err) {
+      reportError(err); // started without await: no unhandled rejection
+    } finally {
+      pump(); // the slot is free whatever happened above
+    }
+  }
+
+  function showImage(row, side, { url, key, mp, version }) {
+    const cell = row[side], old = cell.url;
+    cell.img.src = url;
+    Object.assign(cell, { url, key, mp, failed: "" });
+    if (side === "after") cell.version = version;
+    cell.state.hidden = true;
+    cell.cell.classList.remove("updating");
+    // The replaced image stays on screen until the new one is decoded; its URL goes then.
+    if (old) cell.img.decode().catch(() => {}).finally(() => URL.revokeObjectURL(old));
+    if (side === "before" && !old) renderRowZones(row);
+  }
+
+  /** A request that failed while still wanted. The before says so, with one toast per load as
+   *  before; the after shows no image (never the original) and offers "Reintentar". */
+  function showFailure(row, side, key, err) {
+    const L = S.load, cell = row[side];
+    cell.failed = key;
+    cell.cell.classList.remove("updating");
+    if (side === "before") {
+      showCellState(cell, "No se pudo mostrar esta página");
+      if (L.toastedGen !== S.rv.gen) {
+        L.toastedGen = S.rv.gen;
+        showError(err instanceof ApiError ? err : null); // never a raw browser message
+      }
       return;
     }
-    box.hidden = false;
-    const s = scaleNow();
-    const W = p.width * s, H = p.height * s;
-    Object.assign(inner.style, { width: `${W}px`, height: `${H}px` });
-    Object.assign(img.style, { width: `${W}px`, height: `${H}px` });
-    const rotated = rv.rot % 180 !== 0;
-    Object.assign(box.style, { width: `${rotated ? H : W}px`, height: `${rotated ? W : H}px` });
-    const t = {
-      0: "none",
-      90: `translate(${H}px, 0) rotate(90deg)`,
-      180: `translate(${W}px, ${H}px) rotate(180deg)`,
-      270: `translate(0, ${W}px) rotate(270deg)`,
-    }[rv.rot];
-    inner.style.transform = t;
-    inner.classList.toggle("drawing", rv.draw);
-    inner.classList.toggle("result", rv.result);
-    img.alt = `Página ${rv.page + 1} de ${rv.file.name}`;
-    $("#b-zfit").textContent = `${Math.round(s * 100)} %`;
-    $("#b-zfit").setAttribute("aria-label", `Zoom ${Math.round(s * 100)} %. Ajustar al ancho`);
-    $("#pageno").textContent = `· ${rv.page + 1} de ${rv.file.pages.length}`;
-    $("#b-draw").setAttribute("aria-pressed", String(rv.draw));
-    $("#b-view").setAttribute("aria-pressed", String(rv.result));
-    renderZones();
-    loadPageImage();
+    dropImage(cell);
+    cell.state.hidden = true;
+    // The message is a box of its own, so it can stay in the visible part of a tall page (app.css).
+    cell.fail = h("div", { class: "fail" }, h("div", { class: "fail-msg" },
+      h("p", { text: "No se pudo mostrar el resultado de esta página" }),
+      h("button", {
+        type: "button", class: "btn small", text: "Reintentar",
+        onclick: () => { requestAfter(row, { edited: true }); focusViewport(); }, // the button goes away
+      })));
+    cell.cell.append(cell.fail);
   }
 
-  let lastImageKey = "";
-  let imageTimer = null;
-  let imageSeq = 0;
-  let imageUrl = null;
-  function loadPageImage() {
+  /** Loads a row's after again ahead of the other jobs ("Reintentar"): its failure is forgotten. A
+   *  row away from the view loads when it comes near. */
+  function requestAfter(row, opts) {
+    queueAfter(row, opts);
+    pump();
+  }
+  /** requestAfter without starting anything: the caller pumps once, after queueing every row. Only
+   *  queues when the wanted image is neither shown nor on its way (``edited`` ranks it ahead). */
+  function queueAfter(row, { edited = false } = {}) {
+    const L = S.load, cell = row.after;
+    if (S.rv.rows[row.i] !== row) return;
+    cell.failed = "";
+    if (cell.fail) {
+      clearFail(cell);
+      if (!cell.url) showCellState(cell, "Cargando…");
+    }
+    L.queue = L.queue.filter((j) => !(j.row === row.i && j.side === "after"));
+    const want = wantedKeyNow(row, "after");
+    if (want && want !== cell.key && want !== cell.pending) L.queue.push({ row: row.i, side: "after", edited });
+  }
+
+  /** The findings changed (an edit, a keepView reload): the page versions are recomputed. An after
+   *  shown with another version is dimmed with "Actualizando…" and loads again ahead of the other
+   *  jobs; one still on its way or failed loads the new version. A row with nothing loaded only
+   *  changes version: it loads the new one when it comes near. The type chips never come here: the
+   *  after always shows every active finding. */
+  function refreshVersions() {
     const rv = S.rv;
-    const p = currentPage();
-    if (!p) return;
-    const dpr = window.devicePixelRatio || 1;
-    let zoom = scaleNow() * dpr;
-    const maxSide = 9000;
-    zoom = Math.min(zoom, maxSide / Math.max(p.width, p.height, 1));
-    zoom = Math.max(0.02, Math.round(zoom * 100) / 100);
-    const key = `${rv.file.id}:${rv.page}:${zoom}`;
-    if (key === lastImageKey) return;
-    if (!lastImageKey.startsWith(`${rv.file.id}:${rv.page}:`)) $("#pageimg").removeAttribute("src");
-    lastImageKey = key;
-    clearTimeout(imageTimer);
-    const seq = ++imageSeq;
-    const path = `/api/files/${enc(rv.file.id)}/pages/${rv.page}.png?zoom=${zoom}`;
-    imageTimer = setTimeout(async () => {
-      const loading = $("#page-loading");
-      loading.hidden = false;
-      try {
-        const url = await apiBlobUrl(path);
-        if (seq !== imageSeq) { URL.revokeObjectURL(url); return; }
-        const img = $("#pageimg");
-        const old = imageUrl;
-        imageUrl = url;
-        img.src = url;
-        if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
-      } catch (err) {
-        if (seq === imageSeq) { lastImageKey = ""; showError(err); }
-      } finally {
-        if (seq === imageSeq) loading.hidden = true;
+    if (!rv.file) return;
+    const was = rv.versions;
+    rv.versions = ReviewCore.pageVersions(rv.file.findings, (rv.file.pages || []).length);
+    for (const row of rv.rows) {
+      const cell = row.after;
+      const change = ReviewCore.afterChange({
+        shown: cell.url ? cell.version : null, busy: !!(cell.pending || cell.failed),
+        was: was[row.i], now: rv.versions[row.i],
+      });
+      if (change === "update") {
+        showUpdating(cell);
+        queueAfter(row, { edited: true });
+      } else if (change === "load") {
+        queueAfter(row, { edited: true });
+      } else if (change === "current") {
+        if (cell.cell.classList.contains("updating")) {
+          // An edit undone before its update arrived: the image shown is right again.
+          cell.cell.classList.remove("updating");
+          cell.state.hidden = true;
+        }
+        // A zoom refresh overtaken by that update was dropped with it: it is queued again.
+        queueAfter(row);
       }
-    }, 120);
+    }
+    pump(); // once, so the queue is planned with every changed row: the rows in view go first
+    renderRowLabels();
+  }
+  /** An after on screen is out of date: dimmed, with "Actualizando…", until the new one is shown. */
+  function showUpdating(cell) {
+    cell.cell.classList.add("updating");
+    showCellState(cell, "Actualizando…");
+  }
+
+  /** Frees a row's images and keeps its reserved size: no src, URLs revoked, keys forgotten (an
+   *  answer still on its way is dropped), "Cargando…" again and no zone overlays. ``all``: the row
+   *  is being discarded (teardown), so only its URLs matter. */
+  function releaseRow(row, { all = false } = {}) {
+    for (const side of SIDES) {
+      const cell = row[side];
+      if (all) {
+        if (cell.url) URL.revokeObjectURL(cell.url);
+        Object.assign(cell, { url: null, key: "", mp: 0, pending: "" });
+        continue;
+      }
+      dropImage(cell);
+      Object.assign(cell, { pending: "", pendingMp: 0, failed: "" });
+      if (side === "after") cell.version = null;
+      cell.cell.classList.remove("updating");
+      clearFail(cell);
+      showCellState(cell, "Cargando…");
+    }
+    if (!all) row.before.zones.replaceChildren();
+  }
+
+  /** Images are kept for the rows within three viewport heights of the view, and within the budget,
+   *  the farthest released first. Never released: the row at the center, the rows in view and a
+   *  row being drawn on (``row.busy``). */
+  function releaseFar() {
+    const rv = S.rv, L = S.load, vp = $("#viewport");
+    if (S.screen !== 3 || !vp.clientHeight || !rv.rows.length) return;
+    const keep = ReviewCore.rowsWithin(rowMetrics(), vp.scrollTop + headerHeight(), vp.scrollTop + vp.clientHeight, KEEP_HEIGHTS * vp.clientHeight);
+    const loaded = rv.rows.filter(holdsImage).map((row) => ({ row: row.i, mp: row.before.mp + row.after.mp }));
+    const pinned = new Set([...L.inView, ...rv.rows.filter((row) => row.busy).map((row) => row.i)]);
+    for (const i of ReviewCore.releasePlan(loaded, { keep, center: currentPageIndex(), budgetMp: BUDGET_MP, pinned })) {
+      releaseRow(rv.rows[i]);
+    }
+  }
+
+  function dropImage(cell) {
+    if (cell.url) URL.revokeObjectURL(cell.url);
+    Object.assign(cell, { url: null, key: "", mp: 0 });
+    cell.img.removeAttribute("src");
+  }
+  function showCellState(cell, text) {
+    cell.state.textContent = text;
+    cell.state.hidden = false;
+  }
+  function clearFail(cell) {
+    if (cell.fail) cell.fail.remove();
+    cell.fail = null;
   }
 
   // Approximate size of a zone label (10px bold UI font), used to keep labels off other zones.
@@ -1471,6 +1994,8 @@
     return out;
   }
 
+  // Uncalled since the rows replaced the single page (callers use renderZonesAll): Task 12 turns it
+  // into renderRowZones(row).
   function renderZones() {
     const rv = S.rv;
     const layer = $("#zones");
@@ -1531,13 +2056,7 @@
     if (!f) return;
     rv.sel = id;
     if (!auto) seenSet(rv.id).add(id);
-    if (f.page !== rv.page) {
-      rv.page = f.page;
-      renderThumbs();
-      layoutPage();
-    } else {
-      renderZones();
-    }
+    renderZonesAll(); // Task 12: only the rows of the old and the new selection, then revealFinding
     renderFindings();
     renderVerify();
     requestAnimationFrame(scrollToSelected);
@@ -1636,7 +2155,7 @@
             title: on ? `Ocultar ${typeLabel(t)}` : `Mostrar ${typeLabel(t)}`,
             onclick: () => {
               if (rv.hidden.has(t)) rv.hidden.delete(t); else rv.hidden.add(t);
-              renderZones();
+              renderZonesAll();
               renderFindings();
             },
           }, h("i", { "aria-hidden": "true" }), `${typeLabel(t)} ${n}`);
@@ -1768,7 +2287,7 @@
       if (nextReady) {
         btns.push(h("button", {
           type: "button", class: "btn", text: "Siguiente archivo por revisar",
-          onclick: () => { S.rv.id = nextReady.id; S.rv.file = null; renderReview(); },
+          onclick: () => { openFile(nextReady.id); if (S.screen !== 3) go(3); },
         }));
       }
       btns.push(h("button", { type: "button", class: "btn primary", text: "Ir a Exportar", onclick: () => go(4) }));
@@ -1888,10 +2407,10 @@
           const i = list.findIndex((f) => f.id === u.id);
           if (i >= 0) list[i] = u;
         }
+        refreshVersions();
       }
-      renderZones();
+      renderZonesAll();
       renderFindings();
-      renderThumbs();
       renderVerify();
       const more = listed ? plural(applied.length, "excepción más", "excepciones más") : plural(applied.length, "enlace más", "enlaces más");
       toast(applied.length
@@ -1910,9 +2429,9 @@
     const list = S.rv.file.findings;
     const i = list.findIndex((f) => f.id === updated.id);
     if (i >= 0) list[i] = updated; else list.push(updated);
-    renderZones();
+    refreshVersions(); // the after of its page loads again (remove, restore, an optional URL, a drawn zone)
+    renderZonesAll();
     renderFindings();
-    renderThumbs();
     renderVerify();
   }
   function focusFinding(id) {
@@ -1921,45 +2440,40 @@
   }
 
   // --- tools ---
+  /** Zoom around the point at the center of the visible area (the relayout anchor). */
   function zoomBy(factor) {
     const rv = S.rv;
-    if (!currentPage()) return;
-    const vp = $("#viewport");
-    const cx = (vp.scrollLeft + vp.clientWidth / 2) / Math.max(1, vp.scrollWidth);
-    const cy = (vp.scrollTop + vp.clientHeight / 2) / Math.max(1, vp.scrollHeight);
-    rv.scale = clamp(scaleNow() * factor, 0.05, 8);
-    layoutPage();
-    vp.scrollLeft = cx * vp.scrollWidth - vp.clientWidth / 2;
-    vp.scrollTop = cy * vp.scrollHeight - vp.clientHeight / 2;
+    const row = rv.rows[currentPageIndex()];
+    if (!row) return;
+    rv.zoom = ReviewCore.nextZoom(rv.zoom, factor, row.fit); // the current page's scale stays in 0.05–8
+    scheduleImageRefresh(120); // first: the loads of the relayout wait for the pause too
+    relayout();
   }
   function zoomFit() {
-    S.rv.scale = null;
-    layoutPage();
+    if (!S.rv.rows.length) return;
+    S.rv.zoom = 1;
+    scheduleImageRefresh(120);
+    relayout();
   }
   function rotate() {
     S.rv.rot = (S.rv.rot + 90) % 360;
-    layoutPage();
+    relayout();
     toast(S.rv.rot ? `Vista girada ${S.rv.rot}°. El archivo exportado conserva su orientación.` : "Vista sin girar.");
   }
   function setDraw(on) {
     const rv = S.rv;
     if (rv.draw === on) return;
     rv.draw = on;
-    if (on && rv.result) rv.result = false;
     $("#b-draw").setAttribute("aria-pressed", String(on));
-    $("#b-view").setAttribute("aria-pressed", String(rv.result));
     $("#pageinner").classList.toggle("drawing", on);
-    $("#pageinner").classList.toggle("result", rv.result);
     if (!on) cancelGhost();
     if (on) toast("Arrastra sobre el documento para agregar una zona. Esc para salir.");
   }
-  function setView(on) {
-    const rv = S.rv;
-    rv.result = on;
-    if (on) setDraw(false);
+  /** V: shows or hides the after column. Kept across files; D and Esc never change it. */
+  function setAfter(on) {
+    S.rv.after = on;
     $("#b-view").setAttribute("aria-pressed", String(on));
-    $("#pageinner").classList.toggle("result", on);
-    if (on) toast("Así se verán las censuras en el archivo exportado.");
+    relayout();
   }
 
   // --- draw a manual zone (screen coordinates -> view space) ---
@@ -2043,15 +2557,14 @@
         askRemove((item && item.dataset.id) || S.rv.sel);
       }
       else if (k === "d") setDraw(!S.rv.draw);
-      else if (k === "v") setView(!S.rv.result);
+      else if (k === "v") setAfter(!S.rv.after);
       else if (k === "r") rotate();
       else if (k === "+" || k === "=" || k === "Add") zoomBy(1.2);
       else if (k === "-" || k === "Subtract" || k === "−") zoomBy(1 / 1.2);
       else if (k === "Escape") {
         if (drag) cancelGhost();
         else if (S.rv.draw) setDraw(false);
-        else if (S.rv.result) setView(false);
-        else handled = false;
+        else handled = false; // Esc never hides the after column
       } else handled = false;
       if (handled) e.preventDefault();
     });
@@ -2339,6 +2852,19 @@
     });
 
     // Screen 3
+    $("#rv-file").addEventListener("change", () => {
+      // A closed select fires "change" on every arrow key: open only the file the reviewer stops on.
+      clearTimeout(fileSwitchTimer);
+      fileSwitchTimer = setTimeout(() => {
+        fileSwitchTimer = null;
+        const id = $("#rv-file").value;
+        if (id === S.rv.id && (S.rv.file || S.rv.loadingId === id)) return; // already open
+        openFile(id, { focus: true });
+        if (S.rv.id !== id) renderFileBar(); // it could not be opened: show the open file again
+      }, 300);
+    });
+    $("#rv-prev").addEventListener("click", () => { const f = neighbourFile(-1); if (f) openFile(f.id); });
+    $("#rv-next").addEventListener("click", () => { const f = neighbourFile(1); if (f) openFile(f.id); });
     $("#b-prev").addEventListener("click", () => move(-1));
     $("#b-next").addEventListener("click", () => move(1));
     $("#b-zin").addEventListener("click", () => zoomBy(1.2));
@@ -2346,7 +2872,45 @@
     $("#b-zfit").addEventListener("click", zoomFit);
     $("#b-rot").addEventListener("click", rotate);
     $("#b-draw").addEventListener("click", () => setDraw(!S.rv.draw));
-    $("#b-view").addEventListener("click", () => setView(!S.rv.result));
+    $("#b-view").addEventListener("click", () => setAfter(!S.rv.after));
+    const vp = $("#viewport");
+    let viewTick = false; // the page field and the zoom button follow the scroll, once per frame
+    vp.addEventListener("scroll", () => {
+      holdLoads(SCROLL_QUIET_MS); // rows passed on the way are not requested
+      if (viewTick) return;
+      viewTick = true;
+      requestAnimationFrame(() => {
+        viewTick = false;
+        if (S.screen === 3 && S.rv.rows.length) { updatePageField(); updateZoomButton(); }
+      });
+    }, { passive: true });
+    $("#hpan").addEventListener("scroll", () => {
+      const bar = $("#hpan"), range = bar.scrollWidth - bar.clientWidth;
+      if (bar.hidden || range <= 0 || bar.scrollLeft === panBarLeft) return;
+      setPan(bar.scrollLeft / range, { moveBar: false });
+    });
+    // Resizes of the window or the findings column: fit and manual zoom alike. Only a new width
+    // lays the rows out again; a height change (the pan bar, the status line) only refits the
+    // observers' margin of one viewport height.
+    let resizeTimer = null, seenWidth = null, widthMoved = false;
+    new ResizeObserver((entries) => {
+      const { width } = entries[entries.length - 1].contentRect;
+      if (width !== seenWidth) { seenWidth = width; widthMoved = true; }
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        const relay = widthMoved;
+        widthMoved = false;
+        if (S.screen !== 3) return;
+        if (relay) relayout(); // it refits the margin too
+        else fitObserverMargin();
+      }, 150);
+    }).observe(vp);
+    $("#rv-page").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      goToPageField();
+    });
+    $("#rv-page").addEventListener("blur", () => { if (S.rv.rows.length) updatePageField(); });
     $("#dlg-remove-form").addEventListener("submit", doRemove);
     $("#dlg-remove-no").addEventListener("click", () => $("#dlg-remove").close());
     $("#dlg-remove").addEventListener("close", () => { pendingRemove = null; });
@@ -2357,13 +2921,8 @@
     $("#b-export").addEventListener("click", doExport);
     window.addEventListener("pywebviewready", () => { if (S.screen === 4) renderExport(); });
 
-    let resizeTimer = null;
-    window.addEventListener("resize", () => {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => { if (S.screen === 3 && S.rv.file && S.rv.scale == null) layoutPage(); }, 150);
-    });
     // Zone labels use the UI font: re-layout once the bundled fonts are ready.
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (S.screen === 3 && S.rv.file) renderZones(); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (S.screen === 3 && S.rv.file) renderZonesAll(); });
 
     go(1, { focus: false });
     loadGroups();
