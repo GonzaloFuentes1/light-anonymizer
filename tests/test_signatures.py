@@ -514,7 +514,7 @@ def test_a_drawing_left_under_a_zone_blocks_the_export(tmp_path, no_models, monk
     file = AnalyzedFile(id="f1", name="firma.pdf", path=str(tmp_path / "firma.pdf"))
     engine.analyze(file, [])
     assert [f for f in file.findings if f.type == "signature"]
-    monkeypatch.setattr(strokes, "remove", lambda page, zones, drawn=(): 0)  # as MuPDF alone would leave it
+    monkeypatch.setattr(strokes, "remove", lambda page, zones, drawn=(), whole=None: 0)  # as MuPDF alone would leave it
     result = engine.export(file, str(tmp_path / "out"))
     assert not result.exported
     assert any(
@@ -841,3 +841,51 @@ def test_vector_pass_reports_progress_and_can_be_cancelled(tmp_path, no_models):
     file = AnalyzedFile(id="f2", name="a.pdf", path=str(tmp_path / "a.pdf"))
     RealEngine().analyze(file, [], progress=stop, cancel=cancel)
     assert file.status == "cancelled"
+
+
+def _repeated_signature_pdf(path: Path, pages: int, anchor: str | None) -> Path:
+    """The same signature image at the same place on every page, maybe with a label or a line."""
+    doc = pymupdf.open()
+    png = _signature_png()
+    xref = 0
+    for _ in range(pages):
+        page = _text_page(doc)
+        box = pymupdf.Rect(330, 590, 480, 640)
+        xref = page.insert_image(box, xref=xref) if xref else page.insert_image(box, stream=png)
+        if anchor == "label":
+            page.insert_text((360, 660), "Firma del responsable", fontsize=9)
+        elif anchor == "line":
+            page.draw_line((310, 645), (500, 645), color=(0, 0, 0), width=0.8)
+            page.insert_text((360, 660), "Juan Inventado Soto", fontsize=9)
+        elif anchor == "name":
+            page.insert_text((360, 655), "Juan Inventado Soto", fontsize=9)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+@pytest.mark.parametrize("anchor", ["label", "line", "name"])
+def test_a_signature_repeated_on_every_page_next_to_an_anchor(tmp_path, no_models, anchor):
+    # Certificates signed by the same official, initials on every sheet: one finding per page.
+    path = _repeated_signature_pdf(tmp_path / "a.pdf", 3, anchor)
+    found = [f for f in _analyze(path).findings if f.type == "signature"]
+    assert sorted(f.page for f in found) == [0, 1, 2]
+
+
+def test_a_repeated_image_with_nothing_next_to_it_is_left_alone(tmp_path, no_models):
+    path = _repeated_signature_pdf(tmp_path / "a.pdf", 3, None)
+    assert not [f for f in _analyze(path).findings if f.type == "signature"]
+    once = _repeated_signature_pdf(tmp_path / "b.pdf", 1, None)  # placed once, it is looked at
+    assert [f for f in _analyze(once).findings if f.type == "signature"]
+
+
+def test_a_tightly_cropped_signature_next_to_a_label_is_found():
+    # The keyword frame of an image region: the stroke spans most of the image, which is not a
+    # frame or a chart of the page.
+    img, mask = page(420, 140)
+    draw_signature(img, mask, 8, 10, 400, 110, seed=9)
+    label = OcrLine(np.array([[60.0, 150.0], [300.0, 150.0], [300.0, 170.0], [60.0, 170.0]]), "Firma", 1.0, 0)
+    assert not signatures.detect_raster(img, [label], lone=False)
+    zones = signatures.detect_raster(img, [label], lone=False, page_size=(1654, 2339))
+    assert_signature_zones(zones)
+    assert covered(zones, mask) >= 0.95

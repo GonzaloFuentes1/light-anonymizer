@@ -565,7 +565,13 @@ def _column_frame(corners: np.ndarray, reach: float) -> Frame:
 
 
 def detect_raster(
-    bgr: np.ndarray, lines: Sequence[Any] = (), *, faces: Sequence[Any] = (), whole: bool = False, lone: bool = True
+    bgr: np.ndarray,
+    lines: Sequence[Any] = (),
+    *,
+    faces: Sequence[Any] = (),
+    whole: bool = False,
+    lone: bool = True,
+    page_size: tuple[int, int] | None = None,
 ) -> list[Zone]:
     """Signature zones of a BGR image, in its pixels.
 
@@ -573,6 +579,8 @@ def detect_raster(
     PDF mapped to these pixels (score 1, turn 0). ``faces``: polygons of the faces found, left out.
     ``whole``: the image itself may be a signature (a small image placed on a text page).
     ``lone=False``: a stroke needs a keyword, a line or a column (an image repeated on every page).
+    ``page_size``: (width, height) in these pixels of the page the image is on, when it is a region of
+    a page: a mark half the page long is a frame or a chart; half the image long may be a signature.
     """
     h0, w0 = bgr.shape[:2]
     if min(h0, w0) < 16:
@@ -587,7 +595,8 @@ def detect_raster(
     page = _Page(img, work, [np.asarray(p, np.float64).reshape(-1, 2) * f for p in faces])
     found = _column_zones(work, page.w, page.h)
     anchored = max(20.0, 3 * page.text_h)
-    largest = 0.5 * max(page.w, page.h)  # a mark half the page long is a frame or a chart, not a signature
+    # A mark half the page long is a frame or a chart, not a signature.
+    largest = 0.5 * (max(page_size) * f if page_size else max(page.w, page.h))
     columns = [_column_frame(corners, 4 * page.text_h) for corners, _ in found]
     # Keyword labels and table columns allow a signature in separate letters; a bare line needs a stroke.
     for frame in page.keyword_frames(work) + columns:
@@ -652,7 +661,7 @@ def path_shape(items) -> tuple[int, int, float, float, int]:
     return curves, lines, length, straight / max(1, lines), turns
 
 
-def _closed_convex(items) -> bool:
+def closed_convex(items) -> bool:
     """Every subpath is a closed outline that bulges out everywhere: a ring, an oval or a rounded box
     (seals, stamps, radio buttons), never a pen's stroke."""
     subpaths: list[list[tuple[float, float]]] = []
@@ -776,7 +785,7 @@ def _detect_vector(
             continue
         if not (curves >= 2 or (segments >= 6 and straight < 0.6)) or max(r.width, r.height) < 0.3 * text_h:
             continue
-        if _closed_convex(items):
+        if closed_convex(items):
             continue
         stroked = "s" in (d.get("type") or "") and d.get("color") is not None
         paths.append((r.x0, r.y0, r.x1, r.y1, curves, segments, length, stroked, float(d.get("width") or 0), turns))

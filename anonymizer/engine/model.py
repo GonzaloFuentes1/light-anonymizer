@@ -122,6 +122,9 @@ class ExportResult:
     removed_by_reviewer: int
     exported: bool  # False when a leak blocked the export
     message: str  # Spanish
+    # Drawn strokes removed whole although part of them lay outside the zones (a pen stroke mostly
+    # under a signature zone or a zone drawn by the reviewer): {"page": 0-based, "polygon": view space}.
+    strokes_removed_whole: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

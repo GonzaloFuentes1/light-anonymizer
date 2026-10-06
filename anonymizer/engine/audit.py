@@ -197,6 +197,11 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
             ],
         },
         "redactions_applied": len(active),
+        # Drawn strokes removed whole although part of them lay outside the zones: the page shows that.
+        "strokes_removed_whole": [
+            {"page_number": s["page"] + 1, "polygon": s["polygon"], "unit": unit}
+            for s in (result.strokes_removed_whole if result else [])
+        ],
         "removed_by_reviewer": sum(1 for f in file.findings if f.status == "removed"),
         "added_by_reviewer": sum(1 for f in active if _is_added(f)),
         "doubtful": sum(1 for f in file.findings if f.doubtful),
@@ -342,6 +347,15 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
         )
         if visible:
             parts.append(_table(["Página", "Queda visible"], [[f.page + 1, f.text or "—"] for f in visible]))
+
+    if result is not None and result.strokes_removed_whole:
+        parts.append("<h3>Trazos dibujados quitados enteros</h3>")
+        parts.append(
+            "<p>Un trazo dibujado que estaba casi todo bajo una zona de firma o una zona agregada se quitó entero, "
+            "también la parte que sobresalía de la zona:</p>"
+        )
+        rows = [[s["page"] + 1, "Se quitó entero"] for s in result.strokes_removed_whole]
+        parts.append(_table(["Página", "Trazo"], rows))
 
     parts.append("<h3>Zonas agregadas por quien revisó</h3>")
     if added:

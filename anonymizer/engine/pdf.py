@@ -399,6 +399,57 @@ def _repeated_images(doc: pymupdf.Document) -> set[tuple[int, tuple[int, ...]]]:
     return {key for key, n in count.items() if n >= 2}
 
 
+def _signature_rules(page: pymupdf.Page, tp: TextPage) -> list[pymupdf.Rect]:
+    """Straight horizontal lines of the page, drawn or typed ("________"): possible signature lines."""
+    rules = []
+    for d in page.get_drawings():
+        items = d.get("items") or []
+        r = pymupdf.Rect(d["rect"])
+        flat = r.height <= 2 and r.width >= 30
+        if flat and (
+            (len(items) == 1 and items[0][0] == "l") or (len(items) == 1 and items[0][0] == "re" and "f" in d["type"])
+        ):
+            rules.append(r)
+    for _, _, ln in tp.lines:
+        text = ln.text.strip()
+        if len(text) >= 10 and set(text) <= set("_.-… "):
+            rules.append(pymupdf.Rect(ln.x0, ln.y0, ln.x1, ln.y1))
+    return rules
+
+
+def _anchored(image: pymupdf.Rect, rules: list[pymupdf.Rect], names: list[pymupdf.Rect]) -> bool:
+    """A signature line under or across the image, or a person's name right under it."""
+    reach = max(15.0, 0.3 * image.height)
+    for r in rules:
+        overlap = min(r.x1, image.x1) - max(r.x0, image.x0)
+        if (
+            overlap >= 0.5 * min(image.width, r.width)
+            and image.y0 + 0.3 * image.height <= r.y1
+            and r.y0 <= image.y1 + reach
+        ):
+            return True
+    for r in names:
+        overlap = min(r.x1, image.x1) - max(r.x0, image.x0)
+        if overlap > 0 and image.y1 - 0.2 * image.height <= r.y0 <= image.y1 + 2 * reach:
+            return True
+    return False
+
+
+def _name_boxes(tp: TextPage) -> list[pymupdf.Rect]:
+    """Boxes of the names found in the text layer."""
+    out = []
+    for type_, a, b, _ in tp.spans:
+        if type_ != "name":
+            continue
+        boxes = [r for r in tp.boxes[a:b] if r is not None and not r.is_empty]
+        if boxes:
+            u = pymupdf.Rect(boxes[0])
+            for r in boxes[1:]:
+                u |= r
+            out.append(u)
+    return out
+
+
 def raster_zones(
     doc: pymupdf.Document,
     tp: TextPage,
@@ -428,6 +479,12 @@ def raster_zones(
             return []
         if info and not tp.scanned and options.signatures and "repeated" not in cache:
             cache["repeated"] = _repeated_images(doc)
+        repeated_here = [
+            i
+            for i in info
+            if (int(i.get("xref") or 0), tuple(round(v) for v in i["bbox"])) in cache.get("repeated", ())
+        ]
+        rules = _signature_rules(page, tp) if repeated_here else []
         with stage("render"):
             zoom = dpi / 72
             pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
@@ -459,17 +516,25 @@ def raster_zones(
             crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
             keywords = _signature_lines(tp, to_pix, (x0, y0, x1, y1)) if options.signatures else []
             # A small image (not a photo or a scanned card) may be a signature by itself, and a curly
-            # stroke alone in an image may be one; not in an image repeated at the same place on other
-            # pages (a letterhead's emblem): there only a keyword or a line next to it counts.
-            here = [i for i in info if _overlaps(((pymupdf.Rect(i["bbox"]) & page_rect) * to_pix), (x0, y0, x1, y1))]
-            repeated = any((int(i.get("xref") or 0), tuple(round(v) for v in i["bbox"])) in cache.get("repeated", ())
-                           for i in here)  # fmt: skip
+            # stroke alone in an image may be one. An image repeated at the same place on other pages
+            # is a letterhead's emblem unless something marks it as a signature (a keyword, a
+            # signature line, a person's name under it): then it is the same signature on every page
+            # (certificates signed by the same official, initials on every sheet).
+            repeated = [
+                i for i in repeated_here
+                if _overlaps((pymupdf.Rect(i["bbox"]) & page_rect) * to_pix, (x0, y0, x1, y1))
+            ]  # fmt: skip
+            if repeated and not keywords:
+                names = cache.setdefault(("names", tp.index), _name_boxes(tp))
+                repeated = [i for i in repeated if not _anchored(pymupdf.Rect(i["bbox"]), rules, names)]
+            else:
+                repeated = []
             whole = x1 - x0 <= 0.6 * width and y1 - y0 <= 0.25 * height and not repeated
             key = (
                 crop.shape,
                 hashlib.blake2b(crop.tobytes(), digest_size=16).digest(),
                 whole,
-                repeated,
+                bool(repeated),
                 tuple((ln.text, ln.polygon.round(1).tobytes()) for ln in keywords),
             )
             if key not in cache:
@@ -484,6 +549,7 @@ def raster_zones(
                     signature_lines=keywords,
                     signature_whole=whole,
                     signature_lone=not repeated,
+                    signature_page_size=(width, height),
                 )
             for z in cache[key]:
                 moved = z._replace(polygon=z.polygon + [x0, y0])
@@ -507,12 +573,14 @@ def redact(
     dest: str,
     rects_by_page: dict[int, list[pymupdf.Rect]],
     drawn_by_page: dict[int, list[pymupdf.Rect]] | None = None,
+    whole_out: list[tuple[int, pymupdf.Rect]] | None = None,
 ) -> None:
     """Writes ``dest``: ``source`` with the zones really removed (text, vector paths and image pixels)
     and the document cleaned (metadata, XMP, annotations, forms, attachments, layers, bookmarks,
     JavaScript actions), fully rewritten. Stroked paths under the zones are removed by
     ``strokes.remove``; ``drawn_by_page``: the zones whose content may be a drawing (signatures,
-    zones drawn by the reviewer), where a pen stroke mostly under the zone goes whole."""
+    zones drawn by the reviewer), where a pen stroke mostly under the zone goes whole; ``whole_out``
+    receives (page, box in unrotated page space) of each stroke removed whole."""
     with PDF_LOCK:
         doc = pymupdf.open(source, filetype="pdf")
         try:
@@ -526,7 +594,10 @@ def redact(
                 if rotation:
                     page.set_rotation(0)
                 if rects_by_page.get(n):
-                    strokes.remove(page, rects_by_page[n], (drawn_by_page or {}).get(n, []))
+                    whole: list = []
+                    strokes.remove(page, rects_by_page[n], (drawn_by_page or {}).get(n, []), whole)
+                    if whole_out is not None:
+                        whole_out += [(n, pymupdf.Rect(box)) for box in whole]
                 for r in rects_by_page.get(n, []):
                     page.add_redact_annot(r, fill=(0, 0, 0))
                 page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)

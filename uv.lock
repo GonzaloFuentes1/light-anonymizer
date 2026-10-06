@@ -763,7 +763,7 @@ requires-dist = [
     { name = "onnxruntime", specifier = ">=1.30.0" },
     { name = "opencv-python-headless", specifier = ">=5.0.0.93" },
     { name = "pillow", specifier = ">=12.3.0" },
-    { name = "pymupdf", specifier = ">=1.28.2" },
+    { name = "pymupdf", specifier = ">=1.28.2,<1.29" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "pywebview", specifier = ">=6.2.1" },
     { name = "rapidocr", specifier = ">=3.9.2" },

@@ -382,12 +382,13 @@ class RealEngine:
         removed = sum(1 for f in file.findings if f.status == "removed")
         kind = file.kind or sniff(file.path)
         name = Path(file.name).name or "archivo"
+        whole: list[dict] = []  # PDF strokes removed whole (ExportResult.strokes_removed_whole)
         with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
             if kind == "pdf":
                 if Path(name).suffix.lower() != ".pdf":
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
-                self._export_pdf(file, active, staged)
+                whole = self._export_pdf(file, active, staged)
                 leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer)
             else:
                 from anonymizer.engine import image
@@ -423,10 +424,12 @@ class RealEngine:
             removed_by_reviewer=removed,
             exported=not leaks,
             message=message,
+            strokes_removed_whole=whole if not leaks else [],
         )
 
     @staticmethod
-    def _export_pdf(file: AnalyzedFile, active: list[Finding], staged: Path) -> None:
+    def _export_pdf(file: AnalyzedFile, active: list[Finding], staged: Path) -> list[dict]:
+        """Writes the redacted PDF; returns the strokes removed whole (``ExportResult``), in view space."""
         import pymupdf
 
         from anonymizer.engine import pdf, strokes
@@ -434,8 +437,15 @@ class RealEngine:
         with PDF_LOCK:
             with pymupdf.open(file.path, filetype="pdf") as doc:
                 to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
+                to_view = [pymupdf.Matrix(page.rotation_matrix) for page in doc]
         # The leak check (strokes.leaks) uses these same rectangles.
         zones = strokes.zones_by_page(active, to_page)
         rects = {n: [r for r, _ in items] for n, items in zones.items()}
         drawn = {n: [r for r, f in items if f.type in strokes.DRAWN_TYPES] for n, items in zones.items()}
-        pdf.redact(file.path, str(staged), rects, drawn)
+        whole: list[tuple[int, pymupdf.Rect]] = []
+        pdf.redact(file.path, str(staged), rects, drawn, whole)
+        out = []
+        for n, box in whole:
+            r = (box * to_view[n]).normalize()
+            out.append({"page": n, "polygon": [[round(x, 2), round(y, 2)] for x, y in rect_polygon(*r)]})
+        return out
