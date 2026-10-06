@@ -168,6 +168,22 @@
     return out;
   }
 
+  /** Indices of the rows (``{ top, height }``, scroll coordinates) that overlap the view from
+   *  ``top`` to ``bottom`` grown by ``reach`` on both sides: the rows whose images are kept. */
+  function rowsWithin(rows, top, bottom, reach) {
+    const out = new Set();
+    rows.forEach((r, i) => {
+      if (r.top + r.height >= top - reach && r.top <= bottom + reach) out.add(i);
+    });
+    return out;
+  }
+
+  /** Whether an image job may start: one for a row in view always does; any other only while the
+   *  images held and on their way (``totalMp``), with ``newMp`` replacing ``oldMp``, stay within the
+   *  budget. Otherwise rows in the margin would load, be released at the next scroll and load again. */
+  const admits = ({ totalMp, oldMp, newMp, budgetMp = 150, inView }) =>
+    inView || totalMp - oldMp + newMp <= budgetMp;
+
   /** The row crossing the vertical center of the visible area (or the nearest one). ``viewTop`` and
    *  ``viewHeight`` describe the area BELOW the sticky header: viewTop = scrollTop + headerHeight,
    *  viewHeight = viewport height - headerHeight. Same for anchorOf and scrollTopFor. */
@@ -215,7 +231,7 @@
   const ReviewCore = {
     isActive, pageVersions, columns, fitScales, effectiveScale, nextZoom, displaySize, innerTransform,
     overflow, panShift, panCenter, panFor, zoneRect, pointToPage, requestZoom, imageKey, acceptResponse,
-    planQueue, releasePlan, currentRow, anchorOf, scrollTopFor, scrollTarget, isLongScroll,
+    planQueue, releasePlan, rowsWithin, admits, currentRow, anchorOf, scrollTopFor, scrollTarget, isLongScroll,
   };
   if (typeof module === "object" && module.exports) module.exports = ReviewCore;
   else root.ReviewCore = ReviewCore;

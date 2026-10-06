@@ -221,6 +221,7 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .viewport.stacked .cell .cstate { top: 36px; } /* below the caption (18 px) and the gap (6 px) */
 .cell.after.updating img { opacity: .45; }
 .cell .fail { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; padding: 16px; text-align: center; background: var(--surface); color: var(--ink); }
+.viewport.stacked .cell .fail { top: 24px; } /* the caption (18 px) and the gap (6 px) stay visible */
 .viewport.drawing .cell.before .pbox { cursor: crosshair; touch-action: none; outline: 3px dashed var(--draw-edge); outline-offset: 3px; }
 .viewport.drawing .zone { pointer-events: none; }
 .viewport.no-after .cell.after, .viewport.no-after .vp-head .h-after { display: none; }

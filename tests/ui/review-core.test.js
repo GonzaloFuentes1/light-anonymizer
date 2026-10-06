@@ -166,6 +166,22 @@ test("release: pinned rows and an over-budget center survive", () => {
   assert.deepEqual(dropped.sort(), [2, 3]);
 });
 
+test("rows within reach of the view: any overlap with the view grown by the reach", () => {
+  const rows = [0, 1, 2, 3, 4, 5, 6].map((i) => ({ top: i * 520, height: 500 }));
+  // View 1040-1440 (row 2), reach 600: 440-2040 touches rows 0 (ends at 500) to 3 (starts at 1560).
+  assert.deepEqual([...C.rowsWithin(rows, 1040, 1440, 600)], [0, 1, 2, 3]);
+  assert.deepEqual([...C.rowsWithin(rows, 1040, 1440, 0)], [2]);
+  assert.deepEqual([...C.rowsWithin(rows, 0, 400, 3 * 400)], [0, 1, 2, 3]); // 3 viewport heights below the top
+  assert.deepEqual([...C.rowsWithin([], 0, 400, 1200)], []);
+});
+
+test("budget: a job outside the view starts only while the images stay within it", () => {
+  assert.equal(C.admits({ totalMp: 100, oldMp: 0, newMp: 40, budgetMp: 150, inView: false }), true);
+  assert.equal(C.admits({ totalMp: 120, oldMp: 0, newMp: 40, budgetMp: 150, inView: false }), false);
+  assert.equal(C.admits({ totalMp: 120, oldMp: 20, newMp: 40, budgetMp: 150, inView: false }), true); // replaces 20
+  assert.equal(C.admits({ totalMp: 300, oldMp: 0, newMp: 114, budgetMp: 150, inView: true }), true); // the view always loads
+});
+
 test("current row, anchors and scroll targets", () => {
   const rows = [{ top: 0, height: 500 }, { top: 520, height: 500 }, { top: 1040, height: 300 }];
   assert.equal(C.currentRow(rows, 0, 400), 0);

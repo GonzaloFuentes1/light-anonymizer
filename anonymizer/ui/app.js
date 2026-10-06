@@ -262,6 +262,22 @@
       pan: 0, // shared horizontal offset, as a fraction of the overflow
       layout: { colWidth: 0, widest: 0, stacked: false }, // the last relayout (display pixels)
     },
+    // Page images (spec 6.4): which rows are near the view, the jobs waiting and the requests sent.
+    load: {
+      observer: null, // rows within one viewport height of the view (inMargin)
+      viewObserver: null, // rows in view (inView)
+      marginPx: 0, // the viewport height the observers' margin was made with
+      inView: new Set(),
+      inMargin: new Set(),
+      queue: [], // { row, side, edited }
+      inFlight: 0, // requests sent and not answered, of any generation
+      scrolling: false, // no request starts: a scroll or a zoom has not settled yet
+      settleTimer: null,
+      settleAt: 0,
+      seenTop: 0, // the viewport's scrollTop at the last scroll event or settle
+      refresh: false, // a zoom is settling: rows outside the margin drop their images
+      toastedGen: -1, // the load generation that already showed the toast of a failed before
+    },
     exp: { dest: "", results: new Map(), busy: false, last: null },
   };
   const fileById = (id) => S.files.find((f) => f.id === id) || null;
@@ -1087,13 +1103,9 @@
   }
 
   // Stubs of the scrolling viewer, each replaced by the task that builds that part.
-  function stopObserver() {} // replaced in Task 10
-  function clearQueue() {} // replaced in Task 10
-  function releaseRow() {} // replaced in Task 10
-  function scheduleLoads() {} // replaced in Task 10
-  function scheduleImageRefresh() {} // replaced in Task 10
   function refreshVersions() {} // replaced in Task 11
   function renderZonesAll() {} // replaced in Task 12
+  function renderRowZones() {} // replaced in Task 12
   function revealFinding() {} // replaced in Task 12
   function rowLabel(i) { return `Página ${i + 1} de ${S.rv.file.pages.length}`; } // replaced in Task 12
   function scrollToY(y) { $("#viewport").scrollTop = y; } // replaced in Task 12
@@ -1331,7 +1343,9 @@
   let pendingView = null;
 
   /** One row per page: the before cell (image, zone layer), the after cell and the label. The
-   *  images arrive later (Task 10); until then each cell reserves its size and says "Cargando…". */
+   *  images load lazily (see the image loading section); until its first one arrives each cell
+   *  reserves its size and says "Cargando…". Per cell: ``key`` of the image shown, ``pending`` key
+   *  on its way, ``failed`` key that could not be shown, ``mp`` of the image shown. */
   function buildRows() {
     const rv = S.rv;
     const pages = (rv.file && rv.file.pages) || [];
@@ -1345,8 +1359,8 @@
       const state = h("div", { class: "cstate", text: "Cargando…" });
       const el = h("div", { class: `cell ${side}` },
         h("span", { class: "cap", "aria-hidden": "true", text: before ? "Antes" : "Después: como quedará" }), box, state);
-      const parts = { cell: el, box, inner, img, state, key: "", url: null, mp: 0 };
-      return before ? { ...parts, zones } : { ...parts, version: null, failed: false };
+      const parts = { cell: el, box, inner, img, state, key: "", url: null, mp: 0, pending: "", pendingMp: 0, failed: "", fail: null };
+      return before ? { ...parts, zones } : { ...parts, version: null };
     };
     rv.rows = pages.map((page, i) => {
       const before = cell("before", i), after = cell("after", i);
@@ -1356,6 +1370,10 @@
       return { i, page, el, label, fit: 1, scale: 1, w: 0, h: 0, before, after };
     });
     $("#rows").replaceChildren(...rv.rows.map((row) => row.el));
+    // Its sets stay empty until its first notification, after the next frame, and a scroll that has
+    // moved before its scroll event holds the loads (scheduleLoads): the rows at scrollTop 0 are never
+    // requested on the way to where showStart or restoreAnchor goes.
+    startObserver();
     relayout({ keepAnchor: false });
   }
 
@@ -1398,7 +1416,8 @@
     updateZoomButton();
     updatePageField();
     renderZonesAll();
-    scheduleLoads();
+    fitObserverMargin();
+    scheduleLoads(); // a row whose request zoom changed loads again, keeping its image until then
   }
 
   /** One cell of a row: the box at the shown (rotated) size; inside it the page layer and its image at
@@ -1529,6 +1548,285 @@
     if (btn.textContent === `${pct} %`) return;
     btn.textContent = `${pct} %`;
     btn.setAttribute("aria-label", `Zoom ${pct} %. Ajustar al ancho`);
+  }
+
+  // --- page images: lazy loading, the request queue and the memory budget (spec 6.4, 6.5) ---
+  const MAX_IN_FLIGHT = 3; // requests sent are never aborted: the server cannot stop a render
+  const BUDGET_MP = 150; // megapixels of images held, both sides of every row
+  const KEEP_HEIGHTS = 3; // images are kept for rows within this many viewport heights of the view
+  const SCROLL_QUIET_MS = 150; // no request starts until the scroll has been still this long
+  const SIDES = ["before", "after"];
+
+  const requestZoomOf = (row) => ReviewCore.requestZoom(row.scale, window.devicePixelRatio || 1, row.page);
+  /** The key of the image a cell wants now; "" when it wants none (a row of another file or load
+   *  generation, or the after while V hides it). */
+  function wantedKeyNow(row, side) {
+    const rv = S.rv;
+    if (!rv.file || rv.rows[row.i] !== row || (side === "after" && !rv.after)) return "";
+    return ReviewCore.imageKey({ file: rv.id, gen: rv.gen, page: row.i, zoom: requestZoomOf(row), side, version: rv.versions[row.i] });
+  }
+  const holdsImage = (row) => SIDES.some((side) => row[side].url || row[side].pending);
+  /** Megapixels of the images shown and on their way. */
+  function imagesMp() {
+    let mp = 0;
+    for (const row of S.rv.rows) for (const side of SIDES) mp += row[side].mp + (row[side].pending ? row[side].pendingMp : 0);
+    return mp;
+  }
+
+  /** Two observers of the rows, rooted at the viewport: with a margin of one viewport height
+   *  (inMargin) and without one (inView). A row entering or leaving either schedules loads. */
+  function startObserver() {
+    const L = S.load, vp = $("#viewport");
+    disconnectObservers();
+    const track = (set) => (entries, observer) => {
+      if (observer !== L.observer && observer !== L.viewObserver) return; // disconnected meanwhile
+      for (const e of entries) {
+        if (e.isIntersecting) set.add(Number(e.target.dataset.row));
+        else set.delete(Number(e.target.dataset.row));
+      }
+      scheduleLoads();
+    };
+    L.marginPx = vp.clientHeight;
+    L.observer = new IntersectionObserver(track(L.inMargin), { root: vp, rootMargin: `${L.marginPx}px 0px` });
+    L.viewObserver = new IntersectionObserver(track(L.inView), { root: vp, rootMargin: "0px" });
+    for (const row of S.rv.rows) {
+      L.observer.observe(row.el);
+      L.viewObserver.observe(row.el);
+    }
+  }
+  function disconnectObservers() {
+    const L = S.load;
+    for (const o of [L.observer, L.viewObserver]) if (o) o.disconnect();
+    L.observer = null;
+    L.viewObserver = null;
+  }
+  function stopObserver() {
+    disconnectObservers();
+    S.load.inView.clear();
+    S.load.inMargin.clear();
+  }
+  /** The margin is one viewport height, and the viewport measures 0 while Revisar is hidden: the
+   *  observers are made again when its height changed. The sets stay, since new observers report
+   *  every row at once. */
+  function fitObserverMargin() {
+    const L = S.load, height = $("#viewport").clientHeight;
+    if (L.observer && height && height !== L.marginPx) startObserver();
+  }
+
+  /** No job waits any more, and a zoom that was settling no longer applies (teardown). */
+  function clearQueue() {
+    S.load.queue = [];
+    S.load.refresh = false;
+  }
+
+  /** No request starts for ``ms`` (a scroll, a zoom); the latest deadline wins. */
+  function holdLoads(ms) {
+    const L = S.load;
+    L.scrolling = true;
+    L.seenTop = $("#viewport").scrollTop;
+    const at = performance.now() + ms;
+    if (L.settleTimer && L.settleAt >= at) return;
+    clearTimeout(L.settleTimer);
+    L.settleAt = at;
+    L.settleTimer = setTimeout(settleLoads, ms);
+  }
+  /** The scroll (or the zoom pause) is over: free what is far, then load what is near. */
+  function settleLoads() {
+    const L = S.load, vp = $("#viewport");
+    L.settleTimer = null;
+    L.scrolling = false;
+    L.seenTop = vp.scrollTop;
+    if (S.screen !== 3 || !vp.clientHeight) return; // hidden: showing Revisar relays out and loads
+    if (L.refresh) {
+      // After a zoom only the rows near the view load again; the others drop their old images.
+      L.refresh = false;
+      for (const row of S.rv.rows) {
+        if (!L.inMargin.has(row.i) && !L.inView.has(row.i) && !row.busy && holdsImage(row)) releaseRow(row);
+      }
+    }
+    releaseFar();
+    scheduleLoads();
+  }
+  /** A zoom: no request for ``ms``, then the rows outside the margin drop their images and the rows
+   *  inside load them at the new zoom. Called before the relayout, so its loads wait as well. */
+  function scheduleImageRefresh(ms) {
+    S.load.refresh = true;
+    holdLoads(ms);
+  }
+
+  /** Queues the image of every cell near the view whose wanted key is not shown, on its way, failed
+   *  or queued already, then starts what it can. While loads are held, settleLoads calls it again. */
+  function scheduleLoads() {
+    const L = S.load, rv = S.rv;
+    if (!rv.file || !rv.rows.length || L.scrolling) return;
+    // The scroll moved without a scroll event yet (one set in an animation frame, or by a relayout,
+    // reaches the observers first): it is held like any other, so the rows on its way never load.
+    if ($("#viewport").scrollTop !== L.seenTop) { holdLoads(SCROLL_QUIET_MS); return; }
+    const queued = new Set(L.queue.map((j) => `${j.row}|${j.side}`));
+    for (const i of new Set([...L.inView, ...L.inMargin])) {
+      const row = rv.rows[i];
+      if (!row) continue;
+      for (const side of SIDES) {
+        const cell = row[side], want = wantedKeyNow(row, side);
+        if (!want || want === cell.key || want === cell.pending || want === cell.failed || queued.has(`${i}|${side}`)) continue;
+        // An after shown with an older version changed because of an edit: it goes ahead.
+        L.queue.push({ row: i, side, edited: side === "after" && !!cell.key && cell.version !== rv.versions[i] });
+      }
+    }
+    pump();
+  }
+
+  /** Starts jobs while fewer than three requests are on their way and nothing is settling. The queue
+   *  is planned first: rows that left the margin drop out, the rest go in view and distance order.
+   *  A job outside the view starts only within the memory budget. */
+  function pump() {
+    const L = S.load, rv = S.rv;
+    if (L.scrolling || S.screen !== 3 || !rv.rows.length || L.inFlight >= MAX_IN_FLIGHT || !L.queue.length) return;
+    const inMargin = new Set([...L.inMargin, ...L.inView]); // planQueue expects the view inside the margin
+    L.queue = ReviewCore.planQueue(L.queue, { inView: L.inView, inMargin, center: currentPageIndex() });
+    while (L.inFlight < MAX_IN_FLIGHT && L.queue.length) {
+      const job = L.queue.shift();
+      const row = rv.rows[job.row], cell = row && row[job.side];
+      const want = row ? wantedKeyNow(row, job.side) : "";
+      if (!want || want === cell.key || want === cell.pending) continue;
+      const zoom = requestZoomOf(row);
+      const mp = (row.page.width * zoom * row.page.height * zoom) / 1e6;
+      if (!ReviewCore.admits({ totalMp: imagesMp(), oldMp: cell.mp, newMp: mp, budgetMp: BUDGET_MP, inView: L.inView.has(job.row) })) continue;
+      loadImage(row, job.side, want, zoom, mp);
+    }
+  }
+
+  /** One request. Its answer is shown only if the cell still wants that key and was not released
+   *  meanwhile; any other answer is revoked and dropped silently (an older file or generation too). */
+  async function loadImage(row, side, key, zoom, mp) {
+    const L = S.load, rv = S.rv, cell = row[side];
+    const version = rv.versions[row.i] || "";
+    let path = `/api/files/${enc(rv.id)}/pages/${row.i}.png?zoom=${zoom}`;
+    if (side === "after") path += `&redacted=true&v=${enc(version)}`;
+    cell.pending = key;
+    cell.pendingMp = mp;
+    clearFail(cell);
+    if (!cell.url) showCellState(cell, "Cargando…"); // the first image, or a retry
+    L.inFlight += 1;
+    let url = null, error = null;
+    try {
+      url = await apiBlobUrl(path);
+    } catch (err) {
+      error = err;
+    }
+    L.inFlight -= 1;
+    const wanted = cell.pending === key && ReviewCore.acceptResponse(wantedKeyNow(row, side), key);
+    if (cell.pending === key) cell.pending = "";
+    if (!wanted) {
+      if (url) URL.revokeObjectURL(url);
+    } else if (url) {
+      showImage(row, side, { url, key, mp, version });
+    } else {
+      showFailure(row, side, key, error);
+    }
+    pump();
+  }
+
+  function showImage(row, side, { url, key, mp, version }) {
+    const cell = row[side], old = cell.url;
+    cell.img.src = url;
+    Object.assign(cell, { url, key, mp, failed: "" });
+    if (side === "after") cell.version = version;
+    cell.state.hidden = true;
+    cell.cell.classList.remove("updating");
+    // The replaced image stays on screen until the new one is decoded; its URL goes then.
+    if (old) cell.img.decode().catch(() => {}).finally(() => URL.revokeObjectURL(old));
+    if (side === "before" && !old) renderRowZones(row);
+  }
+
+  /** A request that failed while still wanted. The before says so, with one toast per load as
+   *  before; the after shows no image (never the original) and offers "Reintentar". */
+  function showFailure(row, side, key, err) {
+    const L = S.load, cell = row[side];
+    cell.failed = key;
+    cell.cell.classList.remove("updating");
+    if (side === "before") {
+      showCellState(cell, "No se pudo mostrar esta página");
+      if (L.toastedGen !== S.rv.gen) {
+        L.toastedGen = S.rv.gen;
+        showError(err);
+      }
+      return;
+    }
+    dropImage(cell);
+    cell.state.hidden = true;
+    cell.fail = h("div", { class: "fail" },
+      h("p", { text: "No se pudo mostrar el resultado de esta página" }),
+      h("button", {
+        type: "button", class: "btn small", text: "Reintentar",
+        onclick: () => { requestAfter(row, { edited: true }); focusViewport(); }, // the button goes away
+      }));
+    cell.cell.append(cell.fail);
+  }
+
+  /** Loads a row's after again ahead of the other jobs (an edit, "Reintentar"): its failure is
+   *  forgotten. A row away from the view loads when it comes near. */
+  function requestAfter(row, { edited = false } = {}) {
+    const L = S.load, cell = row.after;
+    if (S.rv.rows[row.i] !== row) return;
+    cell.failed = "";
+    if (cell.fail) {
+      clearFail(cell);
+      if (!cell.url) showCellState(cell, "Cargando…");
+    }
+    L.queue = L.queue.filter((j) => !(j.row === row.i && j.side === "after"));
+    const want = wantedKeyNow(row, "after");
+    if (want && want !== cell.key && want !== cell.pending) L.queue.push({ row: row.i, side: "after", edited });
+    pump();
+  }
+
+  /** Frees a row's images and keeps its reserved size: no src, URLs revoked, keys forgotten (an
+   *  answer still on its way is dropped), "Cargando…" again and no zone overlays. ``all``: the row
+   *  is being discarded (teardown), so only its URLs matter. */
+  function releaseRow(row, { all = false } = {}) {
+    for (const side of SIDES) {
+      const cell = row[side];
+      if (all) {
+        if (cell.url) URL.revokeObjectURL(cell.url);
+        Object.assign(cell, { url: null, key: "", mp: 0, pending: "" });
+        continue;
+      }
+      dropImage(cell);
+      Object.assign(cell, { pending: "", pendingMp: 0, failed: "" });
+      if (side === "after") cell.version = null;
+      cell.cell.classList.remove("updating");
+      clearFail(cell);
+      showCellState(cell, "Cargando…");
+    }
+    if (!all) row.before.zones.replaceChildren();
+  }
+
+  /** Images are kept for the rows within three viewport heights of the view, and within the budget,
+   *  the farthest released first. Never released: the row at the center, the rows in view and a
+   *  row being drawn on (``row.busy``). */
+  function releaseFar() {
+    const rv = S.rv, L = S.load, vp = $("#viewport");
+    if (S.screen !== 3 || !vp.clientHeight || !rv.rows.length) return;
+    const keep = ReviewCore.rowsWithin(rowMetrics(), vp.scrollTop + headerHeight(), vp.scrollTop + vp.clientHeight, KEEP_HEIGHTS * vp.clientHeight);
+    const loaded = rv.rows.filter(holdsImage).map((row) => ({ row: row.i, mp: row.before.mp + row.after.mp }));
+    const pinned = new Set([...L.inView, ...rv.rows.filter((row) => row.busy).map((row) => row.i)]);
+    for (const i of ReviewCore.releasePlan(loaded, { keep, center: currentPageIndex(), budgetMp: BUDGET_MP, pinned })) {
+      releaseRow(rv.rows[i]);
+    }
+  }
+
+  function dropImage(cell) {
+    if (cell.url) URL.revokeObjectURL(cell.url);
+    Object.assign(cell, { url: null, key: "", mp: 0 });
+    cell.img.removeAttribute("src");
+  }
+  function showCellState(cell, text) {
+    cell.state.textContent = text;
+    cell.state.hidden = false;
+  }
+  function clearFail(cell) {
+    if (cell.fail) cell.fail.remove();
+    cell.fail = null;
   }
 
   // Approximate size of a zone label (10px bold UI font), used to keep labels off other zones.
@@ -1962,14 +2260,14 @@
     const row = rv.rows[currentPageIndex()];
     if (!row) return;
     rv.zoom = ReviewCore.nextZoom(rv.zoom, factor, row.fit); // the current page's scale stays in 0.05–8
+    scheduleImageRefresh(120); // first: the loads of the relayout wait for the pause too
     relayout();
-    scheduleImageRefresh(120);
   }
   function zoomFit() {
     if (!S.rv.rows.length) return;
     S.rv.zoom = 1;
-    relayout();
     scheduleImageRefresh(120);
+    relayout();
   }
   function rotate() {
     S.rv.rot = (S.rv.rot + 90) % 360;
@@ -2388,6 +2686,7 @@
     const vp = $("#viewport");
     let viewTick = false; // the page field and the zoom button follow the scroll, once per frame
     vp.addEventListener("scroll", () => {
+      holdLoads(SCROLL_QUIET_MS); // rows passed on the way are not requested
       if (viewTick) return;
       viewTick = true;
       requestAnimationFrame(() => {
@@ -2400,11 +2699,21 @@
       if (bar.hidden || range <= 0 || bar.scrollLeft === panBarLeft) return;
       setPan(bar.scrollLeft / range, { moveBar: false });
     });
-    // Resizes of the window, the findings column or the bars: fit and manual zoom alike.
-    let resizeTimer = null;
-    new ResizeObserver(() => {
+    // Resizes of the window or the findings column: fit and manual zoom alike. Only a new width
+    // lays the rows out again; a height change (the pan bar, the status line) only refits the
+    // observers' margin of one viewport height.
+    let resizeTimer = null, seenWidth = null, widthMoved = false;
+    new ResizeObserver((entries) => {
+      const { width } = entries[entries.length - 1].contentRect;
+      if (width !== seenWidth) { seenWidth = width; widthMoved = true; }
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => { if (S.screen === 3) relayout(); }, 150);
+      resizeTimer = setTimeout(() => {
+        const relay = widthMoved;
+        widthMoved = false;
+        if (S.screen !== 3) return;
+        if (relay) relayout(); // it refits the margin too
+        else fitObserverMargin();
+      }, 150);
     }).observe(vp);
     $("#rv-page").addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
