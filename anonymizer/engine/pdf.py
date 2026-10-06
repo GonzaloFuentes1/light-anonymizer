@@ -400,25 +400,29 @@ def _repeated_images(doc: pymupdf.Document) -> set[tuple[int, tuple[int, ...]]]:
 
 
 def _signature_rules(page: pymupdf.Page, tp: TextPage) -> list[pymupdf.Rect]:
-    """Straight horizontal lines of the page, drawn or typed ("________"): possible signature lines."""
+    """Possible signature lines, in the page as it is shown: straight horizontal lines, drawn or typed
+    ("________"), at least 30 pt long and shorter than 60 % of the page's width (a page-wide header
+    or footer rule is not one)."""
+    to_view = pymupdf.Matrix(page.rotation_matrix)
+    width = page.rect.width
     rules = []
     for d in page.get_drawings():
         items = d.get("items") or []
-        r = pymupdf.Rect(d["rect"])
-        flat = r.height <= 2 and r.width >= 30
-        if flat and (
-            (len(items) == 1 and items[0][0] == "l") or (len(items) == 1 and items[0][0] == "re" and "f" in d["type"])
-        ):
+        single = len(items) == 1 and (items[0][0] == "l" or (items[0][0] == "re" and "f" in d["type"]))
+        r = (pymupdf.Rect(d["rect"]) * to_view).normalize()
+        if single and r.height <= 2 and 30 <= r.width <= 0.6 * width:
             rules.append(r)
     for _, _, ln in tp.lines:
         text = ln.text.strip()
-        if len(text) >= 10 and set(text) <= set("_.-… "):
-            rules.append(pymupdf.Rect(ln.x0, ln.y0, ln.x1, ln.y1))
+        r = (pymupdf.Rect(ln.x0, ln.y0, ln.x1, ln.y1) * to_view).normalize()
+        if len(text) >= 10 and set(text) <= set("_.-… ") and r.width <= 0.6 * width:
+            rules.append(r)
     return rules
 
 
 def _anchored(image: pymupdf.Rect, rules: list[pymupdf.Rect], names: list[pymupdf.Rect]) -> bool:
-    """A signature line under or across the image, or a person's name right under it."""
+    """A signature line under or across the image, or a person's name right under it (all in the page
+    as it is shown)."""
     reach = max(15.0, 0.3 * image.height)
     for r in rules:
         overlap = min(r.x1, image.x1) - max(r.x0, image.x0)
@@ -435,8 +439,8 @@ def _anchored(image: pymupdf.Rect, rules: list[pymupdf.Rect], names: list[pymupd
     return False
 
 
-def _name_boxes(tp: TextPage) -> list[pymupdf.Rect]:
-    """Boxes of the names found in the text layer."""
+def _name_boxes(tp: TextPage, to_view: pymupdf.Matrix) -> list[pymupdf.Rect]:
+    """Boxes of the names found in the text layer, in the page as it is shown."""
     out = []
     for type_, a, b, _ in tp.spans:
         if type_ != "name":
@@ -446,7 +450,7 @@ def _name_boxes(tp: TextPage) -> list[pymupdf.Rect]:
             u = pymupdf.Rect(boxes[0])
             for r in boxes[1:]:
                 u |= r
-            out.append(u)
+            out.append((u * to_view).normalize())
     return out
 
 
@@ -485,6 +489,7 @@ def raster_zones(
             if (int(i.get("xref") or 0), tuple(round(v) for v in i["bbox"])) in cache.get("repeated", ())
         ]
         rules = _signature_rules(page, tp) if repeated_here else []
+        to_view = pymupdf.Matrix(page.rotation_matrix)
         with stage("render"):
             zoom = dpi / 72
             pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
@@ -525,8 +530,10 @@ def raster_zones(
                 if _overlaps((pymupdf.Rect(i["bbox"]) & page_rect) * to_pix, (x0, y0, x1, y1))
             ]  # fmt: skip
             if repeated and not keywords:
-                names = cache.setdefault(("names", tp.index), _name_boxes(tp))
-                repeated = [i for i in repeated if not _anchored(pymupdf.Rect(i["bbox"]), rules, names)]
+                names = cache.setdefault(("names", tp.index), _name_boxes(tp, to_view))
+                repeated = [
+                    i for i in repeated if not _anchored((pymupdf.Rect(i["bbox"]) * to_view).normalize(), rules, names)
+                ]
             else:
                 repeated = []
             whole = x1 - x0 <= 0.6 * width and y1 - y0 <= 0.25 * height and not repeated

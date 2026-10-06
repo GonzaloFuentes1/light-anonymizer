@@ -3,31 +3,38 @@
 MuPDF's redaction removes the *filled* paths a zone covers but keeps every *stroked* one: a
 signature drawn with a pen tool stayed in the file under the black box. Its option to remove every
 path a zone touches also removes page frames, table shading and background bands. Stroked paths
-are therefore handled here, apart from MuPDF's redaction:
+are therefore handled here, apart from MuPDF's redaction.
 
-- ``plan`` decides with the box of each stroked path cut to the clip that shows it. A path whose
-  box lies inside a zone (one point of margin: the redaction and the leak check use the same) goes.
-  Page layout (rectangles, straight rules) and closed convex outlines (rings, ovals, rounded
-  frames: stamps, radio buttons) that cross a zone stay. A pen stroke (a curve, or a polyline that
-  is not a grid) that crosses the edge of a zone where drawings are the data (a signature, a zone
-  drawn by the reviewer) goes whole when most of its visible length lies inside the zones, and the
-  reviewer must enlarge the zone when it turns back like handwriting with most of it outside. Any
-  other stroke with at least 80 % of its visible length under the zones also needs a larger zone.
+The rule is that of the whole tool: recall over precision. The stroke logic stays silent only when
+it is certain that a stroke is not under an applied zone, or that it left the file; whenever a
+classification would be a guess, the export is blocked with a message that says what to do.
+
+- ``plan`` judges every stroked path by its box, cut to the clip that shows it (a path clipped
+  away entirely is judged by where it is drawn: its data is still in the file). A path whose box
+  lies inside a zone (one point of margin) leaves the file. Straight rules and rectangles (page
+  layout) stay, and so do closed convex outlines (rings, ovals, rounded frames: stamps, frames)
+  that lie mostly outside the zone. Any other curve or polyline that crosses the edge of a zone
+  where drawings are the data (a signature, a zone drawn by the reviewer) leaves whole when at
+  least 60 % of its visible length lies inside the zones, and blocks the export from 20 %: the
+  reviewer must enlarge the zone. Any other stroke with at least 80 % under the zones blocks too.
+  Nothing is exempted for being a pattern's cell or a glyph: ``get_drawings`` lists them as paths,
+  and what the redaction cannot remove (MuPDF removes a pattern fill or a glyph it covers) blocks.
 - ``remove`` takes them out of the page's content with MuPDF's content filter. The filter only
   reports, in content order, the box of each painted path (grown for its stroke), so its calls are
-  lined up with ``page.get_drawings()`` (same order, consistent boxes, found through an index of
-  box centers) and only the calls matched to a planned path are dropped: never a glyph, an image,
-  a Type3 glyph procedure (the filter does not enter them) or a path it cannot match. Then the
-  page's drawings, text and images are compared with what was expected; on any other difference
-  the page is put back as it was.
-- ``leaks`` runs ``plan`` again over the exported file with the same zones: a stroke that should
-  have left and is still there, or one the zone must cover entirely, blocks the export with a
-  message that says what to do.
+  lined up with ``page.get_drawings(extended=True)``, clips included (a shape filled with a pattern
+  is listed as a clip with its box), through an index of boxes; only the calls matched to a planned
+  path are dropped. The filter never enters Type3 glyph procedures or pattern cells. Then the page's
+  paths and text, and what the filter painted, are compared with what was expected; on any other
+  difference the page is put back as it was.
+- ``leaks`` runs ``plan`` again over the exported file with the same zones and rules: a stroke that
+  should have left and is still there, or one a zone must cover entirely, blocks the export.
 
-Coordinates: PyMuPDF's unrotated page space (that of ``get_drawings`` and ``add_redact_annot``).
-The filter's boxes are in PDF user space (``~page.transformation_matrix``). This module uses
-private PyMuPDF bindings (``_make_PdfFilterOptions``, ``_as_pdf_page``) and MuPDF's culler
-callback: ``self_test`` checks at startup that they still behave as expected.
+Each page has a time budget (``REMOVE_SECONDS``) for the whole stage; past it nothing is removed
+and the export is blocked. Coordinates: PyMuPDF's unrotated page space (that of ``get_drawings``
+and ``add_redact_annot``); the filter's boxes are in PDF user space (``~page.transformation_matrix``).
+This module uses private PyMuPDF bindings (``_make_PdfFilterOptions``, ``_as_pdf_page``) and
+MuPDF's culler callback: ``self_test`` checks at startup that they still behave as expected, and
+PyMuPDF is pinned below 1.29.
 """
 
 from __future__ import annotations
@@ -50,27 +57,45 @@ log = logging.getLogger(__name__)
 
 mupdf = pymupdf.mupdf
 _FILL, _STROKE, _FILL_STROKE = mupdf.FZ_CULL_PATH_FILL, mupdf.FZ_CULL_PATH_STROKE, mupdf.FZ_CULL_PATH_FILL_STROKE
-_PATH_KINDS = (_FILL, _STROKE, _FILL_STROKE)
+_PATH_KINDS = (_FILL, _STROKE, _FILL_STROKE)  # the only calls ever dropped
+# What each call of the filter paints: a path ("fill", "stroke", "fs"), a clip without painting
+# ("clip", from "W n"), or a path that also clips ("W f", "W S", "W B": painted, never dropped).
+_CLASS = {
+    _FILL: "fill",
+    _STROKE: "stroke",
+    _FILL_STROKE: "fs",
+    mupdf.FZ_CULL_CLIP_PATH_DROP: "clip",
+    mupdf.FZ_CULL_CLIP_PATH_FILL: "fill",
+    mupdf.FZ_CULL_CLIP_PATH_STROKE: "stroke",
+    mupdf.FZ_CULL_CLIP_PATH_FILL_STROKE: "fs",
+}
+_CLIPPING = (mupdf.FZ_CULL_CLIP_PATH_FILL, mupdf.FZ_CULL_CLIP_PATH_STROKE, mupdf.FZ_CULL_CLIP_PATH_FILL_STROKE)
 
-# Zones whose content may be a drawing: a pen stroke that crosses their edge matters.
+# Zones whose content may be a drawing: a stroke that crosses their edge matters.
 DRAWN_TYPES = ("signature", "manual")
-MOSTLY = 0.6  # share of a pen stroke's visible length under a drawing zone for it to go whole
-UNDER = 0.8  # share of any other stroke's visible length under the zones for the zone to be enlarged
+MOSTLY = 0.6  # share of a stroke's visible length under a drawing zone for it to go whole
+CROSSING = 0.2  # share under a drawing zone from which a crossing stroke blocks the export
+UNDER = 0.8  # share under any zone from which any other stroke blocks the export
+AROUND = 0.5  # a closed convex outline with less than this under the zones is a frame or stamp around it
 MARGIN = 1.0  # points: a path this close to a zone's edge counts as inside it
-REMOVE_SECONDS = 15.0  # lining the filter up with the page gives up after this (the export is then blocked)
+REMOVE_SECONDS = 15.0  # time budget of the stroke stage of one page (the export is blocked past it)
 _TOLERANCE = 0.5  # points: the filter's boxes and get_drawings' rectangles agree within this
 
 Box = tuple[float, float, float, float]
 
 
 class Entry(NamedTuple):
-    """A path of ``get_drawings`` with its box and drawn extent (box grown by half the line width),
-    both cut to the clip that shows it (None: clipped away), and the clips in effect."""
+    """A path of ``get_drawings``: its box and drawn extent (box grown by half the line width), cut
+    to the clip that shows it; for a path clipped away entirely (``visible`` False), where it is
+    drawn. ``seq``: its position in the extended listing (clips included); ``clip``: the position of
+    the innermost clip it is under (-1: none)."""
 
     d: dict
-    box: Box | None
-    extent: Box | None
-    clips: tuple[int, ...]  # indexes into the page's clips (``paths``)
+    box: Box
+    extent: Box
+    visible: bool
+    seq: int
+    clip: int = -1
 
 
 class Plan(NamedTuple):
@@ -80,8 +105,12 @@ class Plan(NamedTuple):
     remove: set[int]  # paths that leave the file
     whole: set[int]  # among them, those removed whole although part of them lies outside the zones
     enlarge: list[tuple[int, int]]  # (path, zone index): the zone must cover the whole stroke
-    calls: list[tuple[int, Box]]  # the paths the content filter paints, in order (``_Culler``)
-    other: Counter  # the other things it paints (glyphs, images...), by kind
+    clips: list[tuple[int, Box]]  # (seq, scissor) of every clip of the listing
+
+
+def _check(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise TimeoutError("the stroke stage took too long")
 
 
 # ---------------------------------------------------------------------------
@@ -104,36 +133,11 @@ def zones_by_page(
     return out
 
 
-def is_pen_stroke(items) -> bool:
+def _pen_shape(items) -> bool:
     """A curve, or a polyline of six segments or more that is not mostly axis-parallel (the
-    signature detector's criterion), and not a closed convex outline (a ring, an oval, a rounded
-    frame): what a pen leaves, unlike rules, frames, grids and stamps."""
+    signature detector's criterion)."""
     curves, segments, _, straight, _ = path_shape(items)
-    return (curves >= 1 or (segments >= 6 and straight < 0.6)) and not closed_convex(items)
-
-
-def _turns_back(items) -> bool:
-    """Handwriting: the pen turns back left or right (loops), or swings up and down steeply again
-    and again (a zigzag scrawl). A chart's curve goes one way and rises or falls gently."""
-    pts = []
-    for item in items:
-        if item[0] == "l":
-            pts += [item[1], item[2]]
-        elif item[0] == "c":
-            pts += list(item[1:5])
-    if len(pts) < 3:
-        return False
-    steps = np.diff(np.array([[p.x, p.y] for p in pts], np.float64), axis=0)
-    steps = steps[np.hypot(steps[:, 0], steps[:, 1]) > 0.3]
-    if len(steps) < 2:
-        return False
-
-    def reversals(values: np.ndarray) -> int:
-        signs = np.sign(values[np.abs(values) > 0.3])
-        return int(np.count_nonzero(signs[1:] != signs[:-1])) if signs.size > 1 else 0
-
-    steep = np.abs(steps[:, 1]).sum() / max(np.abs(steps[:, 0]).sum(), 1e-6)
-    return reversals(steps[:, 0]) >= 2 or (reversals(steps[:, 1]) >= 3 and steep >= 1.5)
+    return curves >= 1 or (segments >= 6 and straight < 0.6)
 
 
 def _is_layout(items) -> bool:
@@ -162,12 +166,14 @@ def _touches(r: Box, zone: pymupdf.Rect) -> bool:
     return r[0] < zone.x1 and zone.x0 < r[2] and r[1] < zone.y1 and zone.y0 < r[3]
 
 
-def paths(page: pymupdf.Page) -> tuple[list[Entry], list[Box | None]]:
-    """The page's paths (``get_drawings``, in content order) and the scissor of every clip."""
+def paths(page: pymupdf.Page, deadline: float | None = None) -> tuple[list[Entry], list[tuple[int, Box]]]:
+    """The page's paths (``get_drawings``, in content order) and its clips, as (seq, scissor)."""
     out: list[Entry] = []
-    scissors: list[Box | None] = []
-    stack: list[tuple[int, int, Box | None]] = []  # (level, clip index, scissor cut to the outer clips)
-    for d in page.get_drawings(extended=True):
+    clips: list[tuple[int, Box]] = []
+    stack: list[tuple[int, Box | None, int]] = []  # (level, scissor cut to the outer clips, seq)
+    for seq, d in enumerate(page.get_drawings(extended=True)):
+        if seq % 1024 == 0:
+            _check(deadline)
         kind = d.get("type") or ""
         level = int(d.get("level") or 0)
         while stack and stack[-1][0] >= level:
@@ -175,22 +181,27 @@ def paths(page: pymupdf.Page) -> tuple[list[Entry], list[Box | None]]:
         if kind == "clip":
             s = d.get("scissor")
             scissor = None if s is None else (s.x0, s.y0, s.x1, s.y1)
-            scissors.append(scissor)
-            if stack and scissor is not None and stack[-1][2] is not None:
-                scissor = _intersect(scissor, stack[-1][2])
-            stack.append((level, len(scissors) - 1, scissor))
+            if scissor is not None:
+                clips.append((seq, scissor))
+            if stack and scissor is not None and stack[-1][1] is not None:
+                scissor = _intersect(scissor, stack[-1][1])
+            stack.append((level, scissor, seq))
             continue
         if kind == "group" or "rect" not in d:
             continue
         half = max(float(d.get("width") or 0), 0.5) / 2 if "s" in kind else 0.0
         r = d["rect"]
-        box: Box | None = (r.x0, r.y0, r.x1, r.y1)
-        drawn: Box | None = (r.x0 - half, r.y0 - half, r.x1 + half, r.y1 + half)
-        if stack and stack[-1][2] is not None:
-            box = _intersect(box, stack[-1][2])
-            drawn = _intersect(drawn, stack[-1][2]) if box is not None else None
-        out.append(Entry(d, box, drawn, tuple(c for _, c, _ in stack)))
-    return out, scissors
+        box: Box = (r.x0, r.y0, r.x1, r.y1)
+        extent: Box = (r.x0 - half, r.y0 - half, r.x1 + half, r.y1 + half)
+        visible = True
+        if stack and stack[-1][1] is not None:
+            cut = _intersect(box, stack[-1][1])
+            if cut is None:  # clipped away: judged by where it is drawn
+                visible = False
+            else:
+                box, extent = cut, _intersect(extent, stack[-1][1]) or cut
+        out.append(Entry(d, box, extent, visible, seq, stack[-1][2] if stack else -1))
+    return out, clips
 
 
 def _samples(items, visible: Box) -> np.ndarray:
@@ -227,67 +238,24 @@ def _share_inside(items, visible: Box, zones: list[pymupdf.Rect]) -> float:
     return float(inside.mean())
 
 
-def _pattern_cells(
-    found: list[Entry], scissors: list[Box | None], calls: list[tuple[int, Box]], match: dict[int, int], to_user
-) -> set[int]:
-    """The paths ``get_drawings`` lists for the cells of tiling patterns.
-
-    A shape filled (or stroked) with a pattern is a path the content filter paints and
-    ``get_drawings`` does not list; instead it lists a clip with that shape's box and, under it, the
-    pattern's cell, which the filter never reports. Those cells are not paths of the page: the
-    redaction neither plans for them nor reports them.
-    """
-    unexplained = [calls[n][1] for n in range(len(calls)) if n not in match]
-    if not unexplained:
-        return set()
-    index: dict[tuple[int, int], list[Box]] = {}
-    for b in unexplained:
-        index.setdefault((round((b[0] + b[2]) / 2), round((b[1] + b[3]) / 2)), []).append(b)
-    pattern_clips = set()
-    for c, scissor in enumerate(scissors):
-        if scissor is None:
-            continue
-        u = (pymupdf.Rect(scissor) * to_user).normalize()
-        cx, cy = round((u.x0 + u.x1) / 2), round((u.y0 + u.y1) / 2)
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for b in index.get((cx + dx, cy + dy), ()):
-                    grown = (u.x0 - b[0], u.y0 - b[1], b[2] - u.x1, b[3] - u.y1)
-                    if min(grown) >= -1 and max(grown) - min(grown) <= 1:
-                        pattern_clips.add(c)
-    matched = set(match.values())
-    return {k for k, e in enumerate(found) if k not in matched and pattern_clips.intersection(e.clips)}
-
-
-def plan(page: pymupdf.Page, zones: list[pymupdf.Rect], drawn: list[pymupdf.Rect] = ()) -> Plan:
+def plan(
+    page: pymupdf.Page, zones: list[pymupdf.Rect], drawn: list[pymupdf.Rect] = (), deadline: float | None = None
+) -> Plan:
     """Which stroked paths of the page leave the file, and which ones the zones must cover entirely.
 
     ``drawn``: the zones (among ``zones``) whose content may be a drawing (signatures, zones drawn
-    by the reviewer). The content filter runs once without changing anything, to know which paths
-    the page itself paints (``_pattern_cells``).
+    by the reviewer). Raises ``TimeoutError`` past ``deadline`` (monotonic).
     """
-    found, scissors = paths(page)
+    found, clips = paths(page, deadline)
     remove: set[int] = set()
     whole: set[int] = set()
     enlarge: list[tuple[int, int]] = []
     zones = list(zones)
-    probe = _Culler()
-    if not any(
-        "s" in (e.d.get("type") or "") and e.extent is not None and any(_touches(e.extent, z) for z in zones)
-        for e in found
-    ):
-        return Plan(found, remove, whole, enlarge, probe.calls, probe.other)  # no stroke near a zone
-    _filter(page, probe, update=False)
-    to_user = ~page.transformation_matrix
-    try:
-        match = _match(probe.calls, found, to_user, time.monotonic() + REMOVE_SECONDS)
-        cells = _pattern_cells(found, scissors, probe.calls, match, to_user)
-    except TimeoutError:
-        log.warning("page %d: lining up %d painted paths took too long", page.number, len(probe.calls))
-        cells = set()
     drawing = [any(z == d for d in drawn) for z in zones]
-    for i, (d, box, extent, _) in enumerate(found):
-        if "s" not in (d.get("type") or "") or box is None or i in cells:
+    for i, (d, box, extent, _, _, _) in enumerate(found):
+        if i % 256 == 0:
+            _check(deadline)
+        if "s" not in (d.get("type") or ""):
             continue
         if any(_inside(box, z, MARGIN) for z in zones):
             remove.add(i)
@@ -296,21 +264,24 @@ def plan(page: pymupdf.Page, zones: list[pymupdf.Rect], drawn: list[pymupdf.Rect
         if not hit:
             continue
         items = d.get("items") or []
-        if _is_layout(items) or closed_convex(items):
+        if _is_layout(items):
             continue
         share = _share_inside(items, extent, zones)
+        convex = closed_convex(items)
+        if convex and share < AROUND:
+            continue  # a frame or a stamp around the zone
         drawing_hit = [k for k in hit if drawing[k]]
-        if drawing_hit and is_pen_stroke(items):
+        if drawing_hit and (convex or _pen_shape(items)):
             if share >= MOSTLY:
                 remove.add(i)
                 whole.add(i)
                 continue
-            if share > 0 and _turns_back(items):
+            if share >= CROSSING:
                 enlarge.append((i, drawing_hit[0]))
                 continue
         if share >= UNDER:
             enlarge.append((i, hit[0]))
-    return Plan(found, remove, whole, enlarge, probe.calls, probe.other)
+    return Plan(found, remove, whole, enlarge, clips)
 
 
 # ---------------------------------------------------------------------------
@@ -330,13 +301,13 @@ class _Culler(mupdf.PdfSanitizeFilterOptions2):
         self.use_virtual_culler()
 
     def culler(self, ctx, bbox, kind):  # noqa: ARG002 - MuPDF's callback signature
-        if kind not in _PATH_KINDS:
+        if kind not in _CLASS:
             self.other[int(kind)] += 1
             return 0
         n = len(self.calls)
         r = mupdf.FzRect(bbox)
         self.calls.append((int(kind), (r.x0, r.y0, r.x1, r.y1)))
-        return 1 if self.drop is not None and n in self.drop else 0
+        return 1 if self.drop is not None and n in self.drop and kind in _PATH_KINDS else 0
 
 
 def _filter(page: pymupdf.Page, culler: _Culler, update: bool) -> None:
@@ -350,69 +321,172 @@ def _filter(page: pymupdf.Page, culler: _Culler, update: bool) -> None:
     mupdf.pdf_filter_page_contents(pdf_page.doc(), pdf_page, options)
 
 
-def _fits(kind: int, box: Box, path: tuple[str, Box, float]) -> bool:
-    """The filter's call and the path can be the same: kinds agree, and the call's box is the path's
-    box (a fill), or the path's box grown evenly on every side (a stroke: MuPDF grows it by half the
-    line width, or by the width times the miter limit for mitred joins, whatever the limit)."""
-    kind_text, u, width = path
-    if kind == _FILL:
-        return "f" in kind_text and all(abs(a - b) <= _TOLERANCE for a, b in zip(box, u, strict=True))
-    if (kind == _STROKE and "s" not in kind_text) or (kind == _FILL_STROKE and kind_text != "fs"):
+def _fits(call: str, box: Box, kind_text: str, u: Box) -> bool:
+    """The filter's call (``_CLASS``) and a listed path (or clip, ``kind_text`` "clip") can be the
+    same: kinds agree, and the call's box is the path's box (a fill, a clip), or the path's box grown
+    evenly on every side (a stroke: MuPDF grows it by half the line width, or by the width times the
+    miter limit for mitred joins; the miter limit is not listed, so any even growth fits)."""
+    if call == "clip":
+        return kind_text == "clip" and all(abs(a - b) <= _TOLERANCE for a, b in zip(box, u, strict=True))
+    if call == "fill":
+        if "f" not in kind_text and kind_text != "clip":
+            return False
+        return all(abs(a - b) <= _TOLERANCE for a, b in zip(box, u, strict=True))
+    if kind_text != "clip" and ((call == "stroke" and "s" not in kind_text) or (call == "fs" and kind_text != "fs")):
         return False
     grown = (u[0] - box[0], u[1] - box[1], box[2] - u[2], box[3] - u[3])
-    low, high = min(grown), max(grown)
-    return low >= -_TOLERANCE and high - low <= _TOLERANCE and high <= max(width, 1.0) * 1000
+    return min(grown) >= -_TOLERANCE and max(grown) - min(grown) <= _TOLERANCE
 
 
-def _match(calls: list[tuple[int, Box]], found: list[Entry], to_user, deadline: float | None = None) -> dict[int, int]:
-    """Filter call -> the path of ``found`` it paints, for every call that matches one.
-
-    Both lists are in content order. Each call is matched to the first path at or after the last
-    match whose box fits it, looked up by its center (a stroke's box grows evenly, so the center
-    stays): a path that ``get_drawings`` lists and the filter does not report (a Type3 glyph, a
-    pattern's cell) is skipped, and a call that matches no path (a pattern fill) is left out,
-    without scanning the page for it. A fill followed by a stroke of the same path is one "fs" path
-    in ``get_drawings`` and two calls here. Raises ``TimeoutError`` after ``deadline`` (monotonic).
-    """
-    info: dict[int, tuple[str, Box, float]] = {}
-    buckets: dict[tuple[int, int], list[int]] = {}
-    for k, entry in enumerate(found):
-        d = entry[0]
-        if entry[1] is None:  # clipped away: whatever paints it, it shows nothing
+def _subpaths(items) -> list[Box]:
+    """Boxes of the subpaths of a path (the filter reports each subpath as a call of its own): a new
+    subpath starts where a segment does not continue the last one, and every rectangle is one."""
+    boxes: list[list[float]] = []
+    last = None
+    for item in items:
+        kind = item[0]
+        if kind == "re":
+            r = item[1]
+            boxes.append([r.x0, r.y0, r.x1, r.y1])
+            last = None
             continue
-        u = (pymupdf.Rect(d["rect"]) * to_user).normalize()
-        info[k] = (d.get("type") or "", (u.x0, u.y0, u.x1, u.y1), float(d.get("width") or 0))
-        buckets.setdefault((round((u.x0 + u.x1) / 2), round((u.y0 + u.y1) / 2)), []).append(k)
-    match: dict[int, int] = {}
-    j = 0
-    for n, (kind, box) in enumerate(calls):
-        if deadline is not None and n % 256 == 0 and time.monotonic() > deadline:
-            raise TimeoutError("lining up the content filter took too long")
+        if kind == "qu":
+            q = item[1]
+            xs, ys = [q.ul.x, q.ur.x, q.ll.x, q.lr.x], [q.ul.y, q.ur.y, q.ll.y, q.lr.y]
+            boxes.append([min(xs), min(ys), max(xs), max(ys)])
+            last = None
+            continue
+        pts = item[1:]
+        if last is None or abs(pts[0].x - last.x) > 0.01 or abs(pts[0].y - last.y) > 0.01:
+            boxes.append([pts[0].x, pts[0].y, pts[0].x, pts[0].y])
+        b = boxes[-1]
+        for pt in pts:
+            b[0], b[1], b[2], b[3] = min(b[0], pt.x), min(b[1], pt.y), max(b[2], pt.x), max(b[3], pt.y)
+        last = pts[-1]
+    return [(b[0], b[1], b[2], b[3]) for b in boxes]
+
+
+def _match(
+    calls: list[tuple[int, Box]],
+    found: list[Entry],
+    to_user,
+    deadline: float | None = None,
+    clips: list[tuple[int, Box]] = (),
+) -> dict[int, int]:
+    """Filter call -> the path of ``found`` it paints (an index), or the clip of ``clips`` it matches
+    (-1 - its index), for every call that matches one.
+
+    The filter reports one call per subpath, in content order; ``get_drawings`` lists whole paths
+    and clips, in the same order. A clip without painting ("W n") takes its clip entry; a path that
+    also clips takes its subpath and the clip entry of the path's box. A shape filled or stroked with
+    a pattern is listed only as a clip with its box (its cell's paths are listed under it and never
+    reported by the filter), so its call takes that clip. Each call goes to the first candidate after
+    the last match whose box fits; a path listed and never reported (a Type3 glyph, a pattern's cell)
+    is passed over, and a call that fits nothing is left out. A fill followed by a stroke of the same
+    path is one "fs" path in ``get_drawings`` and two series of calls here. Candidates come from an
+    index of box centers and sizes (a stroke grows its box evenly, which keeps its center and the
+    difference of its sides), never from scanning the page.
+    """
+    fills: dict[tuple[int, int, int], list[tuple[int, int, int]]] = {}  # (cx, cy, w) -> [(seq, sub, id)]
+    strokes_: dict[tuple[int, int, int], list[tuple[int, int, int]]] = {}  # (cx, cy, w - h) -> ...
+    info: list[tuple[int, str, Box]] = []  # id -> (path index or -1 - clip index, kind, box in user space)
+    whole: dict[int, Box] = {}  # path index -> its box in user space
+
+    def user(b: Box) -> Box:
+        r = (pymupdf.Rect(b) * to_user).normalize()
+        return (r.x0, r.y0, r.x1, r.y1)
+
+    def add(owner: int, seq: int, sub: int, kind_text: str, u: Box) -> None:
+        info.append((owner, kind_text, u))
+        key = len(info) - 1
+        cx, cy = round((u[0] + u[2]) / 2), round((u[1] + u[3]) / 2)
+        if "f" in kind_text or kind_text == "clip":
+            fills.setdefault((cx, cy, round(u[2] - u[0])), []).append((seq, sub, key))
+        if "s" in kind_text or kind_text == "clip":
+            strokes_.setdefault((cx, cy, round((u[2] - u[0]) - (u[3] - u[1]))), []).append((seq, sub, key))
+
+    for k, entry in enumerate(found):
+        kind_text = entry.d.get("type") or ""
+        whole[k] = user(tuple(entry.d["rect"]))
+        for sub, b in enumerate(_subpaths(entry.d.get("items") or ()) or [tuple(entry.d["rect"])]):
+            add(k, entry.seq, sub, kind_text, user(b))
+    for c, (seq, scissor) in enumerate(clips):
+        add(-1 - c, seq, 0, "clip", user(scissor))
+    for index in (fills, strokes_):
+        for bucket in index.values():
+            bucket.sort()
+
+    def first(call: str, box: Box, after: tuple[int, int], accept) -> tuple[int, int, int] | None:
         cx, cy = round((box[0] + box[2]) / 2), round((box[1] + box[3]) / 2)
-        best: int | None = None
+        if call in ("fill", "clip"):
+            index, size = fills, round(box[2] - box[0])
+        else:
+            index, size = strokes_, round((box[2] - box[0]) - (box[3] - box[1]))
+        best: tuple[int, int, int] | None = None
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
-                bucket = buckets.get((cx + dx, cy + dy))
-                if not bucket:
-                    continue
-                for k in bucket[bisect_left(bucket, j) :]:
-                    if best is not None and k >= best:
-                        break
-                    if _fits(kind, box, info[k]):
-                        best = k
-                        break
+                for ds in (-1, 0, 1):
+                    bucket = index.get((cx + dx, cy + dy, size + ds))
+                    if not bucket:
+                        continue
+                    for seq, sub, key in bucket[bisect_left(bucket, (after[0], after[1], -1)) :]:
+                        if best is not None and (seq, sub) >= best[:2]:
+                            break
+                        owner, kind_text, u = info[key]
+                        if accept(owner) and _fits(call, box, kind_text, u):
+                            best = (seq, sub, key)
+                            break
+        return best
+
+    used: set[int] = set()  # clip entries already taken
+    match: dict[int, int] = {}
+    j = (0, 0)  # position after the last match
+    for n, (kind, box) in enumerate(calls):
+        if n % 256 == 0:
+            _check(deadline)
+        call = _CLASS.get(kind)
+        if call is None:
+            continue
+        if call == "clip":
+            best = first(call, box, j, lambda o: o < 0 and o not in used)
+        elif kind in _CLIPPING:
+            best = first(call, box, j, lambda o: o >= 0)
+        else:
+            best = first(call, box, j, lambda o: o >= 0 or o not in used)
         if best is None:
             continue
-        match[n] = best
-        j = best if kind == _FILL and info[best][0] == "fs" else best + 1
+        seq, sub, key = best
+        owner, kind_text, _ = info[key]
+        match[n] = owner
+        if owner < 0:
+            used.add(owner)
+        # A fill of an "fs" path stays at the path: the stroke of its subpaths follows.
+        j = (seq, 0) if (owner >= 0 and call == "fill" and kind_text == "fs") else (seq, sub + 1)
+        if kind in _CLIPPING and owner >= 0:  # the clip entry this path sets, listed next to it
+            clip = first("clip", whole[owner], (seq - 2, 0), lambda o: o < 0 and o not in used)
+            if clip is not None and clip[0] <= seq + 2:
+                used.add(info[clip[2]][0])
+                j = max(j, (clip[0], 1))
     return match
 
 
-def _align(
-    calls: list[tuple[int, Box]], found: list[Entry], targets: set[int], to_user, deadline: float | None = None
-) -> dict[int, int]:
-    """Filter calls to drop -> the path each one paints, for the paths in ``targets`` (``_match``)."""
-    return {n: k for n, k in _match(calls, found, to_user, deadline).items() if k in targets}
+def _unlisted(
+    page: pymupdf.Page, calls: list[tuple[int, Box]], match: dict[int, int], zones: list[pymupdf.Rect]
+) -> list[tuple[int, Box, bool]]:
+    """Painted paths ``get_drawings`` does not list (a shape filled or stroked with a pattern, listed
+    only as a clip; anything it does not list at all) whose box touches a zone: (call, box in page
+    space, whether the box lies inside a zone). Their box is the filter's, grown for the stroke, so
+    "inside" is certain."""
+    to_page = page.transformation_matrix
+    out = []
+    for n, (kind, box) in enumerate(calls):
+        if _CLASS.get(kind) in (None, "clip") or match.get(n, -1) >= 0:
+            continue
+        r = (pymupdf.Rect(box) * to_page).normalize()
+        b = (r.x0, r.y0, r.x1, r.y1)
+        if any(_touches(b, z) for z in zones):
+            out.append((n, b, any(_inside(b, z, MARGIN) for z in zones)))
+    return out
 
 
 def _key(d: dict) -> tuple:
@@ -434,7 +508,7 @@ def _key(d: dict) -> tuple:
 
 def _paths_and_text(page: pymupdf.Page, found: list[Entry] | None = None) -> tuple[Counter, str]:
     """The page's paths and text. ``found``: its paths already listed (``paths``)."""
-    drawn = [entry[0] for entry in found] if found is not None else page.get_cdrawings()
+    drawn = [entry.d for entry in found] if found is not None else page.get_cdrawings()
     return Counter(map(_key, drawn)), page.get_text()
 
 
@@ -445,37 +519,48 @@ def remove(
 
     Call on an unrotated page. ``whole``: receives the drawn extent of each path removed whole
     although part of it lay outside the zones (it changes what the page shows there). When the
-    result is not exactly the page minus those paths (same other drawings, text and images), or
-    lining the filter up takes longer than ``REMOVE_SECONDS``, the page is left as it was and 0 is
-    returned: the leak check then finds the paths still there and blocks the export.
+    result is not exactly the page minus those paths (same other paths and text, the filter painting
+    the same things), or the stage takes longer than ``REMOVE_SECONDS``, the page is left as it was
+    and 0 is returned: the leak check then finds the paths still there and blocks the export.
     """
-    planned = plan(page, zones, drawn)
-    if not planned.remove:
-        return 0
-    to_user = ~page.transformation_matrix
+    deadline = time.monotonic() + REMOVE_SECONDS
     try:
-        drop = _align(planned.calls, planned.paths, planned.remove, to_user, time.monotonic() + REMOVE_SECONDS)
+        planned = plan(page, zones, drawn, deadline)
+        if not planned.remove:
+            return 0
+        probe = _Culler()
+        _filter(page, probe, update=False)
+        to_user = ~page.transformation_matrix
+        match = _match(probe.calls, planned.paths, to_user, deadline, planned.clips)
     except TimeoutError:
-        log.warning(
-            "page %d: lining up %d painted paths took too long; nothing removed", page.number, len(planned.calls)
-        )
+        log.warning("page %d: the stroke stage took too long; nothing removed", page.number)
         return 0
+    drop = {n: k for n, k in match.items() if k in planned.remove and probe.calls[n][0] in _PATH_KINDS}
+    # A shape painted with a pattern, or a path get_drawings does not list, drawn entirely inside a
+    # zone: its painted box is certain, so it goes too (with the pattern's clip and cell).
+    gone_clips = set()
+    for n, _, inside in _unlisted(page, probe.calls, match, zones):
+        if inside and probe.calls[n][0] in _PATH_KINDS:
+            drop[n] = match.get(n, -(10**9))
+            if match.get(n, 0) < 0:
+                gone_clips.add(planned.clips[-1 - match[n]][0])
     if not drop:
         return 0
     doc = page.parent
     saved = {key: doc.xref_get_key(page.xref, key) for key in ("Contents", "Resources")}
     drawings, text = _paths_and_text(page, planned.paths)
-    removed = set(drop.values())
-    expected = drawings - Counter(_key(planned.paths[k][0]) for k in removed)
+    removed = {k for k in drop.values() if k >= 0}
+    gone = removed | {k for k, e in enumerate(planned.paths) if e.clip in gone_clips}
+    expected = drawings - Counter(_key(planned.paths[k].d) for k in gone)
     culler = _Culler(set(drop))
     _filter(page, culler, update=True)
     # The filter painted the same paths, glyphs and images, and the page shows exactly what was
     # expected: the same paths but the removed ones, the same text.
-    same_calls = [c[0] for c in culler.calls] == [c[0] for c in planned.calls] and culler.other == planned.other
+    same_calls = [c[0] for c in culler.calls] == [c[0] for c in probe.calls] and culler.other == probe.other
     if same_calls and _paths_and_text(page) == (expected, text):
         if whole is not None:
-            whole += [planned.paths[k][2] for k in sorted(removed & planned.whole) if planned.paths[k][2]]
-        return len(removed)
+            whole += [planned.paths[k].extent for k in sorted(removed & planned.whole)]
+        return len(removed) + sum(1 for k in drop.values() if k < 0)
     log.warning("page %d: removing drawn strokes changed something else; the page is left as it was", page.number)
     for key, (kind, value) in saved.items():
         doc.xref_set_key(page.xref, key, "null" if kind == "null" else value)
@@ -485,8 +570,8 @@ def remove(
 
 
 def _self_test_document() -> pymupdf.Document:
-    """Two pages: a curve in a form placed under a zone on page 1 and outside it on page 2, a frame
-    around the zone, and a Type3 glyph drawn with a stroke on both pages."""
+    """Two pages: a curve in a form, placed under a zone (55, 75, 145, 125) on page 1 and at the same
+    place on page 2, a frame around the zone, and a Type3 glyph drawn with a stroke inside the zone."""
     doc = pymupdf.open()
     form = doc.get_new_xref()
     doc.update_object(form, "<< /Type /XObject /Subtype /Form /BBox [0 0 100 40] >>")
@@ -507,7 +592,7 @@ def _self_test_document() -> pymupdf.Document:
         doc.update_object(contents, "<<>>")
         doc.update_stream(
             contents,
-            b"q 1 0 0 1 50 80 cm /F1 Do Q 0 0 0 RG 1 w 40 70 120 60 re S BT /T3 20 Tf 20 20 Td (a) Tj ET",
+            b"q 1 0 0 1 50 80 cm /F1 Do Q 0 0 0 RG 1 w 40 70 120 60 re S BT /T3 20 Tf 120 80 Td (a) Tj ET",
         )
         doc.xref_set_key(page.xref, "Contents", f"{contents} 0 R")
         doc.xref_set_key(page.xref, "Resources", f"<< /XObject << /F1 {form} 0 R >> /Font << /T3 {font} 0 R >> >>")
@@ -516,7 +601,9 @@ def _self_test_document() -> pymupdf.Document:
 
 def self_test() -> bool:
     """The content filter still removes exactly a stroke under a zone: not the frame around it, not
-    the same form's use on another page, not a Type3 glyph drawn with a stroke.
+    the same form's use on another page, not a Type3 glyph drawn with a stroke inside the zone (the
+    filter must not enter glyph procedures, which every page using the font shares: it would report
+    one more painted path).
 
     It relies on private PyMuPDF bindings: a PyMuPDF update could break it, so the engine checks it
     at startup and refuses to run without it.
@@ -530,14 +617,20 @@ def self_test() -> bool:
 
     try:
         with _self_test_document() as doc:
+            zone = pymupdf.Rect(55, 75, 145, 125)
             other = described(doc[1])
-            glyph = [k for k in described(doc[0]) if k[1] == "c" and k[2][1] > 150]
-            removed = remove(doc[0], [pymupdf.Rect(55, 75, 145, 125)])
+            before = described(doc[0])
+            glyph = [k for k in before if k[1] == "c" and _inside(k[2], zone)]
+            probe = _Culler()
+            _filter(doc[0], probe, update=False)
+            removed = remove(doc[0], [zone])
             left = described(doc[0])
             ok = (
-                removed == 1
-                and [(k[0], k[1]) for k in left] == [("s", "c"), ("s", "re")]  # the glyph and the frame
-                and [k for k in left if k[1] == "c"] == glyph
+                len(glyph) == 2  # the form's curve and the glyph, both under the zone
+                and sum(1 for k, _ in probe.calls if k in _PATH_KINDS) == 2  # the curve and the frame: no glyph entered
+                and removed == 1
+                and sorted((k[0], k[1]) for k in left) == [("s", "c"), ("s", "re")]  # the glyph and the frame
+                and [k for k in left if k[1] == "c"] == [k for k in glyph if k[2][0] > 100]
                 and described(doc[1]) == other
             )
         return ok
@@ -557,46 +650,76 @@ def _label(f: Finding) -> str:
 
 def leaks(doc: pymupdf.Document, active: list[Finding]) -> list[Leak]:
     """Strokes still in an exported PDF that should have left with the zones of ``active``, or that
-    the zones must cover entirely (the same rectangles and rules as the redaction). Call with
-    ``PDF_LOCK`` held."""
+    the zones must cover entirely (the same rectangles and rules as the redaction), and painted paths
+    ``get_drawings`` does not list under a zone. Call with ``PDF_LOCK`` held; each page is looked at
+    unrotated, like in the redaction (only in memory)."""
     out: list[Leak] = []
     to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
     for n, items in sorted(zones_by_page(active, to_page).items()):
-        zones = [r for r, _ in items]
-        planned = plan(doc[n], zones, [r for r, f in items if f.type in DRAWN_TYPES])
-        reported: set[tuple[str, str]] = set()
-        for k in sorted(planned.remove):
-            d, box = planned.paths[k].d, planned.paths[k].box
-            if _is_layout(d.get("items") or []):  # frames, rules and the black boxes themselves
-                continue
-            holder = next((f for r, f in items if _inside(box, r, MARGIN)), None) or next(
-                (f for r, f in items if _touches(box, r)), items[0][1]
-            )
-            if (holder.id, "kept") in reported:
-                continue
-            reported.add((holder.id, "kept"))
-            out.append(
-                Leak(
-                    page=n,
-                    type=holder.type,
-                    message=f"{_label(holder)}: un trazo dibujado sigue en el archivo bajo la zona de la página "
-                    f"{n + 1} y no se pudo quitar sin alterar el resto de la página. No publiques este archivo: "
-                    "publica esa página escaneada o impresa como imagen.",
-                    finding_id=holder.id,
-                )
-            )
-        for _, z in planned.enlarge:
-            f = items[z][1]
-            if (f.id, "enlarge") in reported:
-                continue
-            reported.add((f.id, "enlarge"))
-            out.append(
-                Leak(
-                    page=n,
-                    type=f.type,
-                    message=f"{_label(f)}: un trazo dibujado cruza el borde de la zona de la página {n + 1} y la parte "
-                    "tapada sigue en el archivo; agranda la zona para cubrirlo entero.",
-                    finding_id=f.id,
-                )
-            )
+        page = doc[n]
+        rotation = page.rotation
+        if rotation:
+            page.set_rotation(0)
+        try:
+            out += _page_leaks(page, n, items)
+        finally:
+            if rotation:
+                page.set_rotation(rotation)
+    return out
+
+
+def _page_leaks(page: pymupdf.Page, n: int, items: list[tuple[pymupdf.Rect, Finding]]) -> list[Leak]:
+    zones = [r for r, _ in items]
+    deadline = time.monotonic() + REMOVE_SECONDS
+    try:
+        planned = plan(page, zones, [r for r, f in items if f.type in DRAWN_TYPES], deadline)
+        probe = _Culler()
+        _filter(page, probe, update=False)
+        match = _match(probe.calls, planned.paths, ~page.transformation_matrix, deadline, planned.clips)
+    except TimeoutError:
+        f = items[0][1]
+        message = (
+            f"La revisión de los trazos dibujados de la página {n + 1} no terminó a tiempo (la página tiene demasiados "
+            "trazos). No publiques este archivo: publica esa página escaneada o impresa como imagen."
+        )
+        return [Leak(page=n, type=f.type, message=message, finding_id=f.id)]
+    out: list[Leak] = []
+    reported: set[tuple[str, str]] = set()
+
+    def report(f: Finding, why: str, message: str) -> None:
+        if (f.id, why) not in reported:
+            reported.add((f.id, why))
+            out.append(Leak(page=n, type=f.type, message=message, finding_id=f.id))
+
+    for _, box, _ in _unlisted(page, probe.calls, match, zones):
+        holder = next((f for r, f in items if _touches(box, r)), items[0][1])
+        report(
+            holder,
+            "unlisted",
+            f"{_label(holder)}: en la página {n + 1} queda bajo la zona un trazo o relleno con trama que no se puede "
+            "revisar ni quitar por partes. Agranda la zona para cubrirlo entero o publica esa página escaneada o "
+            "impresa como imagen.",
+        )
+    for k in sorted(planned.remove):
+        d, box = planned.paths[k].d, planned.paths[k].box
+        if _is_layout(d.get("items") or []):  # frames, rules and the black boxes themselves
+            continue
+        holder = next((f for r, f in items if _inside(box, r, MARGIN)), None) or next(
+            (f for r, f in items if _touches(box, r)), items[0][1]
+        )
+        report(
+            holder,
+            "kept",
+            f"{_label(holder)}: un trazo dibujado sigue en el archivo bajo la zona de la página {n + 1} y no se pudo "
+            "quitar sin alterar el resto de la página. No publiques este archivo: publica esa página escaneada o "
+            "impresa como imagen.",
+        )
+    for _, z in planned.enlarge:
+        f = items[z][1]
+        report(
+            f,
+            "enlarge",
+            f"{_label(f)}: un trazo dibujado cruza el borde de la zona de la página {n + 1} y la parte tapada sigue en "
+            "el archivo; agranda la zona para cubrirlo entero.",
+        )
     return out

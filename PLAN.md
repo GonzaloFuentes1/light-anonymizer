@@ -340,8 +340,9 @@ permissive training data.
   paper (light, even background, sparse ink), a large curly stroke outside every line OCR read
   counts by itself. An image repeated at the same place on several pages is taken for a
   letterhead's emblem (never a signature by itself, and a lone stroke in it does not count) unless
-  something marks it as a signature: a keyword next to it, a signature line under or across it
-  (drawn or typed), or a person's name right under it. Then it is the same signature on every page
+  something marks it as a signature, in the page as it is shown: a keyword next to it, a signature
+  line under or across it (drawn or typed, shorter than 60 % of the page's width: a page-wide
+  header rule is not one), or a person's name right under it. Then it is the same signature on every page
   (certificates signed by the same official, initials on every sheet) and is looked at like an
   image placed once. In a table, the column under a
   "Firma" header is a zone down to the last row (rows must have cells under two or more
@@ -365,54 +366,71 @@ permissive training data.
 removes the *filled* paths a zone covers but keeps *stroked* ones: a signature drawn with a pen
 tool stayed in the file under the black box; and its option to remove every path a zone
 *touches* also removes page frames, cell shading and background bands. So stroked paths are
-handled apart, with the box of each one cut to the clip that shows it:
+handled apart. The rule is principle 1 (recall over precision): the stroke logic stays silent only
+when it is certain that a stroke is not under an applied zone or that it left the file; when a
+classification would be a guess, the export is blocked with a message that says what to do. A
+false block is acceptable, a silent leak is not.
 
-- A stroked path whose box lies inside an applied zone (within 1 pt of its edge) leaves the file.
-  Rectangles, straight horizontal or vertical rules and closed convex outlines (rings, ovals,
-  rounded frames: stamps, radio buttons) that cross a zone are page layout and stay. A pen stroke
-  (a curve, or a polyline that is not a grid) that crosses the edge of a signature zone or of a
-  zone drawn by the reviewer leaves whole when at least 60 % of its visible length lies inside the
-  zones; when most of it lies outside and it moves like handwriting (it turns back left or right,
-  or swings up and down steeply again and again; a chart's curve does neither) the export is
-  blocked: "un trazo dibujado cruza el borde de la zona…; agranda la zona para cubrirlo entero".
-  Any other stroke that is not page layout and has at least 80 % of its visible length under the
-  zones blocks the export with the same message (a zone of text data a hair short of a drawing).
-  Each stroke removed whole is recorded in the export result and in the audit report ("Trazos
-  dibujados quitados enteros"), since the page changes outside the zone.
-- Removal goes through MuPDF's content filter, whose callback only sees the box of each painted
-  path (grown by its stroke) in content order. A first pass records those calls and lines them up
-  with `page.get_drawings()`: same order, a fill with the same box, a stroke with the same box
-  grown evenly on every side (by half the line width, or by the width times any miter limit),
-  looked up through an index of box centers, so a page with thousands of paths the filter paints
-  and `get_drawings` does not list (pattern fills) is lined up in a fraction of a second; the
-  lining up gives up after 15 s (nothing is removed and the export is blocked). The second pass
-  drops only the calls matched to a planned path. The filter does not enter Type3 glyph
-  procedures, which every page using the font shares, nor the cells of patterns; each use of a
-  form is filtered as its own copy. `get_drawings` lists a pattern's cell under a clip with the
-  box of the filled shape, sometimes at the page's coordinates: those cells (unmatched paths under
-  a clip that matches an unexplained fill) are not paths of the page and are neither planned nor
-  reported. Afterwards the page's paths and text, and the paths, glyphs and images the filter
-  painted, must be exactly the expected ones; otherwise the page is put back as it was, nothing
-  is removed, and the leak check blocks the export ("…no se pudo quitar sin alterar el resto de la
-  página…"). A path that is also a clip (`W S`) is reported by the filter as a clip and never
-  dropped: under a zone it blocks the export with that message.
-- The leak check plans again over the exported file with the same rectangles and rules as the
-  redaction and blocks the export when a stroke that should have left (other than page layout,
-  such as the black boxes themselves) is still there, or when a zone must cover a whole stroke.
+- Each stroked path is judged by its box cut to the clip that shows it; a path clipped away
+  entirely, by where it is drawn (its data is still in the file). A path whose box lies inside an
+  applied zone (within 1 pt of its edge) leaves the file. Rectangles and straight horizontal or
+  vertical rules are page layout and stay, and so do closed convex outlines (rings, ovals, rounded
+  frames: stamps, frames) with less than half of their length under the zones. Any other curve or
+  polyline that crosses the edge of a signature zone or of a zone drawn by the reviewer leaves
+  whole when at least 60 % of its visible length lies under the zones, and blocks the export from
+  20 % ("un trazo dibujado cruza el borde de la zona…; agranda la zona para cubrirlo entero"),
+  chart curves included. Any other stroke that is not page layout with at least 80 % under the
+  zones blocks with the same message (a zone of text data a hair short of a drawing). Each stroke
+  removed whole is recorded in the export result and in the audit report ("Trazos dibujados
+  quitados enteros"), since the page changes outside the zone.
+- Nothing is exempted for being a pattern's cell or a glyph: `get_drawings` lists them as paths.
+  What the redaction cannot remove under a zone blocks (MuPDF removes a pattern fill or a glyph it
+  covers entirely, and with them what they paint).
+- Removal goes through MuPDF's content filter, whose callback only sees the box of what it paints,
+  one call per subpath, in content order, clips included. A first pass records the calls and lines
+  them up with `page.get_drawings(extended=True)`, which lists whole paths and clips in the same
+  order: a fill or a clip with the same box, a stroke with the same box grown evenly on every side
+  (by half the line width, or by the width times the miter limit, which is not listed: any even
+  growth fits), looked up through an index of box centers and sizes, never by scanning the page.
+  A clip without painting (`W n`) takes its clip entry; a shape filled or stroked with a pattern,
+  listed only as a clip with its box and its cell, takes that clip. The second pass drops only the
+  calls matched to a planned path, and the painted calls `get_drawings` does not list (a
+  pattern-painted shape) whose box lies inside a zone. A pattern-painted shape that touches a zone
+  without lying inside it blocks the export ("…un trazo o relleno con trama que no se puede revisar
+  ni quitar por partes…"). The filter does not enter Type3 glyph procedures, which every page
+  using the font shares, nor the cells of patterns; each use of a form is filtered as its own copy.
+  Afterwards the page's paths and text, and what the filter painted, must be exactly the expected
+  ones; otherwise the page is put back as it was, nothing is removed, and the leak check blocks the
+  export ("…no se pudo quitar sin alterar el resto de la página…"). A path that is also a clip
+  (`W S`) is never dropped: under a zone it blocks with that message.
+- The leak check plans again over the exported file (each page unrotated in memory, like in the
+  redaction) with the same rectangles and rules and blocks the export when a stroke that should
+  have left (other than page layout, such as the black boxes themselves) is still there, when a zone
+  must cover a whole stroke, or when a painted shape `get_drawings` does not list touches a zone.
+- Every page has one time budget of 15 s for the whole stage (listing, planning, lining up); past
+  it nothing is removed and the export is blocked ("…no terminó a tiempo…"). A page with 9 000
+  pattern fills and 9 000 squares on one center now exports in about 5 s.
 - The filter uses private PyMuPDF bindings: at startup `strokes.self_test()` removes a stroke drawn
-  by a form from one page and checks that the frame around it, the same form on another page and
-  a Type3 glyph drawn with a stroke stay; if not, the real engine refuses to start. PyMuPDF is
-  pinned below 1.29 (`pyproject.toml`).
+  by a form from one page and checks that the frame around it, the same form on another page and a
+  Type3 glyph drawn with a stroke inside the zone stay, and that the filter reports no glyph
+  procedure; a filter that edits shared forms in place or enters glyph procedures fails it, and the
+  real engine refuses to start. PyMuPDF is pinned below 1.29 (`pyproject.toml`).
 
-Found in two independent reviews (2026-10-05 and 06) with invented documents. The first version
+Found in three independent reviews (2026-10-05 and 06) with invented documents. The first version
 matched the filter's boxes loosely: it removed a frame 3 pt outside a zone, a filled panel
 around a signature and a table cell's shading under a highlighted name, could enter Type3 glyph
 procedures, and left strokes partly under a zone in the file silently. The second fixed that but
-lined calls up by scanning (a page with 3 000 pattern fills took about ten minutes, now about a
-second), blocked exports for rounded frames, ring stamps and chart curves crossing a signature
-zone, missed polylines with a high miter limit and pattern cells, left a stroke a hair past a text
-zone silently, and stopped looking at a signature image repeated on every page even with a "Firma"
-label next to it. Each case is a regression test (`tests/test_strokes.py`, `tests/test_signatures.py`).
+lined calls up by scanning (a page with 3 000 pattern fills took about ten minutes), blocked
+exports for rounded frames and ring stamps, missed polylines with a high miter limit, left a stroke
+a hair past a text zone silently, and stopped looking at a signature image repeated on every page.
+The third found that exempting pattern cells could hide a real signature (a signature clipped to
+a hatched box, in a form, or painted as a pattern's tile), that signature flourishes crossing a
+zone with less than 60 % inside stayed silently, that two copies of a stroke at the same place
+were mismatched, that a page-wide header rule anchored a repeated logotype, and that anchors
+ignored /Rotate. It also showed that the filter reports one call per subpath (a table shaded as one
+path of many rectangles, a signature drawn as several subpaths) and a stroke painted with a
+pattern only through its paint call. Each case is a regression test (`tests/test_strokes.py`,
+`tests/test_signatures.py`).
 
 **Results** (test set of 102 files, prototype baseline, 3 processes; before = the same engine
 without signatures):
@@ -844,9 +862,10 @@ the list still rules. Agreed?
   signature read by OCR as text (even unsure) with no keyword next to it, and a signature in an
   image repeated at the same place on every page with no keyword, signature line or name next to
   it, are missed.
-- A drawn stroke that crosses the edge of a signature zone or of a zone drawn by the reviewer,
-  with most of it outside and moving like handwriting, or any drawn stroke 80 % under a zone,
-  blocks the export until the zone is enlarged. A stroke mostly under a signature or drawn zone
+- A drawn curve that crosses the edge of a signature zone or of a zone drawn by the reviewer with
+  20 % to 60 % of it inside (a chart's curve too), any drawn stroke 80 % under a zone, and any
+  shape painted with a pattern (a hatched box) that crosses a zone block the export until the zone
+  is enlarged (false blocks are accepted rather than silent leaks). A stroke mostly under a signature or drawn zone
   is removed whole, also its part outside the zone (listed in the audit report). A stroke under a
   zone that cannot be removed without touching the rest of the page (a stroke that is also a
   clip, unusual content) also blocks the export.

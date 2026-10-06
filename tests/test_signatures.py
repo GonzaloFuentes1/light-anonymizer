@@ -889,3 +889,45 @@ def test_a_tightly_cropped_signature_next_to_a_label_is_found():
     zones = signatures.detect_raster(img, [label], lone=False, page_size=(1654, 2339))
     assert_signature_zones(zones)
     assert covered(zones, mask) >= 0.95
+
+
+def test_a_repeated_logotype_over_the_header_rule_is_not_a_signature(tmp_path, no_models):
+    # A cursive logotype in the letterhead of every page, with the page-wide header rule under it.
+    logo = _signature_png(width=360, height=120, seed=4)
+    doc = pymupdf.open()
+    xref = 0
+    for _ in range(3):
+        page = _text_page(doc)
+        box = pymupdf.Rect(72, 20, 192, 60)
+        xref = page.insert_image(box, xref=xref) if xref else page.insert_image(box, stream=logo)
+        page.draw_line((72, 66), (523, 66), color=(0.2, 0.2, 0.2), width=1)
+    doc.save(tmp_path / "membrete.pdf")
+    doc.close()
+    assert not [f for f in _analyze(tmp_path / "membrete.pdf").findings if f.type == "signature"]
+
+
+@pytest.mark.parametrize("anchor", ["label", "line"])
+def test_a_repeated_signature_on_rotated_pages(tmp_path, no_models, anchor):
+    # Landscape pages stored as portrait plus /Rotate 90: "under the image" is in the page as shown.
+    doc = pymupdf.open()
+    png = _signature_png()
+    xref = 0
+    for _ in range(3):
+        page = doc.new_page(width=595, height=842)
+        page.set_rotation(90)
+        to_page = page.derotation_matrix
+        for i in range(6):
+            page.insert_text(pymupdf.Point(72, 100 + 18 * i) * to_page, NEUTRAL, fontsize=10, rotate=90)
+        box = (pymupdf.Rect(560, 390, 710, 440) * to_page).normalize()
+        xref = page.insert_image(box, xref=xref, rotate=90) if xref else page.insert_image(box, stream=png, rotate=90)
+        if anchor == "line":
+            page.draw_line(
+                pymupdf.Point(540, 445) * to_page, pymupdf.Point(730, 445) * to_page, color=(0, 0, 0), width=0.8
+            )
+            page.insert_text(pymupdf.Point(590, 460) * to_page, "Juan Inventado Soto", fontsize=9, rotate=90)
+        else:
+            page.insert_text(pymupdf.Point(590, 460) * to_page, "Firma del responsable", fontsize=9, rotate=90)
+    doc.save(tmp_path / "girada.pdf")
+    doc.close()
+    found = [f for f in _analyze(tmp_path / "girada.pdf").findings if f.type == "signature"]
+    assert sorted(f.page for f in found) == [0, 1, 2]
