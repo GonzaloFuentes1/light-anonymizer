@@ -525,11 +525,14 @@ def test_letters_drawn_with_fill_and_stroke_are_removed_or_reported(tmp_path):
     assert result.exported, [leak.message for leak in result.leaks]
     with pymupdf.open(result.output_path) as doc:
         assert not [g for g in vectors.letters(doc[0]) if g.y1 < 200]
-    # A 1.5 pt stroke with miter joins would need a rectangle 15 pt beyond each letter: not covered,
-    # and the export is blocked instead of leaving the letters silently.
+    # A 1.5 pt stroke with miter joins would need a rectangle 15 pt beyond each letter: not covered by
+    # the letters' pass. Being stroked and inside the zone, they leave with the strokes instead
+    # (``strokes.remove``); never silently left in the file.
     path = outlined(tmp_path / "miter.pdf", 1.5, 0)
     _, result = export_zones(path, {"z1": zone}, tmp_path / "out_miter")
-    assert not result.exported and any("no se pudieron quitar" in leak.message for leak in result.leaks)
+    assert result.exported, [leak.message for leak in result.leaks]
+    with pymupdf.open(result.output_path) as doc:
+        assert not [g for g in vectors.letters(doc[0]) if g.y1 < 200]
 
 
 def test_joined_letter_rectangles_never_reach_into_a_kept_area():
