@@ -18,6 +18,8 @@ Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computado
 6. **Software libre.** El proyecto es AGPL-3.0; cada componente incluido tiene una licencia compatible con la AGPL y nada es de uso no comercial (ver [LICENSES.md](LICENSES.md)).
 7. **La revisión humana es obligatoria.** La aplicación nunca dice "documento limpio"; dice "revisión lista para confirmar".
 
+**Algunas páginas de un PDF pueden exportarse como imagen.** Cuando la censura de una página no puede asegurar que no quede nada dibujado bajo un rectángulo negro (una letra dibujada como trazo que el rectángulo corta, un trazo que cruza su borde, una trama o un degradado debajo), esa página no se bloquea: se exporta como una sola imagen de la página ya censurada (300 dpi), sin capa de texto, sin dibujos vectoriales y sin anotaciones. La columna "después" de la revisión ya la muestra así, y el informe de auditoría indica qué páginas se exportaron como imagen y por qué ("Páginas exportadas como imagen"). La exportación se sigue bloqueando cuando quedan datos legibles fuera de los rectángulos negros o quedan metadatos.
+
 ## Estructura del repositorio
 
 ```

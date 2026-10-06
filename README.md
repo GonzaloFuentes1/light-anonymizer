@@ -18,6 +18,8 @@ A desktop tool that anonymizes PDFs and images **locally**, built for Chilean pu
 6. **Free software.** The project is AGPL-3.0; every bundled component has an AGPL-compatible license and nothing is non-commercial (see [LICENSES.md](LICENSES.md)).
 7. **Human review is mandatory.** The app never says "clean document"; it says "review ready to confirm".
 
+**Some PDF pages may be exported as images.** When the redaction of a page cannot be certain that nothing drawn is left under a black box (a letter drawn as a path that a box cuts, a stroke crossing the edge of a box, a pattern or gradient under it), that page is not blocked: it is exported as a single image of the redacted page (300 dpi), with no text layer, vector content or annotations left. The review's "after" column already shows it that way, and the audit report lists those pages and the reason for each ("Páginas exportadas como imagen"). Exports are still blocked when data stays readable outside the black boxes or metadata remains.
+
 ## Repository layout
 
 ```

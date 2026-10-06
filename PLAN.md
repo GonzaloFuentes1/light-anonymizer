@@ -373,10 +373,11 @@ permissive training data.
 removes the *filled* paths a zone covers but keeps *stroked* ones: a signature drawn with a pen
 tool stayed in the file under the black box; and its option to remove every path a zone
 *touches* also removes page frames, cell shading and background bands. So stroked paths are
-handled apart. The rule is principle 1 (recall over precision): the stroke logic stays silent only
-when it is certain that a stroke is not under an applied zone or that it left the file; when a
-classification would be a guess, the export is blocked with a message that says what to do. A
-false block is acceptable, a silent leak is not.
+handled apart. The rule is principle 1 (recall over precision): a stroke is removed only when it
+is certain that it is under an applied zone and that removing it changes nothing else; whatever
+cannot be removed with certainty stays, and since 2026-10-06 (D14) the page is then exported as an
+image, which removes it for certain (before, the export was blocked). A silent leak is never
+acceptable.
 
 - Each stroked path is judged by its box cut to the clip that shows it; a path clipped away
   entirely, by where it is drawn (its data is still in the file). A path whose box lies inside an
@@ -384,15 +385,14 @@ false block is acceptable, a silent leak is not.
   vertical rules are page layout and stay, and so do closed convex outlines (rings, ovals, rounded
   frames: stamps, frames) with less than half of their length under the zones. Any other curve or
   polyline that crosses the edge of a signature zone or of a zone drawn by the reviewer leaves
-  whole when at least 60 % of its visible length lies under the zones, and blocks the export from
-  20 % ("un trazo dibujado cruza el borde de la zona…; agranda la zona para cubrirlo entero"),
-  chart curves included. Any other stroke that is not page layout with at least 80 % under the
-  zones blocks with the same message (a zone of text data a hair short of a drawing). Each stroke
-  removed whole is recorded in the export result and in the audit report ("Trazos dibujados
-  quitados enteros"), since the page changes outside the zone.
+  whole when at least 60 % of its visible length lies under the zones. Any other stroke that
+  crosses a zone stays cut by it, chart curves included, and the page is exported as an image
+  (D14; until 2026-10-06 it blocked the export from 20 % under a drawing zone and from 80 % under
+  any zone). Each stroke removed whole is recorded in the export result and in the audit report
+  ("Trazos dibujados quitados enteros"), since the page changes outside the zone.
 - Nothing is exempted for being a pattern's cell or a glyph: `get_drawings` lists them as paths.
-  What the redaction cannot remove under a zone blocks (MuPDF removes a pattern fill or a glyph it
-  covers entirely, and with them what they paint).
+  What the redaction cannot remove under a zone makes the page an image (MuPDF removes a pattern
+  fill or a glyph it covers entirely, and with them what they paint).
 - Removal goes through MuPDF's content filter, whose callback only sees the box of what it paints,
   one call per subpath, in content order, clips included. A first pass records the calls and lines
   them up with `page.get_drawings(extended=True)`, which lists whole paths and clips in the same
@@ -403,20 +403,19 @@ false block is acceptable, a silent leak is not.
   listed only as a clip with its box and its cell, takes that clip. The second pass drops only the
   calls matched to a planned path, and the painted calls `get_drawings` does not list (a
   pattern-painted shape) whose box lies inside a zone. A pattern-painted shape that touches a zone
-  without lying inside it blocks the export ("…un trazo o relleno con trama que no se puede revisar
-  ni quitar por partes…"). The filter does not enter Type3 glyph procedures, which every page
+  without lying inside it makes the page an image. The filter does not enter Type3 glyph procedures, which every page
   using the font shares, nor the cells of patterns; each use of a form is filtered as its own copy.
   Afterwards the page's paths and text, and what the filter painted, must be exactly the expected
-  ones; otherwise the page is put back as it was, nothing is removed, and the leak check blocks the
-  export ("…no se pudo quitar sin alterar el resto de la página…"). A path that is also a clip
-  (`W S`) is never dropped: under a zone it blocks with that message.
-- The leak check plans again over the exported file (each page unrotated in memory, like in the
-  redaction) with the same rectangles and rules and blocks the export when a stroke that should
-  have left (other than page layout, such as the black boxes themselves) is still there, when a zone
-  must cover a whole stroke, or when a painted shape `get_drawings` does not list touches a zone.
+  ones; otherwise the page is put back as it was and nothing is removed. A path that is also a clip
+  (`W S`) is never dropped. In both cases what stays under the zone makes the page an image (D14).
+  A form's bounding-box clip with the box of the frame it draws is not taken for a pattern's clip:
+  the frame's call goes to the frame (the review's parity test with a letterhead placed as a form
+  found it blocking the export).
+- After the redaction of the page, `leftovers.check` looks at what is left under the zones (D14);
+  the leak check of the output runs the same check again as a guard (`verify.vector_leaks`).
 - Every page has one time budget of 15 s for the whole stage (listing, planning, lining up); past
-  it nothing is removed and the export is blocked ("…no terminó a tiempo…"). A page with 9 000
-  pattern fills and 9 000 squares on one center now exports in about 5 s.
+  it nothing is removed and the page is exported as an image ("…no terminó a tiempo"). A page with
+  9 000 pattern fills and 9 000 squares on one center now exports in about 5 s.
 - The filter uses private PyMuPDF bindings: at startup `strokes.self_test()` removes a stroke drawn
   by a form from one page and checks that the frame around it, the same form on another page and a
   Type3 glyph drawn with a stroke inside the zone stay, and that the filter reports no glyph
@@ -497,6 +496,18 @@ Regardless of the PDF engine chosen (D1), the contract is the same:
   images are left uncompressed unless the file is saved with `deflate=True`; `apply_redactions`
   removes the filled paths a zone covers but not the stroked ones, which are removed apart
   (`strokes.py`, section 5.7).
+- **One per-page redaction** (`pdf.redact_page(doc, n, rects, *, keep, drawn) -> PageOutcome`), used
+  by the export (`pdf.redact`, every page, then the document cleanup and a full rewrite) and by the
+  review's "after" (`RealEngine.render_result`, one page of an in-memory copy, nothing written):
+  (1) the page is unrotated in memory; (2) `strokes.remove` takes out the stroked paths under the
+  zones; (3) `apply_page_zones`: the letters drawn as paths whose centre is in a zone get a
+  rectangle of their own (at most 1.5 pt beyond the zone, never into an area left visible) in a
+  first pass, then the zones; (4) `leftovers.check` (D14); (5) if anything is left, or the stroke
+  stage ran out of time, `rasterize` replaces the page by one image of itself; (6) the rotation
+  is put back and annotations, form fields and page keys are removed. The outcome (letters
+  covered, strokes removed whole, reasons, image) feeds the export result and the audit, and the
+  review's "after" gets the header `X-Page-As-Image` from it. Both callers take their zones,
+  areas left visible and drawing zones from the same findings (`real._pdf_zones`).
 
 ---
 
@@ -514,7 +525,11 @@ After exporting, the engine opens the output and goes over it:
 4. Under each redacted area, that no image with the original pixels remains under the fill.
 
 Anything that shows up is a **leak**: it is shown in red in the review, blocks the export of
-that file until the reviewer resolves it, and is recorded in the report. The app never says
+that file until the reviewer resolves it, and is recorded in the report. Since 2026-10-06 (D14)
+drawings left under a zone are not leaks: the page is exported as an image before the check, and
+the check only guards that it was (`verify.vector_leaks`). Blocks remain for what an image cannot
+fix: data still readable outside the black boxes (text layer, pixels of a zone not black) and
+metadata. The app never says
 "documento limpio" ("clean document"); it says "revisión lista para confirmar" ("review ready
 to confirm").
 
@@ -1076,6 +1091,71 @@ the list still rules. Agreed?
 
 ---
 
+**D14. Pages whose redaction is not certain.** The redaction removes letters drawn as paths,
+strokes and shapes under a zone only when it can do so with certainty (MuPDF removes a shape only
+when one rectangle covers all of it; the stroke filter only drops what it can match). Until now,
+anything left under a zone blocked the export with a message asking for a larger zone. The four
+reviews of D8 and of the signatures kept finding either false blocks (chart markers, rings,
+kept URLs next to a zone) or silent leaks (letters a 12 pt growth missed, a kept area that spared
+letters of an active zone).
+
+> **Decided (2026-10-06): "if unsure, that page is exported as an image".** Whenever, after the
+> page's redaction, anything drawn that is not page layout still intersects an applied zone, the
+> page is not blocked: it is rasterized.
+>
+> **Implemented (2026-10-06).** `anonymizer/engine/leftovers.py` and `pdf.redact_page` (section 6).
+> `leftovers.check(page, zones)` lists the page once (`get_drawings(extended=True)`, clips
+> included) and looks only at the drawings near a zone: page layout is a single straight line
+> stroked at most 3 pt wide and a rectangle, upright or tilted (frames, cells, bands, a tilted
+> stamp's border, the black boxes themselves), unless it lies whole inside a zone and is not black
+> (what such a line or rectangle hides under a zone is only where it goes on or ends); any
+> other path or clip whose outline passes inside a zone (a fill's edge, a stroke's painted width,
+> curves flattened, segments clipped exactly) is a leftover: letters a zone cuts ("letras o formas
+> dibujadas…"), strokes it did not remove ("un trazo dibujado bajo una zona no se pudo quitar con
+> certeza"), curved clips ("un trazado de recorte…"). With MuPDF's content filter it also finds the
+> painted paths `get_drawings` does not list (shapes filled or stroked with a pattern) touching a
+> zone, and smooth shadings (`sh`), whose area the filter does not report: a copy of the page with
+> everything else dropped is rendered inside the zones ("una trama o un degradado…"). A check over
+> 15 s, or a stroke stage over its budget, counts too ("…no terminó a tiempo"). The inside of a
+> filled shape that holds a zone whole, with no edge under it, hides nothing and is not a leftover.
+>
+> `pdf.rasterize(page)` renders the redacted page, black boxes included, at 300 dpi (the longest
+> side at most 6 000 px), and replaces the page's content and resources with that single image at
+> the same size, boxes and rotation; annotations, the transparency group and structure keys go
+> too. The encoding is measured per page: gray when every pixel is gray; PNG (Flate, lossless)
+> unless it is more than 1.5 times the JPEG at quality 90. Measured at 300 dpi on A4 (2480 × 3509):
+> a text page 363 kB PNG against 963 kB JPEG (PNG kept), text with a colour photo 1 233 kB against
+> 855 kB (PNG kept, ratio 1.44), a noisy scan 5 502 kB against 1 615 kB (JPEG); render and both
+> encodings take 0.1 to 3 s a page. The page's outcome is identical in the review's "after" and in
+> the export (the same function on the same page); the server's after route adds
+> `X-Page-As-Image: 1` and `X-Page-As-Image-Reason` for such a page, the export result lists it
+> (`ExportResult.rasterized_pages`) with its Spanish reason, and the audit report has it in the JSON
+> (`rasterized_pages`) and in a section "Páginas exportadas como imagen". The leak check then runs
+> on the output as usual; the pixel check covers the rasterized pages.
+>
+> With that net, the risky parts are conservative again: a letter gets a rectangle of its own only
+> when its centre is inside the zone, at most 1.5 pt beyond it (the old limit, 6 pt plus the
+> stroke's reach, reached 12 pt and removed real text lines 13 pt away); an area left visible
+> never spares a letter whose centre is in an active zone (two silent leaks of the last review);
+> chart markers drawn filled and outlined no longer block: beside a zone nothing happens, under it
+> the page becomes an image; and each page's shapes are listed once for all its zones (40 findings
+> on a page of 20 000 shapes took 108 s under the PDF lock; the whole export of that page now takes
+> 3.4 s with 40 findings, 3.1 s with one). The stroke stage
+> no longer plans "enlarge the zone" blocks, and `strokes.leaks` and `verify.glyph_leaks` are gone
+> (their cases are leftovers now).
+>
+> **Measured (2026-10-06).** Every adversarial experiment of the signature and D8 reviews (81
+> scripts, run again against this code through a harness that records each export and checks the
+> output file on its own: text inside the zones, `leftovers.check`, black pixels, changes outside
+> the zones): 342 exports or redactions, 154 kept vector, 188 exported as an image (134 for letters
+> or shapes, 23 for strokes, 31 for patterns, gradients or clips), none blocked, and none with data
+> left in the output. Over the test set (102 files) one page of 35 PDF pages was exported as an
+> image on the first run, a stamp drawn as a tilted rectangle around the signer's name; tilted
+> rectangles and slanted rules now count as layout, and no page is. A zone that touches a line of the
+> text layer still removes that line's characters whole (MuPDF removes every character its box
+> touches): a generous OCR zone at single spacing over drawn text removed the real text line below
+> it in the review's experiment, as before.
+
 ## 13. Risks
 
 | Risk | Mitigation |
@@ -1108,13 +1188,16 @@ the list still rules. Agreed?
   signature read by OCR as text (even unsure) with no keyword next to it, and a signature in an
   image repeated at the same place on every page with no keyword, signature line or name next to
   it, are missed.
-- A drawn curve that crosses the edge of a signature zone or of a zone drawn by the reviewer with
-  20 % to 60 % of it inside (a chart's curve too), any drawn stroke 80 % under a zone, and any
-  shape painted with a pattern (a hatched box) that crosses a zone block the export until the zone
-  is enlarged (false blocks are accepted rather than silent leaks). A stroke mostly under a signature or drawn zone
-  is removed whole, also its part outside the zone (listed in the audit report). A stroke under a
-  zone that cannot be removed without touching the rest of the page (a stroke that is also a
-  clip, unusual content) also blocks the export.
+- A PDF page where something drawn might stay under a zone is exported as a single image of the
+  redacted page (D14): a drawn curve or a stamp's ring that crosses the edge of a zone, a letter
+  drawn as a path that a zone cuts (an OCR box at single spacing that grazes the next line, a
+  letter outlined with a thick stroke), a shape painted with a pattern or a gradient under a zone,
+  a stroke that cannot be removed without touching the rest of the page, or a page too slow to
+  check. That page loses its text layer (it can no longer be searched or copied, and screen
+  readers cannot read it), is larger (about 0.4 MB for a text page, 1 to 2 MB with photos at
+  300 dpi), and its content outside the zones is a 300 dpi picture of what it was. The audit report
+  lists those pages and why. A stroke mostly under a signature or drawn zone is removed whole, also
+  its part outside the zone (listed in the audit report).
 - HEIC/HEIF photos (iPhone) are not supported: they must be converted to JPG first (D5).
 - Text drawn as paths (D8) is found when its letters are filled shapes. Two kinds are not: letters
   drawn as a single rectangle (l, I, a hyphen, a period: they look like table cells or bullets,
@@ -1122,7 +1205,7 @@ the list still rules. Agreed?
   as the SHX fonts of CAD drawings. On a page with almost no text layer both are still read, as
   that page is read whole by OCR. Letters drawn filled and outlined are removed when their stroke
   is thin (MuPDF needs the rectangle to cover the stroke too: up to ten times its width with miter
-  joins); with a thicker stroke they cannot be removed and the export is blocked with a leak.
+  joins) or when the stroke removal takes them; otherwise the page is exported as an image (D14).
   Shapes drawn only with strokes are left to the handling of strokes. When a zone is applied,
   MuPDF also removes the dots of i's and the periods of a neighbouring line that fall entirely
   inside it.
