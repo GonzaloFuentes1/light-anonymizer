@@ -93,6 +93,17 @@ def git_state() -> tuple[str | None, bool]:
     return commit, bool(status.strip())
 
 
+def changed_during_build(commit: str | None, dirty: bool) -> bool:
+    """Whether HEAD moved or the working copy changed since a clean build started."""
+    return not dirty and git_state() != (commit, False)
+
+
+def remove_previous_outputs(version: str) -> None:
+    """This version's zip, installers (release or test) and build record: they describe an older build."""
+    for path in [DIST / f"{NAME}-{version}-windows.zip", BUILD_INFO, *DIST.glob(f"{NAME}-{version}-setup*.exe")]:
+        path.unlink(missing_ok=True)
+
+
 def check_bundle(app_dir: Path) -> list[str]:
     """Development-only modules, forbidden or unexpected files and RUTs that ended up in the bundle."""
     problems = []
@@ -227,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--installer", action="store_true", help="also compile the installer (needs Inno Setup 6)")
     parser.add_argument("--iscc", help="with --installer: path of ISCC.exe (default: looked up)")
     args = parser.parse_args(argv)
+    if args.iscc and not args.installer:
+        print("--iscc has no effect without --installer: no installer will be compiled.", file=sys.stderr)
     if sys.platform != "win32":
         print("This script builds the Windows executable: run it on Windows.", file=sys.stderr)
         return 1
@@ -252,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
     started = time.perf_counter()
-    BUILD_INFO.unlink(missing_ok=True)  # it describes the previous build: gone until this one is complete
+    remove_previous_outputs(version)
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN"]
     command += ["--distpath", str(DIST), "--workpath", str(WORK), str(SPEC)]
     if subprocess.run(command, cwd=ROOT).returncode != 0:
@@ -267,6 +280,11 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         print("License texts missing:\n  " + "\n  ".join(problems), file=sys.stderr)
         return 1
+    # Nothing is read from the working copy after this point: a change made while PyInstaller ran
+    # may or may not be in the bundle, so such a build cannot vouch for its commit.
+    if changed_during_build(commit, dirty):
+        print("The working copy or HEAD changed during the build: it is marked as a test build.", file=sys.stderr)
+        dirty = True
     write_readme(app_dir, version, commit, dirty)
     problems = check_bundle(app_dir)
     if problems:
@@ -275,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
 
     archive = DIST / f"{NAME}-{version}-windows.zip"
     write_zip(app_dir, archive)
-    write_build_info(BUILD_INFO, version, commit, dirty, exe)
+    write_build_info(BUILD_INFO, version, commit, dirty, app_dir)
     mb = 1024 * 1024
     print(
         f"\nBuilt in {time.perf_counter() - started:.0f} s from {commit or 'no commit'}{' + changes' if dirty else ''}"

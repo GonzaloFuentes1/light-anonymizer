@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -93,7 +94,7 @@ def test_version_comes_from_the_build():
     setup = directives("Setup")
     assert setup["AppVersion"] == "{#AppVersion}"
     assert setup["VersionInfoVersion"] == "{#AppNumericVersion}"
-    assert setup["OutputBaseFilename"] == "LightAnonymizer-{#AppVersion}-setup"
+    assert setup["OutputBaseFilename"] == "LightAnonymizer-{#AppVersion}-setup{#OutputSuffix}"
     assert builder.installer_name("0.1.0") + ".exe" == "LightAnonymizer-0.1.0-setup.exe"
     statements = [line for line in SCRIPT.splitlines() if not line.lstrip().startswith(";")]
     assert not re.search(r"\b\d+\.\d+\.\d+\b", "\n".join(statements))  # no version written in the script
@@ -126,6 +127,8 @@ def test_upgrades_replace_the_libraries_and_never_delete_user_data(monkeypatch, 
     code = "\n".join(section("Code"))
     assert r"ExpandConstant('{localappdata}\Anonimizador')" in code
     assert "UninstallSilent" in code and "MB_DEFBUTTON2" in code and "= IDYES then" in code
+    # The working copies it deletes are the app's (server.SESSION_PREFIX), whatever the answer.
+    assert f"'{server.SESSION_PREFIX}*'" in code and "'anonimizador_export_*'" in code
 
 
 def test_running_app_blocks_install_and_uninstall():
@@ -145,11 +148,24 @@ def test_shortcuts():
 
 
 def test_test_builds_are_marked_not_for_distribution():
-    assert re.search(r'#ifdef TestBuild\s+#define TestMark "[^"]*no distribuir[^"]*"', SCRIPT)
+    block = re.search(r"#ifdef TestBuild(.*?)#else", SCRIPT, re.DOTALL).group(1)
+    assert re.search(r'#define TestMark "[^"]*no distribuir[^"]*"', block)
+    # Their file name says so too, the same in the script and in build_installer.py.
+    assert re.search(r'#define OutputSuffix "([^"]*)"', block).group(1) == builder.TEST_SUFFIX
+    test_name = builder.installer_name("0.1.0", test_build=True) + ".exe"
+    assert test_name == "LightAnonymizer-0.1.0-setup-PRUEBA-no-distribuir.exe"
     setup = directives("Setup")
-    for key in ("AppVerName", "UninstallDisplayName", "VersionInfoDescription"):
+    for key in ("AppVerName", "UninstallDisplayName", "VersionInfoDescription", "VersionInfoProductTextVersion"):
         assert "{#TestMark}" in setup[key]
     assert "NO LA DISTRIBUYA" in SCRIPT
+
+
+def test_one_repository_url_everywhere():
+    """The source-code address the installer shows is the one LEEME.txt and the About dialog give."""
+    from anonymizer import about
+
+    build_exe = (ROOT / "scripts" / "build_exe.py").read_text(encoding="utf-8")
+    assert defines()["Repository"] == re.search(r'REPOSITORY = "([^"]+)"', build_exe).group(1) == about.SOURCE_URL
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows mutexes")
@@ -199,7 +215,7 @@ def test_iscc_command_passes_the_build_values():
     assert f"/O{app_dir.parent}" in command and "/FLightAnonymizer-0.1.0-setup" in command
     assert not any(arg.startswith("/DTestBuild") for arg in command)
     test = builder.iscc_command(Path("ISCC.exe"), "0.1.0", app_dir, app_dir.parent, test_build=True)
-    assert "/DTestBuild=1" in test
+    assert "/DTestBuild=1" in test and "/FLightAnonymizer-0.1.0-setup-PRUEBA-no-distribuir" in test
 
 
 def test_find_iscc(monkeypatch, tmp_path):
@@ -231,16 +247,33 @@ def fake_build(tmp_path: Path, *, commit="a" * 40, dirty=False, version="0.1.0")
     for name in ("LEEME.txt", "LICENSE.txt", "LICENSES.md", "THIRD_PARTY_LICENSES/INDEX.txt"):
         (app / name).write_text(name, encoding="utf-8")
     info = app.parent / "LightAnonymizer-build.json"
-    builder.write_build_info(info, version, commit, dirty, app / "LightAnonymizer.exe")
+    builder.write_build_info(info, version, commit, dirty, app)
     return app, info
 
 
-def test_build_record_must_describe_the_folder(tmp_path):
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda app: (app / "LightAnonymizer.exe").write_bytes(b"MZ another build"),
+        lambda app: (app / "_internal" / "core.dll").write_bytes(b"another library"),
+        lambda app: (app / "LEEME.txt").write_text("otro texto", encoding="utf-8"),
+        lambda app: (app / "THIRD_PARTY_LICENSES" / "INDEX.txt").write_text("otro", encoding="utf-8"),
+        lambda app: (app / "_internal" / "added.dll").write_bytes(b"x"),
+        lambda app: (app / "_internal" / "core.dll").unlink(),
+        lambda app: (app / "_internal" / "core.dll").rename(app / "_internal" / "renamed.dll"),
+    ],
+    ids=["exe", "library", "leeme", "license-index", "added", "removed", "renamed"],
+)
+def test_build_record_vouches_for_every_file_of_the_folder(tmp_path, change):
     app, info = fake_build(tmp_path)
     record, problems = builder.read_build_info(info, app)
-    assert problems == [] and record["version"] == "0.1.0" and record["dirty"] is False
-    (app / "LightAnonymizer.exe").write_bytes(b"MZ another build")
-    assert any("is not the one" in p for p in builder.read_build_info(info, app)[1])
+    assert problems == [] and record["version"] == "0.1.0" and record["dirty"] is False and record["files"] == 6
+    change(app)
+    assert any("is not the build" in p for p in builder.read_build_info(info, app)[1])
+
+
+def test_build_record_must_exist_and_be_complete(tmp_path):
+    app, info = fake_build(tmp_path)
     (app / "LEEME.txt").unlink()
     assert any(p.endswith("LEEME.txt is missing") for p in builder.read_build_info(info, app)[1])
     info.write_text(json.dumps({"version": "0.1.0"}), encoding="utf-8")
@@ -262,23 +295,34 @@ def test_which_installers_are_test_builds():
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-def test_only_the_installer_sources_must_match_the_build_commit(tmp_path):
+def test_only_the_installer_sources_must_match_the_build_commit(tmp_path, monkeypatch):
+    # The developer's global or system git settings (signing, hooks, templates) must not matter.
+    empty = tmp_path / "empty.gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
     def git(*args):
-        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout
 
     git("init", "-q")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "commit.gpgsign", "false")
     for name in (*builder.INSTALLER_SOURCES, "README.md"):
-        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / name).write_text(name, encoding="utf-8")
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(name, encoding="utf-8")
     git("add", ".")
-    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "build")
+    git("commit", "-q", "-m", "build")
     commit = git("rev-parse", "HEAD").strip()
-    assert not builder.sources_changed(commit, tmp_path)
-    (tmp_path / "README.md").write_text("documentation changed after the build", encoding="utf-8")
-    assert not builder.sources_changed(commit, tmp_path)
-    (tmp_path / "packaging" / "installer.iss").write_text("changed", encoding="utf-8")
-    assert builder.sources_changed(commit, tmp_path)
-    assert builder.sources_changed("0" * 40, tmp_path)  # unknown commit
+    assert not builder.sources_changed(commit, repo)
+    (repo / "README.md").write_text("documentation changed after the build", encoding="utf-8")
+    assert not builder.sources_changed(commit, repo)
+    (repo / "packaging" / "installer.iss").write_text("changed", encoding="utf-8")
+    assert builder.sources_changed(commit, repo)
+    assert builder.sources_changed("0" * 40, repo)  # unknown commit
 
 
 def test_build_refuses_without_compiling(monkeypatch, tmp_path, capsys):
@@ -287,6 +331,84 @@ def test_build_refuses_without_compiling(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(builder.subprocess, "run", lambda *a, **k: pytest.fail("ISCC must not run"))
     assert builder.build(Path("ISCC.exe"), app, info) == 1
     assert "--allow-dirty" in capsys.readouterr().err
+
+
+class FakeIscc:
+    """Stands in for subprocess.run(ISCC ...): records the command and writes the named installer."""
+
+    def __init__(self, writes: bool = True):
+        self.commands, self.writes = [], writes
+
+    def __call__(self, command, **kwargs):
+        self.commands.append(command)
+        output = next(arg[2:] for arg in command if arg.startswith("/O"))
+        name = next(arg[2:] for arg in command if arg.startswith("/F"))
+        if self.writes:
+            Path(output, name + ".exe").write_bytes(b"MZ new installer")
+        return subprocess.CompletedProcess(command, 0)
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_build_passes_a_test_build_on_to_the_installer(monkeypatch, tmp_path, dirty):
+    app, info = fake_build(tmp_path, dirty=dirty)
+    monkeypatch.setattr(builder, "sources_changed", lambda commit: False)
+    iscc = FakeIscc()
+    monkeypatch.setattr(builder.subprocess, "run", iscc)
+    assert builder.build(Path("ISCC.exe"), app, info) == 0
+    (command,) = iscc.commands
+    assert ("/DTestBuild=1" in command) is dirty
+    name = builder.installer_name("0.1.0", test_build=dirty)
+    assert f"/F{name}" in command and (app.parent / f"{name}.exe").is_file()
+    assert name.endswith("-PRUEBA-no-distribuir") is dirty
+
+
+def test_a_stale_installer_never_passes_for_a_new_one(monkeypatch, tmp_path, capsys):
+    app, info = fake_build(tmp_path)
+    stale = app.parent / "LightAnonymizer-0.1.0-setup.exe"
+    stale.write_bytes(b"MZ installer of an earlier build")
+    monkeypatch.setattr(builder, "sources_changed", lambda commit: False)
+    monkeypatch.setattr(builder.subprocess, "run", FakeIscc(writes=False))  # "succeeds" but writes nothing
+    assert builder.build(Path("ISCC.exe"), app, info) == 1
+    assert not stale.exists() and "does not exist" in capsys.readouterr().err
+
+
+@pytest.fixture
+def build_exe(monkeypatch):
+    """scripts/build_exe.py as a module (its sibling scripts importable), never running PyInstaller."""
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    module = load("build_exe", ROOT / "scripts" / "build_exe.py")
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: pytest.fail("nothing may be built"))
+    return module
+
+
+def test_a_build_clears_what_earlier_builds_of_its_version_left(build_exe, monkeypatch, tmp_path):
+    monkeypatch.setattr(build_exe, "DIST", tmp_path)
+    monkeypatch.setattr(build_exe, "BUILD_INFO", tmp_path / "LightAnonymizer-build.json")
+    names = [
+        "LightAnonymizer-0.1.0-windows.zip",
+        "LightAnonymizer-0.1.0-setup.exe",
+        "LightAnonymizer-0.1.0-setup-PRUEBA-no-distribuir.exe",
+        "LightAnonymizer-build.json",
+        "LightAnonymizer-0.0.9-setup.exe",  # another version: kept
+        "LightAnonymizer-0.0.9-windows.zip",
+    ]
+    for name in names:
+        (tmp_path / name).write_bytes(b"old")
+    build_exe.remove_previous_outputs("0.1.0")
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(names[4:])
+
+
+def test_a_source_change_during_the_build_makes_it_a_test_build(build_exe, monkeypatch):
+    for now, expected in [(("c1", False), False), (("c2", False), True), (("c1", True), True), ((None, True), True)]:
+        monkeypatch.setattr(build_exe, "git_state", lambda now=now: now)
+        assert build_exe.changed_during_build("c1", dirty=False) is expected
+        assert build_exe.changed_during_build("c1", dirty=True) is False  # already a test build
+
+
+def test_iscc_without_installer_is_pointed_out(build_exe, monkeypatch, capsys):
+    monkeypatch.setattr(build_exe, "git_state", lambda: (None, True))  # stops before building
+    assert build_exe.main(["--iscc", r"C:\Inno\ISCC.exe"]) == 1
+    assert "--iscc has no effect without --installer" in capsys.readouterr().err
 
 
 def test_main_says_how_to_get_inno_setup(monkeypatch, capsys):
@@ -335,6 +457,23 @@ def uninstall_key(app_id: str):
         return None
 
 
+def plant_working_folder(name: str, pid: int | None) -> Path:
+    """A working folder in %TEMP% like the app's (server.Session), holding an invented document."""
+    folder = Path(tempfile.gettempdir()) / name
+    folder.mkdir()
+    if pid is not None:
+        (folder / "pid").write_text(str(pid), encoding="utf-8")
+    (folder / "informe_ficticio.pdf").write_bytes(b"%PDF-1.4 documento ficticio de prueba")
+    return folder
+
+
+def ended_pid() -> int:
+    """The PID of a process that has already ended."""
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    return process.pid
+
+
 @pytest.mark.skipif(ISCC is None, reason="needs Inno Setup 6 (ISCC.exe) on Windows")
 def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
     import winreg
@@ -343,14 +482,14 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
     test_defines = {
         "AppId": f"LightAnonymizerTest-{tag}",
         "AppMutex": f"LightAnonymizer.Test-{tag}",
-        "StartMenuName": f"Anonimizador prueba {tag}",
+        "StartMenuName": f"Anonimizador prueba {tag}",  # never the real "Anonimizador" shortcut
     }
 
     def compile_installer(app: Path, version: str, test_build: bool) -> Path:
         out = tmp_path / "out"
         command = builder.iscc_command(ISCC, version, app, out, test_build=test_build, extra=test_defines)
         subprocess.run(command, check=True, capture_output=True)
-        return out / f"{builder.installer_name(version)}.exe"
+        return out / f"{builder.installer_name(version, test_build)}.exe"
 
     old_app, _ = fake_build(tmp_path / "v1", version="0.0.1")
     (old_app / "_internal" / "dropped_in_v2.dll").write_bytes(b"old library")
@@ -358,14 +497,17 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
     (new_app / "_internal" / "added_in_v2.dll").write_bytes(b"new library")
     old_setup = compile_installer(old_app, "0.0.1", test_build=True)
     new_setup = compile_installer(new_app, "0.0.2", test_build=False)
-    assert old_setup.is_file() and new_setup.is_file()
+    assert old_setup.name.endswith("-PRUEBA-no-distribuir.exe") and old_setup.is_file()
+    assert new_setup.name == "LightAnonymizer-0.0.2-setup.exe" and new_setup.is_file()
 
     target = tmp_path / "Programs" / "LightAnonymizer"
-    start_menu = Path(os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs")
+    shortcut = Path(
+        os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs", f"{test_defines['StartMenuName']}.lnk"
+    )
 
-    def install(setup: Path) -> int:
-        args = [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS", f"/DIR={target}"]
-        return subprocess.run(args, timeout=120).returncode
+    def install(setup: Path, icons: bool = True) -> int:
+        args = [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", f"/DIR={target}"]
+        return subprocess.run(args + ([] if icons else ["/NOICONS"]), timeout=120).returncode
 
     def installed(value: str = "DisplayVersion") -> str | None:
         """What Settings > Apps shows about the test installation (None: not installed)."""
@@ -375,18 +517,24 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
         with key:
             return winreg.QueryValueEx(key, value)[0]
 
-    def uninstall() -> int:
+    def uninstall(wait: bool = True) -> int:
         args = [str(target / "unins000.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
-        return subprocess.run(args, timeout=120).returncode
+        code = subprocess.run(args, timeout=120).returncode
+        deadline = time.monotonic() + 60  # it ends in a copy of itself, which deletes the folder
+        while wait and code == 0 and target.exists() and time.monotonic() < deadline:
+            time.sleep(0.25)
+        return code
 
+    planted: list[Path] = []
     try:
+        # A test build, installed fresh with its Start-menu shortcut.
         assert install(old_setup) == 0
         assert (target / "_internal" / "dropped_in_v2.dll").is_file() and (target / "LEEME.txt").is_file()
         assert installed() == "0.0.1"
-        # A test build says so in the installed-apps list (and the accents survive the compiler).
+        # It says so in the installed-apps list (and the accents survive the compiler).
         assert installed("DisplayName") == "Anonimizador (compilación de prueba: no distribuir)"
         assert installed("Publisher") == "Gonzalo Fuentes"
-        assert not list(start_menu.glob(f"{test_defines['StartMenuName']}*"))  # /NOICONS
+        assert shortcut.is_file()
 
         with Mutex(test_defines["AppMutex"]):  # the app is running: Setup gives up, nothing changes
             assert install(new_setup) != 0
@@ -396,18 +544,32 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
         assert not (target / "_internal" / "dropped_in_v2.dll").exists()  # no old library left behind
         assert (target / "_internal" / "added_in_v2.dll").is_file()
         assert installed() == "0.0.2" and installed("DisplayName") == "Anonimizador"
+        assert shortcut.is_file()
 
         with Mutex(test_defines["AppMutex"]):  # running: the uninstaller gives up too
-            assert uninstall() != 0
+            assert uninstall(wait=False) != 0
         assert (target / "LightAnonymizer.exe").is_file() and installed() == "0.0.2"
 
+        # Working copies in %TEMP%: of an app that was killed (its process is gone, or no pid file),
+        # of one still running (this process), and an export folder.
+        prefix = f"{server.SESSION_PREFIX}installertest_{tag}_"
+        stale = plant_working_folder(prefix + "ended", ended_pid())
+        no_pid = plant_working_folder(prefix + "nopid", None)
+        alive = plant_working_folder(prefix + "alive", os.getpid())
+        export = plant_working_folder(f"anonimizador_export_installertest_{tag}", None)
+        planted += [stale, no_pid, alive, export]
+
         (target / "_internal" / "written_later.txt").write_text("x", encoding="utf-8")
-        assert uninstall() == 0  # it ends in a copy of itself, which deletes the folder: wait for it
-        deadline = time.monotonic() + 60
-        while target.exists() and time.monotonic() < deadline:
-            time.sleep(0.25)
-        assert not target.exists()
-        assert installed() is None
+        assert uninstall() == 0
+        assert not target.exists() and installed() is None and not shortcut.exists()
+        assert not stale.exists() and not no_pid.exists()  # deleted even when uninstalling silently
+        assert alive.exists() and (alive / "informe_ficticio.pdf").is_file()  # its app still runs
+        assert export.exists()  # kept while any session is alive: it may be that app's export
+
+        # A scripted install without the Start-menu shortcut.
+        assert install(new_setup, icons=False) == 0
+        assert installed() == "0.0.2" and not shortcut.exists()
+        assert uninstall() == 0 and not target.exists() and installed() is None
     finally:
         if (target / "unins000.exe").exists():
             uninstall()
@@ -415,3 +577,6 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
         if key is not None:
             key.Close()
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"{UNINSTALL_KEYS}\{test_defines['AppId']}_is1")
+        shortcut.unlink(missing_ok=True)
+        for folder in planted:
+            shutil.rmtree(folder, ignore_errors=True)

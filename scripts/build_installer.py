@@ -11,12 +11,14 @@ environment variable, the PATH and Inno Setup's usual folders.
 
 It compiles ``packaging/installer.iss`` from the one-folder build in ``dist/LightAnonymizer`` and the
 record build_exe.py writes next to it (``dist/LightAnonymizer-build.json``: version, commit, whether
-the working copy had changes, SHA-256 of the executable), after checking that the folder is that
-build and carries LEEME.txt and the license texts. The installer gets the build's version.
+the working copy had changes, and one SHA-256 over every file of the folder), after checking that
+the folder is still exactly that build and carries LEEME.txt and the license texts. The installer
+gets the build's version.
 
 The AGPL rules of build_exe.py apply: a build of uncommitted changes gives an installer marked
 "compilación de prueba: no distribuir" (a warning on the welcome page, the installed-apps entry,
-the file properties). The installer's own sources (``INSTALLER_SOURCES``: the script, the LICENSE it shows,
+the file properties) and named ``LightAnonymizer-<version>-setup-PRUEBA-no-distribuir.exe``, so it
+is never mistaken for a release. The installer's own sources (``INSTALLER_SOURCES``: the script, the LICENSE it shows,
 this file) are source code too: if they differ from those of the build's commit, committed or not,
 this refuses, unless ``--allow-dirty`` is given (a test installer, marked the same way). Other
 changes, such as documentation committed after the build, do not matter.
@@ -45,6 +47,9 @@ ISS = ROOT / "packaging" / "installer.iss"
 REQUIRED = (f"{NAME}.exe", "LEEME.txt", "LICENSE.txt", "LICENSES.md", "THIRD_PARTY_LICENSES/INDEX.txt")
 # What goes into the installer besides the build folder: they must be those of the build's commit.
 INSTALLER_SOURCES = ("packaging/installer.iss", "LICENSE", "scripts/build_installer.py")
+# End of a test build's installer file name (OutputSuffix in installer.iss).
+TEST_SUFFIX = "-PRUEBA-no-distribuir"
+RECORD_KEYS = ("version", "commit", "dirty", "folder_sha256", "files")
 
 
 def numeric_version(version: str) -> str:
@@ -62,9 +67,19 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def write_build_info(path: Path, version: str, commit: str | None, dirty: bool, exe: Path) -> None:
+def folder_digest(folder: Path) -> tuple[str, int]:
+    """(SHA-256 over the sorted (relative path, SHA-256 of the file) pairs of every file, file count)."""
+    entries = sorted((path.relative_to(folder).as_posix(), path) for path in folder.rglob("*") if path.is_file())
+    digest = hashlib.sha256()
+    for relative, path in entries:
+        digest.update(f"{relative}\0{sha256(path)}\n".encode())
+    return digest.hexdigest(), len(entries)
+
+
+def write_build_info(path: Path, version: str, commit: str | None, dirty: bool, app_dir: Path) -> None:
     """Called by build_exe.py: what the installer needs to know about the build it packs."""
-    info = {"version": version, "commit": commit, "dirty": dirty, "exe_sha256": sha256(exe)}
+    digest, files = folder_digest(app_dir)
+    info = {"version": version, "commit": commit, "dirty": dirty, "folder_sha256": digest, "files": files}
     path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
 
 
@@ -74,15 +89,17 @@ def read_build_info(path: Path, app_dir: Path) -> tuple[dict | None, list[str]]:
         return None, [f"{path} is missing: build the executable first (scripts/build_exe.py)"]
     try:
         info = json.loads(path.read_text(encoding="utf-8"))
-        missing = [key for key in ("version", "commit", "dirty", "exe_sha256") if key not in info]
+        missing = [key for key in RECORD_KEYS if key not in info]
     except (ValueError, TypeError) as exc:
         info, missing = None, [str(exc)]
     if info is None or missing:
         return None, [f"{path} is not a valid build record ({', '.join(missing)}): rebuild with scripts/build_exe.py"]
     problems = [f"{app_dir / name} is missing" for name in REQUIRED if not (app_dir / name).is_file()]
-    exe = app_dir / f"{NAME}.exe"
-    if exe.is_file() and sha256(exe) != info["exe_sha256"]:
-        problems.append(f"{exe} is not the one {path.name} describes: rebuild with scripts/build_exe.py")
+    if not problems and folder_digest(app_dir) != (info["folder_sha256"], info["files"]):
+        problems.append(
+            f"{app_dir} is not the build {path.name} describes (a file was added, removed or changed): "
+            "rebuild with scripts/build_exe.py"
+        )
     return info, problems
 
 
@@ -133,8 +150,9 @@ def find_iscc(explicit: str | None = None) -> Path | None:
     return None
 
 
-def installer_name(version: str) -> str:
-    return f"{NAME}-{version}-setup"
+def installer_name(version: str, test_build: bool = False) -> str:
+    """File name (without .exe) of the installer: a test build's says so."""
+    return f"{NAME}-{version}-setup" + (TEST_SUFFIX if test_build else "")
 
 
 def iscc_command(
@@ -147,7 +165,7 @@ def iscc_command(
     defines.update(extra or {})
     command = [str(iscc), "/Q"]
     command += [f"/D{key}={value}" for key, value in defines.items()]
-    command += [f"/O{output_dir}", f"/F{installer_name(version)}", str(ISS)]
+    command += [f"/O{output_dir}", f"/F{installer_name(version, test_build)}", str(ISS)]
     return command
 
 
@@ -162,7 +180,8 @@ def build(iscc: Path, app_dir: Path = APP_DIR, info_path: Path = BUILD_INFO, all
         print(refusal, file=sys.stderr)
         return 1
     version = info["version"]
-    target = app_dir.parent / f"{installer_name(version)}.exe"
+    target = app_dir.parent / f"{installer_name(version, test_build)}.exe"
+    target.unlink(missing_ok=True)  # a stale installer must not pass for the new one
     started = time.perf_counter()
     if subprocess.run(iscc_command(iscc, version, app_dir, app_dir.parent, test_build), cwd=ROOT).returncode != 0:
         print("Inno Setup could not compile the installer (see its messages above).", file=sys.stderr)
