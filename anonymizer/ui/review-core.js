@@ -96,8 +96,10 @@
     [file, gen, page, zoom, side, side === "after" ? version || "" : ""].join("|");
   const acceptResponse = (wanted, got) => !!wanted && wanted === got;
 
-  /** Jobs whose row left the margin are dropped; then: befores in view, edited afters, afters in
-   *  view, then the margin by distance to the center (before first). */
+  /** Jobs whose row is not in ``inMargin`` are dropped (``inMargin`` must include the rows in view).
+   *  Ranks: befores in view, edited afters, afters in view, then the rest of the margin. Within a
+   *  rank: rows in view first, then by distance to ``center``, then before before after, then
+   *  input order. */
   function planQueue(jobs, { inView, inMargin, center }) {
     const rank = (j) => {
       if (inView.has(j.row)) {
@@ -111,29 +113,34 @@
       .filter((j) => inMargin.has(j.row))
       .map((j, i) => ({ j, i, r: rank(j) }))
       .sort((a, b) => a.r - b.r
-        || (a.r === 3 ? Math.abs(a.j.row - center) - Math.abs(b.j.row - center) : 0)
+        || (inView.has(b.j.row) - inView.has(a.j.row))
+        || Math.abs(a.j.row - center) - Math.abs(b.j.row - center)
         || (a.j.side === b.j.side ? 0 : a.j.side === "before" ? -1 : 1)
         || a.i - b.i)
       .map((x) => x.j);
   }
 
   /** Rows whose images are released: every loaded row outside ``keep``, then the farthest from
-   *  the center until the total is within the budget. The center row is never released. */
-  function releasePlan(loaded, { keep, center, budgetMp = 150 }) {
-    const out = loaded.filter((l) => !keep.has(l.row)).map((l) => l.row);
-    let rest = loaded.filter((l) => keep.has(l.row));
+   *  the center until the total is within the budget. Never released: the ``center`` row and the
+   *  ``pinned`` rows (rows in view, the row being dragged), even over budget. */
+  function releasePlan(loaded, { keep, center, budgetMp = 150, pinned = new Set() }) {
+    const safe = (row) => row === center || pinned.has(row);
+    const out = loaded.filter((l) => !keep.has(l.row) && !safe(l.row)).map((l) => l.row);
+    let rest = loaded.filter((l) => keep.has(l.row) || safe(l.row));
     let total = rest.reduce((s, l) => s + l.mp, 0);
     rest = rest.sort((a, b) => Math.abs(b.row - center) - Math.abs(a.row - center));
     for (const l of rest) {
       if (total <= budgetMp) break;
-      if (l.row === center) continue;
+      if (safe(l.row)) continue;
       out.push(l.row);
       total -= l.mp;
     }
     return out;
   }
 
-  /** The row crossing the vertical center of the visible area (or the nearest one). */
+  /** The row crossing the vertical center of the visible area (or the nearest one). ``viewTop`` and
+   *  ``viewHeight`` describe the area BELOW the sticky header: viewTop = scrollTop + headerHeight,
+   *  viewHeight = viewport height - headerHeight. Same for anchorOf and scrollTopFor. */
   function currentRow(rows, viewTop, viewHeight) {
     const mid = viewTop + viewHeight / 2;
     let best = 0, dist = Infinity;
@@ -151,7 +158,8 @@
     return { row, fy: r && r.height ? clamp((mid - r.top) / r.height, 0, 1) : 0 };
   }
 
-  /** The scrollTop that puts the anchor back at the center of the visible area. */
+  /** The scrollTop that puts the anchor back at the center of the visible area (``viewHeight`` is
+   *  the viewport height minus the header, as above; the header is subtracted from the result). */
   function scrollTopFor(anchor, rows, viewHeight, headerHeight) {
     const r = rows[clamp(anchor.row, 0, rows.length - 1)];
     if (!r) return 0;
@@ -159,7 +167,9 @@
   }
 
   /** New scrollTop when the zone is closer than ``margin`` to the visible area's edges (below the
-   *  sticky header); the zone is first clamped to its own row. null when no scroll is needed. */
+   *  sticky header); the zone is first clamped to its own row. null when no scroll is needed.
+   *  Unlike the anchor functions, ``view.height`` is the FULL viewport height; the header is
+   *  subtracted here. */
   function scrollTarget(zone, row, view, margin = 48) {
     const y0 = clamp(zone.y, 0, row.height), y1 = clamp(zone.y + zone.h, 0, row.height);
     const top = row.top + y0, bottom = row.top + Math.max(y1, y0);

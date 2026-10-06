@@ -102,10 +102,29 @@ test("release: far rows first, then the farthest until under budget", () => {
   const keep = new Set([3, 4, 5, 6, 7, 8, 9, 10]);
   const out = C.releasePlan(loaded, { keep, center: 6, budgetMp: 150 });
   assert.deepEqual(out.slice(0, 3).sort((a, b) => a - b), [0, 1, 2]);
-  assert.ok(out.includes(10) || out.includes(3));
+  assert.deepEqual(out, [0, 1, 2, 10]);
   const kept = loaded.filter((l) => !out.includes(l.row)).reduce((s, l) => s + l.mp, 0);
   assert.ok(kept <= 150);
   assert.ok(!out.includes(6)); // never the row at the center
+});
+
+test("queue: edited afters and befores are ordered by view, then distance", () => {
+  const jobs = [
+    { row: 9, side: "after", edited: true }, { row: 4, side: "after", edited: true },
+    { row: 6, side: "after", edited: true }, { row: 5, side: "after", edited: true },
+    { row: 8, side: "before" }, { row: 6, side: "before" }, { row: 5, side: "before" },
+  ];
+  const out = C.planQueue(jobs, { inView: new Set([5, 6]), inMargin: new Set([4, 5, 6, 7, 8, 9]), center: 5 });
+  assert.deepEqual(out.map((j) => `${j.row}${j.side[0]}`), ["5b", "6b", "5a", "6a", "4a", "9a", "8b"]);
+});
+
+test("release: pinned rows and an over-budget center survive", () => {
+  assert.deepEqual(C.releasePlan([{ row: 3, mp: 162 }, { row: 4, mp: 10 }], { keep: new Set([3, 4]), center: 3 }), [4]);
+  const loaded = [0, 1, 2, 3].map((row) => ({ row, mp: 100 }));
+  const out = C.releasePlan(loaded, { keep: new Set([0, 1, 2, 3]), center: 1, pinned: new Set([0, 2]) });
+  assert.deepEqual(out, [3]);
+  const dropped = C.releasePlan(loaded, { keep: new Set([1]), center: 1, pinned: new Set([0]) });
+  assert.deepEqual(dropped.sort(), [2, 3]);
 });
 
 test("current row, anchors and scroll targets", () => {
