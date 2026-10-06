@@ -516,16 +516,15 @@ class RealEngine:
                 to_page = [pymupdf.Matrix(page.derotation_matrix) for page in doc]
                 to_view = [pymupdf.Matrix(page.rotation_matrix) for page in doc]
         zones, rects, keep, drawn = _pdf_zones(active, kept, to_page)
-        whole: list[tuple[int, pymupdf.Rect]] = []
-        applied = pdf.redact(file.path, str(staged), rects, keep, drawn, whole)
+        outcomes = pdf.redact(file.path, str(staged), rects, keep, drawn)
         out = []
-        for n, box in whole:
-            r = (box * to_view[n]).normalize()
-            out.append({"page": n, "polygon": [[round(x, 2), round(y, 2)] for x, y in rect_polygon(*r)]})
         grown = []
-        for n, groups in applied.items():
-            for (_, f), group in zip(zones.get(n, []), groups, strict=False):
-                extra = [(r * to_view[n]).normalize() for r in group[1:]]
+        for n, outcome in sorted(outcomes.items()):
+            for box in outcome.strokes_removed_whole:
+                r = (box * to_view[n]).normalize()
+                out.append({"page": n, "polygon": [[round(x, 2), round(y, 2)] for x, y in rect_polygon(*r)]})
+            for (_, f), letters in zip(zones.get(n, []), outcome.grown, strict=False):
+                extra = [(r * to_view[n]).normalize() for r in letters]
                 if extra:
                     rects_view = [[round(v, 2) for v in (r.x0, r.y0, r.x1, r.y1)] for r in extra]
                     grown.append({"finding_id": f.id, "page": n, "rects": rects_view})

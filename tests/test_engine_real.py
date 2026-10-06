@@ -522,13 +522,12 @@ def _skip_zones(monkeypatch, skip):
     original = pdf.redact
     boxes = [common.bbox_of(f.polygon) for f in skip]
 
-    def faulty(source, dest, rects_by_page, keep_by_page=None, drawn_by_page=None, whole_out=None):
+    def faulty(source, dest, rects_by_page, keep_by_page=None, drawn_by_page=None):
         kept = {
             n: [r for r in rects if not any(abs(r.x0 - b[0]) < 0.01 and abs(r.y0 - b[1]) < 0.01 for b in boxes)]
             for n, rects in rects_by_page.items()
         }
-        applied = original(source, dest, kept, keep_by_page, drawn_by_page, whole_out)
-        return {n: [[r] for r in rects_by_page.get(n, [])] for n in applied}  # one group per zone, as asked
+        return original(source, dest, kept, keep_by_page, drawn_by_page)
 
     monkeypatch.setattr(pdf, "redact", faulty)
 

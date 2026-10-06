@@ -658,6 +658,16 @@ def redaction_rects(doc: pymupdf.Document, polygons_by_page: dict[int, list]) ->
     return rects
 
 
+@dataclass
+class PageOutcome:
+    """What ``redact_page`` did to one page (boxes in unrotated page space)."""
+
+    # Per zone, in order: the rectangles of the letters drawn as paths it also took (D8).
+    grown: list[list[pymupdf.Rect]] = field(default_factory=list)
+    # The drawn extent of each stroke removed whole although part of it lay outside the zones.
+    strokes_removed_whole: list[pymupdf.Rect] = field(default_factory=list)
+
+
 def redact_page(
     doc: pymupdf.Document,
     n: int,
@@ -665,17 +675,18 @@ def redact_page(
     *,
     keep: list[pymupdf.Rect] | tuple = (),
     drawn: list[pymupdf.Rect] | tuple = (),
-    whole_out: list | None = None,
-) -> list[list[pymupdf.Rect]]:
-    """Removes ``rects`` from page ``n`` for real (text, vector paths and image pixels) and cleans
-    the page (annotations, form fields, page-level actions and metadata). The one per-page
-    redaction of the export and of the review's after. The caller holds ``PDF_LOCK``.
+) -> PageOutcome:
+    """Removes ``rects`` from page ``n`` of an open (in-memory) document for real (text, vector
+    paths and image pixels) and cleans the page (annotations, form fields, page-level actions and
+    metadata). The one per-page redaction of the export (``redact``) and of the review's after
+    (``RealEngine.render_result``): both get the same page. The caller holds ``PDF_LOCK``.
 
     Stroked paths under the zones are removed by ``strokes.remove`` (``drawn``: the zones whose
-    content may be a drawing; ``whole_out`` receives the box of each stroke removed whole), then
-    the zones are applied with the letters drawn as paths under them (``apply_page_zones``;
-    ``keep``: areas left visible on purpose). Returns what ``snap_rects`` took for each zone."""
+    content may be a drawing, where a pen stroke mostly under the zone goes whole), then the zones
+    are applied with the letters drawn as paths under them (``apply_page_zones``; ``keep``: areas
+    left visible on purpose)."""
     page = doc[n]
+    outcome = PageOutcome()
     # MuPDF misplaces redaction zones on a rotated page whose CropBox or MediaBox does not
     # start at (0, 0): the zone moved or fell off the page and left the data visible.
     # Unrotated, the page space is exactly the space of the zones; the rotation is put back.
@@ -685,10 +696,9 @@ def redact_page(
     if rects:
         whole: list = []
         strokes.remove(page, rects, list(drawn), whole)
-        if whole_out is not None:
-            whole_out += [pymupdf.Rect(box) for box in whole]
+        outcome.strokes_removed_whole = [pymupdf.Rect(box) for box in whole]
     # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
-    groups = apply_page_zones(page, rects, keep)
+    outcome.grown = [group[1:] for group in apply_page_zones(page, rects, keep)]
     if rotation:
         page.set_rotation(rotation)
     for annot in list(page.annots() or []):
@@ -697,7 +707,7 @@ def redact_page(
         page.delete_widget(widget)
     for key in _PAGE_KEYS:
         doc.xref_set_key(page.xref, key, "null")
-    return groups
+    return outcome
 
 
 def redact(
@@ -706,34 +716,25 @@ def redact(
     rects_by_page: dict[int, list[pymupdf.Rect]],
     keep_by_page: dict[int, list[pymupdf.Rect]] | None = None,
     drawn_by_page: dict[int, list[pymupdf.Rect]] | None = None,
-    whole_out: list[tuple[int, pymupdf.Rect]] | None = None,
-) -> dict[int, list[list[pymupdf.Rect]]]:
+) -> dict[int, PageOutcome]:
     """Writes ``dest``: ``source`` with the zones really removed (text, vector paths and image pixels)
     and the document cleaned (metadata, XMP, annotations, forms, attachments, layers, bookmarks,
-    JavaScript actions), fully rewritten. Stroked paths under the zones are removed by
-    ``strokes.remove``; ``drawn_by_page``: the zones whose content may be a drawing (signatures,
-    zones drawn by the reviewer), where a pen stroke mostly under the zone goes whole; ``whole_out``
-    receives (page, box in unrotated page space) of each stroke removed whole.
-
-    ``keep_by_page``: areas left visible on purpose (``snap_rects``). Returns, per page, the
-    rectangles applied for each zone of ``rects_by_page``, in the same order (``apply_page_zones``)."""
-    applied: dict[int, list[list[pymupdf.Rect]]] = {}
+    JavaScript actions), fully rewritten. Every page goes through ``redact_page``;
+    ``keep_by_page`` and ``drawn_by_page`` are its ``keep`` and ``drawn``. Returns each page's
+    ``PageOutcome``."""
+    outcomes: dict[int, PageOutcome] = {}
     with PDF_LOCK:
         doc = pymupdf.open(source, filetype="pdf")
         try:
             reveal_layers(doc)
             for n in range(doc.page_count):
-                whole: list = []
-                applied[n] = redact_page(
+                outcomes[n] = redact_page(
                     doc,
                     n,
                     rects_by_page.get(n, []),
                     keep=(keep_by_page or {}).get(n, ()),
                     drawn=(drawn_by_page or {}).get(n, ()),
-                    whole_out=whole,
                 )
-                if whole_out is not None:
-                    whole_out += [(n, box) for box in whole]
             for name in list(doc.embfile_names()):
                 doc.embfile_del(name)
             doc.set_toc([])
@@ -744,4 +745,4 @@ def redact(
             doc.save(dest, garbage=4, deflate=True, clean=True)
         finally:
             doc.close()
-    return applied
+    return outcomes
