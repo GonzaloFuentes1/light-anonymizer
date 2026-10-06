@@ -99,7 +99,8 @@
       <h2 class="sr-only" id="s3-title" tabindex="-1">Revisar</h2>
       <div class="review-empty" id="review-empty" hidden>
         <h3>Todavía no hay archivos listos para revisar</h3>
-        <p class="fmeta">Cuando un archivo termine de procesarse aparecerá aquí.</p>
+        <p class="rv-status" id="review-empty-status" role="status" hidden></p>
+        <p class="fmeta" id="review-empty-hint">Cuando un archivo termine de procesarse aparecerá aquí.</p>
         <div class="row"><button type="button" class="btn" data-go="1">Elegir archivos</button><button type="button" class="btn primary" data-go="2">Ver el procesamiento</button></div>
       </div>
       <div class="review" id="review">
@@ -135,8 +136,6 @@
               <div class="row" id="vactions"><button type="button" class="btn primary" id="b-confirm">Confirmar este archivo</button></div>
             </div>
           </div>
-          <!-- removed in Task 12: placeholders so init() in app.js does not crash on the old ids -->
-          <button type="button" id="b-prev" hidden></button><button type="button" id="b-next" hidden></button><div id="pageinner" hidden></div>
         </section>
 
         <aside class="col col-find" aria-label="Hallazgos">

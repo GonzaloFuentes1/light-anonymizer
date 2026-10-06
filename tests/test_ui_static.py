@@ -105,11 +105,29 @@ def test_js_syntax(name):
                 "No censurar",
                 "sin censurar",
                 "Las fotos HEIC (por ejemplo de iPhone) todavía no se pueden abrir.",
+                "Dibujando · Esc para salir",
+                "Cargando…",
+                "Actualizando…",
+                "No se pudo mostrar el resultado de esta página",
+                "Reintentar",
+                "Ver página",
+                "Cargando el archivo…",
+                "Esta página se exportará como imagen",
             ],
         ),
         (
             "app.css",
-            [".zone.suggested", ".detect", ".license", "td .warntxt", "--draw:", "--draw-ink:", "--draw-edge:", ".prow", ".vp-head"],
+            [
+                ".zone.suggested",
+                ".detect",
+                ".license",
+                "td .warntxt",
+                "--draw:",
+                "--draw-ink:",
+                "--draw-edge:",
+                ".prow",
+                ".vp-head",
+            ],
         ),
     ],
 )
@@ -128,3 +146,31 @@ def test_the_source_url_comes_from_the_api():
     # The UI may not hardcode external addresses (the CSP blocks them anyway): GET /api/about serves it.
     for name in ("index.html", "app.js"):
         assert "github" not in read(name).lower()
+
+
+def test_old_viewer_is_gone():
+    """The single-page viewer, its thumbnails and the "Ver como quedará" overlay left with the scrolling review."""
+    html = read("index.html")
+    for s in ('id="thumbs"', 'id="rfiles"', 'id="pagebox"', "Ver como quedará"):
+        assert s not in html, f"index.html still has {s!r}"
+    js = read("app.js")
+    for s in (
+        "renderThumbs",
+        "thumbCache",
+        "setPage(",
+        "rv.result",
+        "rv.page",
+        "pagebox",
+        "pageinner",
+        "setView",
+        "lastImageKey",
+        "scaleNow",
+    ):
+        assert s not in js, f"app.js still has {s!r}"
+
+
+def test_page_leak_button_label_contains_its_text():
+    """A voice user says what they see: the accessible name of "Ver página" starts with those words."""
+    js = read("app.js")
+    assert '"aria-label": `Ver página ${l.page + 1}`' in js
+    assert "Ver la página" not in js

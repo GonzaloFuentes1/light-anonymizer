@@ -373,6 +373,7 @@ class RealEngine:
                     pdf.reveal_layers(doc)
                     pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
                     size, samples = (pix.width, pix.height), bytes(pix.samples)
+                    pix = None  # released before the PNG encoding
             return _png("RGB", size, samples)
         from PIL import Image, ImageOps
 
@@ -420,6 +421,7 @@ class RealEngine:
                     )
                     pix = doc[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
                     size, samples = (pix.width, pix.height), bytes(pix.samples)
+                    pix = None  # released before the PNG encoding
             if info is not None:
                 info.update(as_image=outcome.rasterized, reason=outcome.reason)
             return _png("RGB", size, samples)

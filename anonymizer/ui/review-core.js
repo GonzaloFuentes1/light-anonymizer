@@ -238,10 +238,62 @@
 
   const isLongScroll = (from, to, viewHeight) => Math.abs(to - from) > 2 * viewHeight;
 
+  /** The pan that brings a zone (``{ x, w }``, display pixels of its page) into the visible part of
+   *  the column when it is closer than ``margin`` to its sides or outside them: the zone, clamped to
+   *  its page, is centered. null when the page fits its column or nothing would move. */
+  function panTarget(zone, rowWidth, colWidth, pan, margin = 48) {
+    const extra = overflow(rowWidth, colWidth);
+    if (!extra) return null;
+    const x0 = clamp(zone.x, 0, rowWidth), x1 = Math.max(x0, clamp(zone.x + zone.w, 0, rowWidth));
+    const left = clamp(pan, 0, 1) * extra;
+    if (x0 >= left + margin && x1 <= left + colWidth - margin) return null;
+    const next = panFor((x0 + x1) / 2 / rowWidth, rowWidth, colWidth, pan);
+    return Math.abs(next - pan) < 1e-6 ? null : next;
+  }
+
+  /** Label placement of the zones of one page (``items``: ``{ id, r, text }``, display pixels):
+   *  "top", "below", or "none" when the label would cover another zone or label (it then shows on
+   *  hover). A label never leaves the page: one that would go above its top goes below. The selected
+   *  zone is placed first and always shows its label. */
+  function placeLabels(items, { sel, pageHeight, labelH = 16, labelWidth = (t) => 10 + t.length * 6.2 }) {
+    const placed = [];
+    const out = new Map();
+    const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    const order = [...items].sort((a, b) => (b.id === sel) - (a.id === sel) || a.r.y - b.r.y || a.r.x - b.r.x);
+    for (const it of order) {
+      const w = labelWidth(it.text);
+      const above = { x: it.r.x - 2, y: it.r.y - labelH - 2, w, h: labelH };
+      const below = { x: it.r.x - 2, y: it.r.y + it.r.h + 2, w, h: labelH };
+      const inside = { top: above.y >= 0, below: below.y + labelH <= pageHeight };
+      const free = (cand) => !placed.some((p) => overlaps(cand, p)) && !items.some((o) => o !== it && overlaps(cand, o.r));
+      let where = "none";
+      if (it.id === sel) where = inside.top || !inside.below ? "top" : "below";
+      else if (inside.top && free(above)) where = "top";
+      else if (inside.below && free(below)) where = "below";
+      if (where !== "none") placed.push(where === "top" ? above : below);
+      out.set(it.id, where);
+    }
+    return out;
+  }
+
+  /** The rectangle dragged between two points (page units) as the polygon sent to the API. */
+  function rectPolygon(a, b) {
+    const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([x, y]) => [round2(x), round2(y)]);
+  }
+
+  /** Per page, the zones that will be censored (its row label says "k zonas"). */
+  function zoneCounts(findings, pageCount) {
+    const out = new Array(pageCount).fill(0);
+    for (const f of findings || []) if (isActive(f) && f.page >= 0 && f.page < pageCount) out[f.page] += 1;
+    return out;
+  }
+
   const ReviewCore = {
     isActive, pageVersions, afterChange, columns, fitScales, effectiveScale, nextZoom, displaySize, innerTransform,
     overflow, panShift, panCenter, panFor, zoneRect, pointToPage, requestZoom, imageKey, acceptResponse,
     planQueue, releasePlan, rowsWithin, admits, currentRow, anchorOf, scrollTopFor, scrollTarget, isLongScroll,
+    panTarget, placeLabels, rectPolygon, zoneCounts,
   };
   if (typeof module === "object" && module.exports) module.exports = ReviewCore;
   else root.ReviewCore = ReviewCore;

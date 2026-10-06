@@ -212,3 +212,48 @@ test("after change: an out-of-date image updates, an undone edit is current, a c
   assert.equal(C.afterChange({ shown: null, busy: false, was: "v1", now: "v2" }), null);
   assert.equal(C.afterChange({ shown: null, busy: true, was: undefined, now: "v2" }), "load");
 });
+
+test("labels stay inside the page: top, else below, else none; the selected one always shows", () => {
+  const width = () => 40;
+  const it = (id, x, y, w = 30, h = 10) => ({ id, r: { x, y, w, h }, text: "RUT" });
+  // Room above: top.
+  let out = C.placeLabels([it("a", 10, 50)], { sel: null, pageHeight: 200, labelWidth: width });
+  assert.equal(out.get("a"), "top");
+  // At the top of the page the label would leave it: below.
+  out = C.placeLabels([it("a", 10, 5)], { sel: null, pageHeight: 200, labelWidth: width });
+  assert.equal(out.get("a"), "below");
+  // The selected zone at the top of the page also goes below, not out of the page.
+  out = C.placeLabels([it("a", 10, 5)], { sel: "a", pageHeight: 200, labelWidth: width });
+  assert.equal(out.get("a"), "below");
+  // Below is taken by another zone: none (shown on hover).
+  out = C.placeLabels([it("a", 10, 5), it("b", 10, 20)], { sel: null, pageHeight: 200, labelWidth: width });
+  assert.equal(out.get("a"), "none");
+  // A label below must stay inside the page too.
+  out = C.placeLabels([it("a", 10, 2, 30, 190)], { sel: null, pageHeight: 200, labelWidth: width });
+  assert.equal(out.get("a"), "none");
+  // The selected zone wins the place, the other one gives way.
+  out = C.placeLabels([it("a", 10, 50), it("b", 12, 36)], { sel: "a", pageHeight: 200, labelWidth: width });
+  assert.equal(out.get("a"), "top");
+  assert.notEqual(out.get("b"), "top");
+});
+
+test("pan target: only when the zone is near or outside the visible part of the column", () => {
+  // Page 1000 px wide in a 400 px column: 600 px of overflow; pan 0 shows 0-400.
+  assert.equal(C.panTarget({ x: 100, w: 50 }, 1000, 400, 0), null); // inside
+  assert.equal(C.panTarget({ x: 100, w: 50 }, 300, 400, 0), null); // the page fits its column
+  const p = C.panTarget({ x: 700, w: 50 }, 1000, 400, 0); // outside on the right: centered
+  assert.ok(Math.abs(p * 600 + 200 - 725) < 0.01);
+  assert.equal(C.panTarget({ x: 2000, w: 50 }, 1000, 400, 0), 1); // off the page: its nearest edge
+  assert.equal(C.panTarget({ x: 5, w: 20 }, 1000, 400, 0), null); // already as far as it goes
+  assert.equal(C.panTarget({ x: 370, w: 20 }, 1000, 400, 0) > 0, true); // within the margin of the edge
+});
+
+test("a drawn rectangle becomes a polygon in page units, rounded to 0.01, any drag direction", () => {
+  assert.deepEqual(C.rectPolygon({ x: 30.456, y: 40.001 }, { x: 10.004, y: 20.5 }),
+    [[10, 20.5], [30.46, 20.5], [30.46, 40], [10, 40]]);
+});
+
+test("zones per page: only the findings that will be censored", () => {
+  const list = [f("a", 0), f("b", 0, "removed"), f("c", 1, "suggested"), f("d", 1, "added"), f("e", 5)];
+  assert.deepEqual(C.zoneCounts(list, 3), [1, 1, 0]);
+});

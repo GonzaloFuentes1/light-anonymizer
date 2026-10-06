@@ -548,6 +548,16 @@ Phase 2 in detail, with a mockup first for your approval. In short:
   changed and the result of the leak check. The JSON follows the contract used by the test
   bench evaluator, so the app can be evaluated as-is.
 
+The review screen is one continuous vertical scroll of every page, in rows, with the original
+("Antes") on the left and the result as it will be exported ("Después") on the right (stacked
+under it when a column is narrower than 420 px). The "after" is rendered by the engine with the
+export's own redaction (`render_result`), served by
+`GET /api/files/{id}/pages/{n}.png?redacted=true`; it answers 409 `not_ready` while the file is
+being processed. Only the rows near the viewport hold images, and an edit refreshes only the
+"after" of the page it touches. "Mostrar el después" (V) shows or hides the "after" column. Spec:
+`docs/superpowers/specs/2026-10-02-review-scroll-before-after-design.md`; the measured timings
+are in its section 7.
+
 ### 8.1 Choosing what to search for, and how long it takes
 
 Implemented (2026-10-01). Before processing, the user chooses which groups of detections run
@@ -1068,7 +1078,7 @@ adopt this as the rule, or do you prefer to redact every URL?
 > layer or read by OCR (`pdf.data_in_urls`, `real.settle_optional`); copies of an optional URL
 > found elsewhere stay optional. Optional findings start in the new status `suggested` (shown,
 > not applied): their own group in the review list ("Otros enlaces (sin censurar)"), a dashed
-> outline on the page, and "Ver como quedará" does not black them out. The reviewer censors them
+> outline on the page, and "Mostrar el después" does not black them out. The reviewer censors them
 > one by one ("Censurar" / "No censurar", logged as `applied` / `skipped`, no reason needed) or
 > all at once (`POST /api/files/{id}/findings/apply-optional`); any change reopens a confirmed
 > file. On export a suggestion that was not applied stays visible like a censure removed by the

@@ -232,7 +232,14 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .cell .fail { position: absolute; inset: 0; display: grid; grid-template-rows: minmax(0, 1fr); justify-content: center; padding: 8px; background: var(--surface); color: var(--ink); }
 .cell .fail-msg { align-self: center; position: sticky; top: calc(var(--head, 0px) + 12px); bottom: 12px; z-index: 5; display: grid; gap: 8px; padding: 10px 12px; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
 .viewport.stacked .cell .fail { top: 24px; } /* the caption (18 px) and the gap (6 px) stay visible */
-.viewport.drawing .cell.before .pbox { cursor: crosshair; touch-action: none; outline: 3px dashed var(--draw-edge); outline-offset: 3px; }
+/* "Esta página se exportará como imagen": stays at the bottom of the visible part of the after while its image
+   shows; the negative top margin keeps it from adding height to a short page. */
+.cell .cnote { grid-area: page; align-self: end; justify-self: center; position: sticky; bottom: 12px; margin: -80px 0 12px; max-width: calc(100% - 12px); z-index: 4; display: grid; padding: 4px 10px; border-radius: 8px; background: var(--warn-soft); color: var(--ink); border: 1px solid var(--warn); font-size: 12px; line-height: 16px; text-align: center; box-shadow: 0 2px 8px rgba(0, 0, 0, .2); }
+.cell .cnote span { color: var(--muted); font-size: 11px; }
+.viewport.drawing .cell.before .pbox { cursor: crosshair; touch-action: none; }
+/* Inside the page edge, on the zone layer (above the image): the cell clips across (the pan), so an outline
+   outside a page that fills its column would be cut. */
+.viewport.drawing .cell.before .zones { outline: 3px dashed var(--draw-edge); outline-offset: -3px; }
 .viewport.drawing .zone { pointer-events: none; }
 .viewport.no-after .cell.after, .viewport.no-after .vp-head .h-after { display: none; }
 .viewport.no-after .prow, .viewport.no-after .vp-head { grid-template-columns: var(--cw); }
