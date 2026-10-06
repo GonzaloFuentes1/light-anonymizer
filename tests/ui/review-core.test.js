@@ -66,6 +66,45 @@ test("display size and zone rectangles follow the rotation", () => {
   assert.deepEqual(C.pointToPage(-50, 9999, 1, 0, page), { x: 0, y: 100 }); // clamped
 });
 
+test("the page layer's rotation transform agrees with zoneRect", () => {
+  const page = { width: 200, height: 100 }, s = 2, W = 400, H = 200;
+  const b = { x: 10, y: 20, w: 30, h: 40 };
+  assert.equal(C.innerTransform(0, W, H), "none");
+  for (const rot of [0, 90, 180, 270]) {
+    // CSS applies "translate(tx, ty) rotate(deg)" right to left, around the layer's top-left corner.
+    const m = /^translate\(([\d.]+)(?:px)?, ([\d.]+)(?:px)?\) rotate\((\d+)deg\)$/.exec(C.innerTransform(rot, W, H));
+    const [tx, ty, deg] = m ? m.slice(1).map(Number) : [0, 0, 0];
+    const cos = Math.round(Math.cos((deg * Math.PI) / 180)), sin = Math.round(Math.sin((deg * Math.PI) / 180));
+    const map = ([x, y]) => [cos * x - sin * y + tx, sin * x + cos * y + ty];
+    const [p, q] = [[b.x * s, b.y * s], [(b.x + b.w) * s, (b.y + b.h) * s]].map(map);
+    const shown = { x: Math.min(p[0], q[0]), y: Math.min(p[1], q[1]), w: Math.abs(p[0] - q[0]), h: Math.abs(p[1] - q[1]) };
+    assert.deepEqual(shown, C.zoneRect(b, s, rot, page), `rot ${rot}`);
+  }
+});
+
+test("pan: one shared fraction, a shift per row, the center kept across a zoom", () => {
+  assert.equal(C.overflow(1000, 400), 600);
+  assert.equal(C.overflow(400.2, 400), 0); // rounding noise at fit is not an overflow
+  assert.equal(C.panShift(0, 1000, 400), 0);
+  assert.equal(C.panShift(1, 1000, 400), -600);
+  assert.equal(C.panShift(0.5, 300, 400), 0); // fits its column: not shifted
+  assert.equal(C.panCenter(0.7, 300, 400), 0.5);
+  assert.equal(C.panCenter(0, 1000, 400), 0.2);
+  const fx = C.panCenter(0.25, 800, 400); // (0.25 * 400 + 200) / 800
+  assert.equal(fx, 0.375);
+  const pan = C.panFor(fx, 1600, 400); // the same point after zooming 2x
+  assert.ok(Math.abs(pan * 1200 + 200 - fx * 1600) < 1e-9);
+  assert.equal(C.panFor(0.01, 1600, 400), 0); // clamped to the edges
+  assert.equal(C.panFor(0.99, 1600, 400), 1);
+  assert.equal(C.panFor(0.5, 300, 400, 0.7), 0.7); // a row that fits keeps the current pan
+});
+
+test("zoom keeps the effective scale within 0.05-8", () => {
+  assert.ok(Math.abs(C.nextZoom(1, 1.2, 0.5) - 1.2) < 1e-12);
+  assert.equal(C.nextZoom(15, 1.2, 0.5), 16);
+  assert.equal(C.nextZoom(0.11, 1 / 1.2, 0.5), 0.1);
+});
+
 test("request zoom: dpr, 9000 px cap, rounding", () => {
   const a4 = { width: 595, height: 842 };
   assert.equal(C.requestZoom(1, 1.25, a4), 1.25);

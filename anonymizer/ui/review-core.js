@@ -54,10 +54,40 @@
   }
 
   const effectiveScale = (fit, zoom) => clamp(fit * zoom, 0.05, 8);
+  /** The zoom factor times ``k``, kept so the effective scale of a page with this ``fit`` stays in 0.05–8. */
+  const nextZoom = (zoom, k, fit) => clamp(zoom * k, 0.05 / fit, 8 / fit);
 
   function displaySize(page, scale, rot) {
     const w = page.width * scale, h = page.height * scale;
     return turned(rot) ? { w: h, h: w } : { w, h };
+  }
+
+  /** The CSS transform of a cell's page layer (unrotated, W × H display pixels, origin at its top-left
+   *  corner) for a view rotation. zoneRect and pointToPage follow the same transforms. */
+  function innerTransform(rot, W, H) {
+    switch (rot) {
+      case 90: return `translate(${H}px, 0) rotate(90deg)`;
+      case 180: return `translate(${W}px, ${H}px) rotate(180deg)`;
+      case 270: return `translate(0, ${W}px) rotate(270deg)`;
+      default: return "none";
+    }
+  }
+
+  /** How much wider than its column a row's page is (0 when it fits, ignoring rounding noise). */
+  const overflow = (rowWidth, colWidth) => (rowWidth - colWidth > 0.5 ? rowWidth - colWidth : 0);
+  /** The horizontal shift of a row's page in its column. ``pan`` is shared by every row: 0 shows the
+   *  left edge of each page, 1 its right edge. A page that fits its column is not shifted. */
+  const panShift = (pan, rowWidth, colWidth) => -clamp(pan, 0, 1) * overflow(rowWidth, colWidth) || 0;
+  /** The center of the visible part of a row, as a fraction of its page width (0.5 when it fits). */
+  function panCenter(pan, rowWidth, colWidth) {
+    const extra = overflow(rowWidth, colWidth);
+    return extra ? (clamp(pan, 0, 1) * extra + colWidth / 2) / rowWidth : 0.5;
+  }
+  /** The pan that puts ``fx`` (a fraction of the row's page width) at the center of its column;
+   *  ``fallback`` when the row fits, since any pan then shows all of it. */
+  function panFor(fx, rowWidth, colWidth, fallback = 0) {
+    const extra = overflow(rowWidth, colWidth);
+    return extra ? clamp((fx * rowWidth - colWidth / 2) / extra, 0, 1) : fallback;
   }
 
   /** A view-space box to display pixels in its cell, with the cell's rotation transform
@@ -183,9 +213,9 @@
   const isLongScroll = (from, to, viewHeight) => Math.abs(to - from) > 2 * viewHeight;
 
   const ReviewCore = {
-    isActive, pageVersions, columns, fitScales, effectiveScale, displaySize, zoneRect, pointToPage,
-    requestZoom, imageKey, acceptResponse, planQueue, releasePlan, currentRow, anchorOf, scrollTopFor,
-    scrollTarget, isLongScroll,
+    isActive, pageVersions, columns, fitScales, effectiveScale, nextZoom, displaySize, innerTransform,
+    overflow, panShift, panCenter, panFor, zoneRect, pointToPage, requestZoom, imageKey, acceptResponse,
+    planQueue, releasePlan, currentRow, anchorOf, scrollTopFor, scrollTarget, isLongScroll,
   };
   if (typeof module === "object" && module.exports) module.exports = ReviewCore;
   else root.ReviewCore = ReviewCore;

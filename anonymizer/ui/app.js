@@ -260,6 +260,7 @@
       rows: [], // one per page of the open file (see buildRows)
       versions: [], // per page: hash of its active findings (ReviewCore.pageVersions)
       pan: 0, // shared horizontal offset, as a fraction of the overflow
+      layout: { colWidth: 0, widest: 0, stacked: false }, // the last relayout (display pixels)
     },
     exp: { dest: "", results: new Map(), busy: false, last: null },
   };
@@ -299,13 +300,14 @@
   // Navigation between the four steps
   // ---------------------------------------------------------------------------------------------
   function go(n, { focus = true } = {}) {
+    if (S.screen === 3 && n !== 3) rememberView(); // a hidden viewport loses its scroll position
     S.screen = n;
     $$(".screen").forEach((s) => s.classList.toggle("on", s.dataset.screen === String(n)));
     if (n !== 3) { setDraw(false); }
     renderSteps();
     if (n === 3) {
       renderReview(); // loads nothing when a file is open: the rows and the anchor stay
-      relayout();
+      requestAnimationFrame(() => { if (S.screen === 3) relayout(); });
     }
     if (n === 4) enterExport();
     schedulePoll();
@@ -1085,16 +1087,16 @@
   }
 
   // Stubs of the scrolling viewer, each replaced by the task that builds that part.
-  function buildRows() {} // replaced in Task 9
-  function relayout() {} // replaced in Task 9
-  function anchorNow() { return null; } // replaced in Task 9
-  function restoreAnchor() {} // replaced in Task 9
   function stopObserver() {} // replaced in Task 10
   function clearQueue() {} // replaced in Task 10
   function releaseRow() {} // replaced in Task 10
+  function scheduleLoads() {} // replaced in Task 10
+  function scheduleImageRefresh() {} // replaced in Task 10
   function refreshVersions() {} // replaced in Task 11
   function renderZonesAll() {} // replaced in Task 12
   function revealFinding() {} // replaced in Task 12
+  function rowLabel(i) { return `Página ${i + 1} de ${S.rv.file.pages.length}`; } // replaced in Task 12
+  function scrollToY(y) { $("#viewport").scrollTop = y; } // replaced in Task 12
 
   function focusViewport() { $("#viewport").focus({ preventScroll: true }); }
 
@@ -1106,6 +1108,8 @@
     for (const row of S.rv.rows) releaseRow(row, { all: true });
     S.rv.rows = [];
     $("#rows").replaceChildren();
+    $("#hpan").hidden = true;
+    pendingView = null;
   }
 
   /** The open file can no longer be reviewed (processed again, removed, failed): forget it. */
@@ -1212,10 +1216,7 @@
     }
     if (S.screen === 3) renderReview();
     if (anchor) restoreAnchor(anchor); // the page list changed: back to the same page, clamped
-    else if (!keep) {
-      if (rv.sel) revealFinding(rv.sel, { instant: true });
-      else $("#viewport").scrollTop = 0;
-    }
+    else if (!keep) showStart();
     // Unless the reviewer moved the focus elsewhere meanwhile.
     const active = document.activeElement;
     if (focus && S.screen === 3 && (!active || active === document.body || active.id === "rv-file")) focusViewport();
@@ -1323,183 +1324,211 @@
     box.replaceChildren(...parts);
   }
 
-  // --- thumbnails (real page renders, loaded lazily, two at a time) ---
-  const thumbCache = new Map(); // "fileId:page" -> object URL
-  const thumbQueue = [];
-  let thumbRunning = 0;
-  let thumbObserver = null;
-  function clearThumbCache(fileId) {
-    for (const [k, url] of thumbCache) {
-      if (k.startsWith(`${fileId}:`)) { URL.revokeObjectURL(url); thumbCache.delete(k); }
-    }
-  }
-  function pumpThumbs() {
-    while (thumbRunning < 2 && thumbQueue.length) {
-      const job = thumbQueue.shift();
-      thumbRunning += 1;
-      apiBlobUrl(job.path)
-        .then((url) => {
-          thumbCache.set(job.key, url);
-          const img = document.querySelector(`img[data-thumb="${CSS.escape(job.key)}"]`);
-          if (img) img.src = url;
-        })
-        .catch(() => { /* the main viewer reports page errors */ })
-        .finally(() => { thumbRunning -= 1; pumpThumbs(); });
-    }
-  }
-  function requestThumb(img) {
-    const key = img.dataset.thumb;
-    if (thumbCache.has(key)) { img.src = thumbCache.get(key); return; }
-    if (thumbQueue.some((j) => j.key === key)) return;
-    thumbQueue.push({ key, path: img.dataset.path });
-    pumpThumbs();
-  }
+  // --- rows, geometry and the shared horizontal pan (spec 6.1, 6.2) ---
+  const COL_GAP = 24; // between the before and after columns (--gap)
+  // Applied by the next relayout that can measure the viewport: { anchor } saved on leaving Revisar
+  // or by restoreAnchor while it was hidden, or { start: true } for a file that loaded meanwhile.
+  let pendingView = null;
 
-  function renderThumbs() {
+  /** One row per page: the before cell (image, zone layer), the after cell and the label. The
+   *  images arrive later (Task 10); until then each cell reserves its size and says "Cargando…". */
+  function buildRows() {
     const rv = S.rv;
-    const file = rv.file;
-    const box = $("#thumbs");
-    if (thumbObserver) thumbObserver.disconnect();
-    thumbQueue.length = 0;
-    const width = Math.max(80, box.clientWidth - 28 || 170);
-    const dpr = window.devicePixelRatio || 1;
-    const counts = new Map();
-    for (const f of rvFindings()) if (isApplied(f)) counts.set(f.page, (counts.get(f.page) || 0) + 1);
-    thumbObserver = "IntersectionObserver" in window
-      ? new IntersectionObserver((entries) => {
-        for (const e of entries) if (e.isIntersecting) { requestThumb(e.target); thumbObserver.unobserve(e.target); }
-      }, { root: $(".col-files"), rootMargin: "300px" })
-      : null;
-    keepFocus(box, () => {
-      box.replaceChildren(
-        ...(file.pages || []).map((p, i) => {
-          const zoom = Math.max(0.02, Math.round(((width * dpr) / (p.width || 1)) * 100) / 100);
-          const key = `${file.id}:${i}`;
-          const n = counts.get(i) || 0;
-          const img = h("img", {
-            alt: "",
-            dataset: { thumb: key, path: `/api/files/${enc(file.id)}/pages/${i}.png?zoom=${zoom}` },
-            style: { aspectRatio: `${p.width} / ${p.height}` },
-          });
-          const btn = h("button", {
-            type: "button",
-            class: "thumb",
-            dataset: { fk: `th:${i}` },
-            "aria-current": i === rv.page ? "true" : null,
-            "aria-label": `Página ${i + 1}, ${plural(n, "zona", "zonas")}`,
-            onclick: () => setPage(i),
-          }, img, h("span", { class: "pn", "aria-hidden": "true", text: String(i + 1) }), h("b", { "aria-hidden": "true", text: String(n) }));
-          if (thumbCache.has(key)) img.src = thumbCache.get(key);
-          else if (thumbObserver) thumbObserver.observe(img);
-          else requestThumb(img);
-          return btn;
-        }),
-      );
+    const pages = (rv.file && rv.file.pages) || [];
+    const n = pages.length;
+    const cell = (side, i) => {
+      const before = side === "before";
+      const img = h("img", { alt: `Página ${i + 1} de ${n}, ${before ? "original" : "como quedará"}` });
+      const inner = h("div", { class: "pinner" }, img);
+      const zones = before ? h("div", { class: "zones" }) : null; // not rotated: zones are in display pixels
+      const box = h("div", { class: "pbox" }, inner, zones);
+      const state = h("div", { class: "cstate", text: "Cargando…" });
+      const el = h("div", { class: `cell ${side}` },
+        h("span", { class: "cap", "aria-hidden": "true", text: before ? "Antes" : "Después: como quedará" }), box, state);
+      const parts = { cell: el, box, inner, img, state, key: "", url: null, mp: 0 };
+      return before ? { ...parts, zones } : { ...parts, version: null, failed: false };
+    };
+    rv.rows = pages.map((page, i) => {
+      const before = cell("before", i), after = cell("after", i);
+      const label = h("div", { class: "plabel", text: rowLabel(i) });
+      const el = h("div", { class: "prow", role: "group", "aria-label": `Página ${i + 1} de ${n}`, dataset: { row: String(i) } },
+        before.cell, after.cell, label);
+      return { i, page, el, label, fit: 1, scale: 1, w: 0, h: 0, before, after };
     });
+    $("#rows").replaceChildren(...rv.rows.map((row) => row.el));
+    relayout({ keepAnchor: false });
   }
 
-  function setPage(i) {
-    const rv = S.rv;
-    if (!rv.file) return;
-    const n = (rv.file.pages || []).length;
-    if (!n) return;
-    i = clamp(i, 0, n - 1);
-    if (i === rv.page) return;
-    rv.page = i;
-    $("#viewport").scrollTo({ top: 0, left: 0 });
-    renderThumbs();
-    layoutPage();
-    renderFindings();
-  }
-
-  // --- viewer geometry ---
-  function currentPage() {
-    const rv = S.rv;
-    return rv.file && rv.file.pages ? rv.file.pages[rv.page] || null : null;
-  }
-  function fitScale() {
-    const p = currentPage();
-    if (!p) return 1;
-    const vp = $("#viewport");
-    const avail = Math.max(200, vp.clientWidth - 56);
-    const w = S.rv.rot % 180 ? p.height : p.width;
-    const cap = p.unit === "pt" ? 1.6 : 1;
-    return clamp(avail / (w || 1), 0.05, cap);
-  }
-  const scaleNow = () => S.rv.scale ?? fitScale();
-
-  function layoutPage() {
-    const rv = S.rv;
-    const p = currentPage();
-    const box = $("#pagebox"), inner = $("#pageinner"), img = $("#pageimg");
-    if (!p) {
-      box.hidden = true;
-      $("#pageno").textContent = "";
-      return;
+  /** Columns, scales and reserved sizes from the viewport width, zoom and rotation. Keeps the
+   *  anchor: the point at the center of the visible area stays there (its page, its relative y in
+   *  that row and its x in that page). Runs on resize, V, rotation, zoom and when Revisar shows. */
+  function relayout({ keepAnchor = true } = {}) {
+    const rv = S.rv, vp = $("#viewport");
+    if (!rv.file || !rv.rows.length || !vp.clientWidth) return;
+    const pending = pendingView;
+    pendingView = null;
+    const anchor = pending ? pending.anchor || null : keepAnchor ? anchorNow() : null;
+    const rowsStyle = getComputedStyle($("#rows"));
+    const pad = parseFloat(rowsStyle.paddingLeft) + parseFloat(rowsStyle.paddingRight);
+    const layout = ReviewCore.columns({ areaWidth: vp.clientWidth - pad, gap: COL_GAP, after: rv.after });
+    vp.classList.toggle("no-after", !rv.after);
+    vp.classList.toggle("stacked", layout.stacked);
+    const fits = ReviewCore.fitScales(rv.rows.map((row) => row.page), { colWidth: layout.colWidth, rot: rv.rot });
+    let widest = 0;
+    rv.rows.forEach((row, i) => {
+      row.fit = fits[i];
+      row.scale = ReviewCore.effectiveScale(row.fit, rv.zoom);
+      const size = ReviewCore.displaySize(row.page, row.scale, rv.rot);
+      row.w = size.w;
+      row.h = size.h;
+      widest = Math.max(widest, row.w);
+      sizeCell(row.before, row);
+      sizeCell(row.after, row);
+    });
+    rv.layout = { colWidth: layout.colWidth, widest, stacked: layout.stacked };
+    vp.style.setProperty("--cw", `${Math.max(1, Math.min(layout.colWidth, widest))}px`);
+    vp.style.setProperty("--gap", `${COL_GAP}px`);
+    if (anchor && anchor.fx != null) {
+      const row = rv.rows[clamp(anchor.row, 0, rv.rows.length - 1)];
+      rv.pan = ReviewCore.panFor(anchor.fx, row.w, layout.colWidth, rv.pan);
     }
-    box.hidden = false;
-    const s = scaleNow();
-    const W = p.width * s, H = p.height * s;
-    Object.assign(inner.style, { width: `${W}px`, height: `${H}px` });
-    Object.assign(img.style, { width: `${W}px`, height: `${H}px` });
-    const rotated = rv.rot % 180 !== 0;
-    Object.assign(box.style, { width: `${rotated ? H : W}px`, height: `${rotated ? W : H}px` });
-    const t = {
-      0: "none",
-      90: `translate(${H}px, 0) rotate(90deg)`,
-      180: `translate(${W}px, ${H}px) rotate(180deg)`,
-      270: `translate(0, ${W}px) rotate(270deg)`,
-    }[rv.rot];
-    inner.style.transform = t;
-    inner.classList.toggle("drawing", rv.draw);
-    inner.classList.toggle("result", rv.result);
-    img.alt = `Página ${rv.page + 1} de ${rv.file.name}`;
-    $("#b-zfit").textContent = `${Math.round(s * 100)} %`;
-    $("#b-zfit").setAttribute("aria-label", `Zoom ${Math.round(s * 100)} %. Ajustar al ancho`);
-    $("#pageno").textContent = `· ${rv.page + 1} de ${rv.file.pages.length}`;
-    $("#b-draw").setAttribute("aria-pressed", String(rv.draw));
-    $("#b-view").setAttribute("aria-pressed", String(rv.result));
-    renderZones();
-    loadPageImage();
+    updatePan();
+    if (anchor) restoreAnchor(anchor);
+    else if (pending && pending.start) showStart();
+    updateZoomButton();
+    updatePageField();
+    renderZonesAll();
+    scheduleLoads();
   }
 
-  let lastImageKey = "";
-  let imageTimer = null;
-  let imageSeq = 0;
-  let imageUrl = null;
-  function loadPageImage() {
+  /** One cell of a row: the box at the shown (rotated) size; inside it the page layer and its image at
+   *  the unrotated size, turned by the view rotation. */
+  function sizeCell(side, row) {
+    const W = row.page.width * row.scale, H = row.page.height * row.scale;
+    Object.assign(side.box.style, { width: `${row.w}px`, height: `${row.h}px` });
+    Object.assign(side.inner.style, { width: `${W}px`, height: `${H}px`, transform: ReviewCore.innerTransform(S.rv.rot, W, H) });
+    Object.assign(side.img.style, { width: `${W}px`, height: `${H}px` });
+  }
+
+  let panWheelOn = false;
+  /** The shared scrollbar under the columns shows when the widest page is wider than its column. */
+  function updatePan() {
+    const { colWidth, widest } = S.rv.layout;
+    const bar = $("#hpan");
+    bar.hidden = !ReviewCore.overflow(widest, colWidth);
+    if (!bar.hidden) $("#hpan-inner").style.width = `${(bar.clientWidth * widest) / colWidth}px`;
+    // Only while there is something to pan: a non-passive wheel listener keeps the browser from
+    // scrolling the pages off the main thread.
+    if (panWheelOn === bar.hidden) {
+      panWheelOn = !bar.hidden;
+      $("#viewport")[panWheelOn ? "addEventListener" : "removeEventListener"]("wheel", panWheel, { passive: false });
+    }
+    setPan(S.rv.pan);
+  }
+
+  let panBarLeft = 0; // where setPan put the scrollbar: its own scroll event is not a move by the reviewer
+  /** Shifts both cells of every row by the same fraction of their overflow, so the before and the
+   *  after show the same region; no image is requested again. */
+  function setPan(fraction, { moveBar = true } = {}) {
     const rv = S.rv;
-    const p = currentPage();
-    if (!p) return;
-    const dpr = window.devicePixelRatio || 1;
-    let zoom = scaleNow() * dpr;
-    const maxSide = 9000;
-    zoom = Math.min(zoom, maxSide / Math.max(p.width, p.height, 1));
-    zoom = Math.max(0.02, Math.round(zoom * 100) / 100);
-    const key = `${rv.file.id}:${rv.page}:${zoom}`;
-    if (key === lastImageKey) return;
-    if (!lastImageKey.startsWith(`${rv.file.id}:${rv.page}:`)) $("#pageimg").removeAttribute("src");
-    lastImageKey = key;
-    clearTimeout(imageTimer);
-    const seq = ++imageSeq;
-    const path = `/api/files/${enc(rv.file.id)}/pages/${rv.page}.png?zoom=${zoom}`;
-    imageTimer = setTimeout(async () => {
-      const loading = $("#page-loading");
-      loading.hidden = false;
-      try {
-        const url = await apiBlobUrl(path);
-        if (seq !== imageSeq) { URL.revokeObjectURL(url); return; }
-        const img = $("#pageimg");
-        const old = imageUrl;
-        imageUrl = url;
-        img.src = url;
-        if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
-      } catch (err) {
-        if (seq === imageSeq) { lastImageKey = ""; showError(err); }
-      } finally {
-        if (seq === imageSeq) loading.hidden = true;
+    rv.pan = clamp(Number(fraction) || 0, 0, 1);
+    for (const row of rv.rows) {
+      const over = ReviewCore.overflow(row.w, rv.layout.colWidth) > 0;
+      const shift = ReviewCore.panShift(rv.pan, row.w, rv.layout.colWidth);
+      for (const side of [row.before, row.after]) {
+        side.box.style.justifySelf = over ? "start" : ""; // an overflowing page starts at the column's left edge
+        side.box.style.transform = shift ? `translateX(${shift}px)` : "";
       }
-    }, 120);
+    }
+    const bar = $("#hpan");
+    if (moveBar && !bar.hidden) bar.scrollLeft = rv.pan * (bar.scrollWidth - bar.clientWidth);
+    panBarLeft = bar.scrollLeft;
+  }
+
+  /** Shift+wheel and horizontal trackpad gestures over the pages move the shared pan. */
+  function panWheel(e) {
+    const bar = $("#hpan");
+    if (e.ctrlKey || bar.hidden) return;
+    let dx = e.deltaX, dy = e.deltaY;
+    if (!dx && e.shiftKey) { dx = dy; dy = 0; }
+    if (Math.abs(dx) <= Math.abs(dy)) return; // mostly vertical: the browser scrolls the pages
+    const unit = e.deltaMode === 1 ? 16 : 1;
+    const vp = $("#viewport");
+    e.preventDefault();
+    bar.scrollLeft += dx * (e.deltaMode === 2 ? vp.clientWidth : unit);
+    if (dy) vp.scrollTop += dy * (e.deltaMode === 2 ? vp.clientHeight : unit); // the vertical part still scrolls
+  }
+
+  // Positions in the viewport's scroll coordinates. The visible area is below the sticky header.
+  const headerHeight = () => $("#vp-head").offsetHeight; // 0 when stacked (hidden)
+  const visibleHeight = () => Math.max(0, $("#viewport").clientHeight - headerHeight());
+  /** Top and height of each row in the viewport's scroll coordinates. */
+  function rowMetrics() {
+    const rows = S.rv.rows, box = $("#rows");
+    const base = rows.length && rows[0].el.offsetParent === box ? box.offsetTop : 0; // the viewport is positioned
+    return rows.map((row) => ({ top: base + row.el.offsetTop, height: row.el.offsetHeight }));
+  }
+  /** The row crossing the vertical center of the visible area. */
+  function currentPageIndex() {
+    if (!S.rv.rows.length) return 0;
+    return ReviewCore.currentRow(rowMetrics(), $("#viewport").scrollTop + headerHeight(), visibleHeight());
+  }
+  const scaleOf = (row) => (row ? row.scale : 1);
+
+  /** The point at the center of the visible area: row, relative y in it (fy) and x as a fraction of
+   *  its page width (fx). While Revisar is hidden, the anchor saved when it was left. */
+  function anchorNow() {
+    const rv = S.rv, vp = $("#viewport");
+    if (!vp.clientWidth) return (pendingView && pendingView.anchor) || null;
+    if (!rv.rows.length) return null;
+    const anchor = ReviewCore.anchorOf(rowMetrics(), vp.scrollTop + headerHeight(), visibleHeight());
+    return { ...anchor, fx: ReviewCore.panCenter(rv.pan, rv.rows[anchor.row].w, rv.layout.colWidth) };
+  }
+  /** Scrolls back to an anchor (its row clamped to the rows that exist). */
+  function restoreAnchor(anchor) {
+    const vp = $("#viewport");
+    if (!anchor || !S.rv.rows.length) return;
+    if (!vp.clientWidth) { pendingView = { anchor }; return; }
+    vp.scrollTop = ReviewCore.scrollTopFor(anchor, rowMetrics(), visibleHeight(), headerHeight());
+  }
+  /** Leaving Revisar: keep the anchor for when it shows again (unless one is still waiting). */
+  function rememberView() {
+    if (pendingView) return;
+    const anchor = anchorNow();
+    if (anchor) pendingView = { anchor };
+  }
+  /** A newly opened file starts at its selected finding, else at the top; once Revisar can measure. */
+  function showStart() {
+    const vp = $("#viewport");
+    if (!vp.clientWidth) { pendingView = { start: true }; return; }
+    if (S.rv.sel) revealFinding(S.rv.sel, { instant: true });
+    else vp.scrollTop = 0;
+  }
+
+  /** The page field follows the scroll, except while the reviewer types in it. Not a live region. */
+  function updatePageField() {
+    const n = S.rv.rows.length;
+    const field = $("#rv-page");
+    field.max = String(Math.max(1, n));
+    $("#rv-pages").textContent = `de ${n}`;
+    if (document.activeElement !== field) field.value = String(currentPageIndex() + 1);
+  }
+  /** Enter in the page field: that page's row to the top of the visible area, focus to the pages. */
+  function goToPageField() {
+    const rows = S.rv.rows, field = $("#rv-page");
+    if (!rows.length) return;
+    const i = clamp(Math.round(Number(field.value)) || 1, 1, rows.length) - 1;
+    field.value = String(i + 1);
+    scrollToY(rowMetrics()[i].top - headerHeight());
+    focusViewport();
+  }
+  /** The zoom button shows the effective scale of the current page. */
+  function updateZoomButton() {
+    const pct = Math.round(scaleOf(S.rv.rows[currentPageIndex()]) * 100);
+    const btn = $("#b-zfit");
+    if (btn.textContent === `${pct} %`) return;
+    btn.textContent = `${pct} %`;
+    btn.setAttribute("aria-label", `Zoom ${pct} %. Ajustar al ancho`);
   }
 
   // Approximate size of a zone label (10px bold UI font), used to keep labels off other zones.
@@ -1531,6 +1560,8 @@
     return out;
   }
 
+  // Uncalled since the rows replaced the single page (callers use renderZonesAll): Task 12 turns it
+  // into renderRowZones(row).
   function renderZones() {
     const rv = S.rv;
     const layer = $("#zones");
@@ -1591,13 +1622,7 @@
     if (!f) return;
     rv.sel = id;
     if (!auto) seenSet(rv.id).add(id);
-    if (f.page !== rv.page) {
-      rv.page = f.page;
-      renderThumbs();
-      layoutPage();
-    } else {
-      renderZones();
-    }
+    renderZonesAll(); // Task 12: only the rows of the old and the new selection, then revealFinding
     renderFindings();
     renderVerify();
     requestAnimationFrame(scrollToSelected);
@@ -1683,7 +1708,7 @@
             title: on ? `Ocultar ${typeLabel(t)}` : `Mostrar ${typeLabel(t)}`,
             onclick: () => {
               if (rv.hidden.has(t)) rv.hidden.delete(t); else rv.hidden.add(t);
-              renderZones();
+              renderZonesAll();
               renderFindings();
             },
           }, h("i", { "aria-hidden": "true" }), `${typeLabel(t)} ${n}`);
@@ -1902,9 +1927,8 @@
           if (i >= 0) list[i] = u;
         }
       }
-      renderZones();
+      renderZonesAll();
       renderFindings();
-      renderThumbs();
       renderVerify();
       toast(applied.length
         ? `Se ${applied.length === 1 ? "censurará" : "censurarán"} ${plural(applied.length, "enlace más", "enlaces más")}.`
@@ -1922,9 +1946,8 @@
     const list = S.rv.file.findings;
     const i = list.findIndex((f) => f.id === updated.id);
     if (i >= 0) list[i] = updated; else list.push(updated);
-    renderZones();
+    renderZonesAll();
     renderFindings();
-    renderThumbs();
     renderVerify();
   }
   function focusFinding(id) {
@@ -1933,24 +1956,24 @@
   }
 
   // --- tools ---
+  /** Zoom around the point at the center of the visible area (the relayout anchor). */
   function zoomBy(factor) {
     const rv = S.rv;
-    if (!currentPage()) return;
-    const vp = $("#viewport");
-    const cx = (vp.scrollLeft + vp.clientWidth / 2) / Math.max(1, vp.scrollWidth);
-    const cy = (vp.scrollTop + vp.clientHeight / 2) / Math.max(1, vp.scrollHeight);
-    rv.scale = clamp(scaleNow() * factor, 0.05, 8);
-    layoutPage();
-    vp.scrollLeft = cx * vp.scrollWidth - vp.clientWidth / 2;
-    vp.scrollTop = cy * vp.scrollHeight - vp.clientHeight / 2;
+    const row = rv.rows[currentPageIndex()];
+    if (!row) return;
+    rv.zoom = ReviewCore.nextZoom(rv.zoom, factor, row.fit); // the current page's scale stays in 0.05–8
+    relayout();
+    scheduleImageRefresh(120);
   }
   function zoomFit() {
-    S.rv.scale = null;
-    layoutPage();
+    if (!S.rv.rows.length) return;
+    S.rv.zoom = 1;
+    relayout();
+    scheduleImageRefresh(120);
   }
   function rotate() {
     S.rv.rot = (S.rv.rot + 90) % 360;
-    layoutPage();
+    relayout();
     toast(S.rv.rot ? `Vista girada ${S.rv.rot}°. El archivo exportado conserva su orientación.` : "Vista sin girar.");
   }
   function setDraw(on) {
@@ -1962,7 +1985,8 @@
     if (!on) cancelGhost();
     if (on) toast("Arrastra sobre el documento para agregar una zona. Esc para salir.");
   }
-  function setView(on) { // replaced by setAfter in Task 9
+  /** V: shows or hides the after column. Kept across files; D and Esc never change it. */
+  function setAfter(on) {
     S.rv.after = on;
     $("#b-view").setAttribute("aria-pressed", String(on));
     relayout();
@@ -2049,7 +2073,7 @@
         askRemove((item && item.dataset.id) || S.rv.sel);
       }
       else if (k === "d") setDraw(!S.rv.draw);
-      else if (k === "v") setView(!S.rv.after);
+      else if (k === "v") setAfter(!S.rv.after);
       else if (k === "r") rotate();
       else if (k === "+" || k === "=" || k === "Add") zoomBy(1.2);
       else if (k === "-" || k === "Subtract" || k === "−") zoomBy(1 / 1.2);
@@ -2360,7 +2384,34 @@
     $("#b-zfit").addEventListener("click", zoomFit);
     $("#b-rot").addEventListener("click", rotate);
     $("#b-draw").addEventListener("click", () => setDraw(!S.rv.draw));
-    $("#b-view").addEventListener("click", () => setView(!S.rv.after));
+    $("#b-view").addEventListener("click", () => setAfter(!S.rv.after));
+    const vp = $("#viewport");
+    let viewTick = false; // the page field and the zoom button follow the scroll, once per frame
+    vp.addEventListener("scroll", () => {
+      if (viewTick) return;
+      viewTick = true;
+      requestAnimationFrame(() => {
+        viewTick = false;
+        if (S.screen === 3 && S.rv.rows.length) { updatePageField(); updateZoomButton(); }
+      });
+    }, { passive: true });
+    $("#hpan").addEventListener("scroll", () => {
+      const bar = $("#hpan"), range = bar.scrollWidth - bar.clientWidth;
+      if (bar.hidden || range <= 0 || bar.scrollLeft === panBarLeft) return;
+      setPan(bar.scrollLeft / range, { moveBar: false });
+    });
+    // Resizes of the window, the findings column or the bars: fit and manual zoom alike.
+    let resizeTimer = null;
+    new ResizeObserver(() => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => { if (S.screen === 3) relayout(); }, 150);
+    }).observe(vp);
+    $("#rv-page").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      goToPageField();
+    });
+    $("#rv-page").addEventListener("blur", () => { if (S.rv.rows.length) updatePageField(); });
     $("#dlg-remove-form").addEventListener("submit", doRemove);
     $("#dlg-remove-no").addEventListener("click", () => $("#dlg-remove").close());
     $("#dlg-remove").addEventListener("close", () => { pendingRemove = null; });
@@ -2371,11 +2422,6 @@
     $("#b-export").addEventListener("click", doExport);
     window.addEventListener("pywebviewready", () => { if (S.screen === 4) renderExport(); });
 
-    let resizeTimer = null;
-    window.addEventListener("resize", () => {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => { if (S.screen === 3 && S.rv.file) relayout(); }, 150);
-    });
     // Zone labels use the UI font: re-layout once the bundled fonts are ready.
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (S.screen === 3 && S.rv.file) renderZonesAll(); });
 

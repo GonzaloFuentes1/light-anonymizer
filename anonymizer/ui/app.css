@@ -208,13 +208,17 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .rows { padding: 16px 24px 24px; }
 .prow { display: grid; grid-template-columns: var(--cw) var(--cw); column-gap: var(--gap); row-gap: 8px; justify-content: center; margin-bottom: 24px; }
 .plabel { grid-column: 1 / -1; text-align: center; font-size: 12px; color: var(--muted); }
-.cell { position: relative; overflow: hidden; display: grid; justify-items: center; gap: 6px; }
+/* One fixed track: a page wider than its column overflows it (and is clipped) instead of widening the track. */
+.cell { position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 6px; }
 .cell .cap { display: none; }
 .pbox { position: relative; background: var(--page); box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
 .pinner { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .pinner img { display: block; max-width: none; user-select: none; -webkit-user-drag: none; }
+.pinner img:not([src]) { visibility: hidden; } /* no alt text or broken-image icon while it loads */
 .cell .zones { position: absolute; inset: 0; overflow: hidden; }
-.cell .cstate { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 4; }
+/* Over the visible part of the page whatever the pan; readable on the white page in both themes. */
+.cell .cstate { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 4; background: #17212D; color: #FFFFFF; font-size: 12px; font-weight: 700; padding: 3px 11px; border-radius: 999px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
+.viewport.stacked .cell .cstate { top: 36px; } /* below the caption (18 px) and the gap (6 px) */
 .cell.after.updating img { opacity: .45; }
 .cell .fail { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; padding: 16px; text-align: center; background: var(--surface); color: var(--ink); }
 .viewport.drawing .cell.before .pbox { cursor: crosshair; touch-action: none; outline: 3px dashed var(--draw-edge); outline-offset: 3px; }
