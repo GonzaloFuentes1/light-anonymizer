@@ -418,9 +418,7 @@ def _render_zones(page: pymupdf.Page, zones: list[pymupdf.Rect], drop: set[int],
         copy = tmp[0]
         strokes._filter(copy, _Dropper(set(drop), shadings), update=True)
         for d in copy.get_drawings():
-            if _redaction_box(d) and any(
-                all(abs(a - b) <= 0.05 for a, b in zip(d["rect"], z, strict=True)) for z in zones
-            ):
+            if _redaction_box(d) and any((pymupdf.Rect(d["rect"]) & z) == z for z in zones):
                 return None
         out = []
         for z in zones:
@@ -439,6 +437,11 @@ def _ink_under(page: pymupdf.Page, zones: list[pymupdf.Rect], layout: set[int], 
     (an image a soft mask carries, data painted through a clip, a glyph); without the backgrounds
     too (``backgrounds``: fills that hold a zone whole under rectangular clips, and smooth
     shadings), anything not white is ink (a uniform image or pattern under the box)."""
+    # Only what shows: the part of each zone on the page (text placed off the page is removed by
+    # the redaction and never shows).
+    zones = [z & page.rect for z in zones if z.intersects(page.rect)]
+    if not zones:
+        return False
     edges = _render_zones(page, zones, layout, False)
     if edges is None:
         return True

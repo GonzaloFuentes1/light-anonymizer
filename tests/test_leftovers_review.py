@@ -451,3 +451,24 @@ def test_the_after_is_redacted_once_per_set_of_zones(tmp_path, monkeypatch):
                                  polygon=common.rect_polygon(20, 20, 60, 40)))  # fmt: skip
     engine.render_result(file, 0, 1.0, file.findings)
     assert len(calls) == 2
+
+
+def test_text_outside_the_crop_box_does_not_make_the_page_an_image(tmp_path):
+    # The test set's stress page has a name and a RUT written outside its crop box: the zone lies
+    # where nothing shows; only what shows is rendered.
+    content = b"BT /F1 10 Tf 40 285 Td (Patricia Prueba Rojas) Tj ET BT /F1 10 Tf 60 150 Td (Texto neutro) Tj ET"
+    src = build(tmp_path / "off.pdf", content, HELV)
+    with pymupdf.open(src) as doc:
+        doc[0].set_cropbox(pymupdf.Rect(30, 30, 270, 270))
+        doc.save(tmp_path / "cropped.pdf")
+    with pymupdf.open(tmp_path / "cropped.pdf") as doc:
+        text, boxes, _ = pdf.chars(doc[0])  # text outside the crop box too
+    start = text.index("Patricia")
+    zone = pymupdf.Rect(boxes[start]) | pymupdf.Rect(boxes[start + len("Patricia Prueba Rojas") - 1])
+    zone += (-1, -1, 1, 1)
+    assert zone.y1 < 0  # above the crop box
+    out = tmp_path / "off_out.pdf"
+    outcome = pdf.redact(str(tmp_path / "cropped.pdf"), str(out), {0: [zone]})[0]
+    assert not outcome.rasterized, outcome.reasons
+    with pymupdf.open(out) as doc:
+        assert "Patricia" not in pdf.chars(doc[0])[0]
