@@ -565,9 +565,9 @@ under it when a column is narrower than 420 px). The "after" is rendered by the 
 export's own redaction (`render_result`), served by
 `GET /api/files/{id}/pages/{n}.png?redacted=true`; it answers 409 `not_ready` while the file is
 being processed. Only the rows near the viewport hold images, and an edit refreshes only the
-"after" of the page it touches. "Mostrar el después" (V) shows or hides the "after" column. Spec:
-`docs/superpowers/specs/2026-10-02-review-scroll-before-after-design.md`; the measured timings
-are in its section 7.
+"after" of the page it touches. "Mostrar el después" (V) shows or hides the "after" column.
+Measured with long invented documents (120-page text PDF, 60-page scan, 30-page TIFF): both
+sides of the visible page appear 0.3–0.8 s after opening, a long jump or a zoom step.
 
 ### 8.1 Choosing what to search for, and how long it takes
 
