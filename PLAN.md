@@ -650,6 +650,18 @@ stage (12.1 s measured, 10.7 s estimated for the 95 files).
   page ≤ 10 s; text page ≤ 1 s (without page OCR); peak memory < 2 GB.
 - The dominant cost will be OCR with 4 rotations (or 8, with mirroring). If time clashes with
   recall, I will present it as a decision with figures, not settle it silently.
+- **OCR cache (2026-10-06, the user's choice).** The three orientation passes stay. What OCR read in
+  an image is kept in memory for the session (`ocr.read_lines`), keyed by a hash of the decoded
+  pixels and the reading's parameters (padding, mirror pass, orientations), for the last 256
+  images; nothing is written to disk. A logo or a letterhead repeated across pages and files is
+  read once. Measured, analyses one after another in one process, the same findings with and
+  without the cache: the test set's 95 files 352.7 s (OCR 312.3 s) without, 355.8 s (316.7 s)
+  with; the long documents (a 60-page scan, a 30-frame TIFF, a 120-page text PDF) 832.3 s
+  without, 832.9 s with. Neither set repeats an image across files, and inside one PDF an image
+  region seen on several pages was already read once (`pdf.raster_zones`): no gain there, and no
+  cost. When the same file is processed again, or another file carries the same images (two
+  files with the same photo and letterhead), the second one's OCR goes from 6.8-8.5 s to 0-0.1 s
+  (ficha_con_foto 8.0 s -> 1.3 s, mixto_imagenes 9.4 s -> 0.9 s).
 
 ---
 
@@ -1200,6 +1212,22 @@ letters of an active zone).
 > - `verify.string_leaks` implements the search of section 7, item 2.
 > Every case of the review is a regression test (`tests/test_leftovers_review.py`).
 >
+> **Fixed after the closing review (2026-10-06).** Crafted constructions still defeated the render:
+> a rectangle or rule that neither holds the zone nor lies inside it was dropped from the renders
+> whatever its clip or soft mask, so a QR code painted through a clip of modules, or a fill carried
+> by a soft mask, rode on it; the document's own black rectangle, painted exactly like MuPDF's box,
+> was always dropped; light data (a QR in grey 0.86, a light soft-mask checkerboard) stayed under
+> the thresholds; sub-pixel modules fell between pixels; and the part of a zone outside the crop
+> box was never looked at. Now page layout and backgrounds leave the renders only where they show as
+> plain boxes (under rectangular clips, in a document without soft masks); only the boxes this
+> page's redaction painted are dropped, told by their exact rectangles (`PageOutcome.boxes`, also
+> given to the output's guard); a clip of several rectangles, or of a small one (3 pt or less),
+> lying whole inside a zone is a leftover by itself; an edge of 10 levels, or 10 levels from white,
+> is ink (it was 40); and the renders show the whole media box. Each construction of the review is
+> a regression test through the full export (`tests/test_leftovers_review.py`): before, all eight
+> exported with the data under the stripped box; after, the page of each is exported as an image
+> and the data is gone. The test set's pages still all stay vector.
+>
 > **Measured (2026-10-06, after the review fixes).** Every adversarial experiment of the signature
 > and D8 reviews (81 scripts, run again against this code through a harness that records each
 > export and checks the output file on its own: text inside the zones, `leftovers.check`, black
@@ -1215,6 +1243,39 @@ letters of an active zone).
 > layer still removes that line's characters whole (MuPDF removes every character its box
 > touches): a generous OCR zone at single spacing over drawn text removed the real text line below
 > it in the review's experiment, as before.
+
+**D15. RUTs whose check digit does not match.** On a real set of documents, 132 RUT findings had a
+check digit that does not match. Most were bare runs of digits (folios, codes, internal numbers)
+with no "RUT" before them; censoring them all hides information that is not personal, and leaving
+them all visible risks a mistyped RUT.
+
+> **Decided (2026-10-06).** A RUT whose check digit does not match, written as a bare run of digits
+> (no dots, no dash), that is not also a phone number, and with no "RUT", "RUN", "R.U.T." or "Rol
+> Único" label within 30 characters before it on its line, is an optional finding that starts
+> "suggested": shown with "El dígito verificador no coincide: revisa el original", not applied
+> unless the reviewer applies it. In the text layer and in OCR alike; a value a context rule took
+> as a RUT (after a label, in a "RUT" column) counts as labelled. Formatted (dots or a dash) or
+> labelled invalid RUTs stay applied and doubtful; valid ones are applied. In "censurar todo el
+> texto" nothing is optional.
+>
+> **Implemented (2026-10-06).** `text.rut_suggested`, used by `pdf.text_zones` and by the OCR zones
+> of `raster`; the finding's `optional_reason` is "rut". The review lists them with the other
+> suggestions ("No se censuran por defecto", note "RUT dudosos: …", button "Censurar todos los RUT
+> dudosos", "RUT dudoso sin puntos ni guion" on each item); `apply-optional` takes `reason: "rut"`;
+> the file summary counts them (`suggested_ruts`); the audit has a JSON record (`doubtful_ruts`)
+> and a section "RUT dudosos sin puntos ni guion". On the user's real set this was estimated to
+> concern about 80 to 90 of the 132 (the bare ones); numbers the phone patterns also take (a mobile
+> written bare) stay applied, so the real figure may be lower. On the test set one OCR line,
+> "Llamar a 991332178", was a suggestion until that exception: none is now.
+>
+> **Fixed with it.** A value a context rule took as a RUT ("RUT:" and its value, a cell of a RUT
+> column) must hold a RUT-shaped number: an empty field or one digit is no finding, and a value
+> holding another datum keeps that type (about 40 findings of type "rut" with no number on the
+> real set). An OCR line is doubtful when none of its RUTs has a valid check digit (another number
+> on the line no longer clears it), and an OCR reading without the number (another orientation, a
+> context zone) no longer clears the doubt of the zone it joins; that is the likely cause of the 3
+> OCR RUTs with a wrong check digit that were not marked doubtful (the real files were not used
+> to check it).
 
 ## 13. Risks
 
@@ -1258,7 +1319,11 @@ letters of an active zone).
   300 dpi), and its content outside the zones is a 300 dpi picture of what it was. The audit report
   lists those pages and why. A stroke mostly under a signature or drawn zone is removed whole, also
   its part outside the zone (listed in the audit report). A hatched or patterned background, or a
-  photo, that shows with sharp edges inside a zone also makes the page an image.
+  photo, that shows edges inside a zone also makes the page an image, even a light one (an edge of
+  10 levels counts); so does a clip of several small rectangles lying inside a zone.
+- A RUT written as bare digits with a wrong check digit and no "RUT" before it is shown but not
+  censored by default (D15): the reviewer decides. A column under a "RUT" header with nothing
+  legible in it is still covered as a whole.
 - On a page with a /UserUnit other than 1 (rare; some large-format drawings), MuPDF draws the black
   box at that scale (twice the zone's size with /UserUnit 2): more than the zone is covered. Nothing
   under the zone is left, but content around it is blacked out too.

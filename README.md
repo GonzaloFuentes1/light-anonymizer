@@ -20,6 +20,8 @@ A desktop tool that anonymizes PDFs and images **locally**, built for Chilean pu
 
 **Some PDF pages may be exported as images.** When the redaction of a page cannot be certain that nothing drawn is left under a black box (a letter drawn as a path that a box cuts, a stroke crossing the edge of a box, a pattern or gradient under it), that page is not blocked: it is exported as a single image of the redacted page (300 dpi), with no text layer, vector content or annotations left. The review's "after" column already shows it that way, and the audit report lists those pages and the reason for each ("Páginas exportadas como imagen"). Exports are still blocked when data stays readable outside the black boxes or metadata remains.
 
+**Doubtful RUTs are shown, not censored by default.** A number written as bare digits (no dots, no dash) whose check digit does not match and with no "RUT" label right before it is often a folio or a code: it is listed with the other suggestions ("No se censuran por defecto") for the reviewer to censor or leave visible, and the audit records the decision. Formatted or labelled RUTs with a wrong check digit are censored and marked doubtful (decision D15 in [PLAN.md](PLAN.md)). OCR results of identical images (a logo or letterhead repeated across pages and files) are kept in memory during the session, so they are read once; nothing is written to disk.
+
 ## Repository layout
 
 ```

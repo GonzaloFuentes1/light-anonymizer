@@ -20,6 +20,8 @@ Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computado
 
 **Algunas páginas de un PDF pueden exportarse como imagen.** Cuando la censura de una página no puede asegurar que no quede nada dibujado bajo un rectángulo negro (una letra dibujada como trazo que el rectángulo corta, un trazo que cruza su borde, una trama o un degradado debajo), esa página no se bloquea: se exporta como una sola imagen de la página ya censurada (300 dpi), sin capa de texto, sin dibujos vectoriales y sin anotaciones. La columna "después" de la revisión ya la muestra así, y el informe de auditoría indica qué páginas se exportaron como imagen y por qué ("Páginas exportadas como imagen"). La exportación se sigue bloqueando cuando quedan datos legibles fuera de los rectángulos negros o quedan metadatos.
 
+**Los RUT dudosos se muestran, pero no se censuran por defecto.** Un número escrito solo con dígitos (sin puntos ni guion), cuyo dígito verificador no coincide y sin la palabra «RUT» justo antes, suele ser un folio o un código: aparece junto a las demás sugerencias («No se censuran por defecto») para que quien revisa decida censurarlo o dejarlo visible, y el informe de auditoría registra la decisión. Los RUT con formato (puntos o guion) o con la etiqueta «RUT» cuyo dígito verificador no coincide se censuran y se marcan como dudosos (decisión D15 en [PLAN.md](PLAN.md)). Lo que el OCR lee en imágenes idénticas (un logo o un membrete repetido en varias páginas y archivos) se guarda en memoria durante la sesión, así que se lee una sola vez; no se escribe nada en el disco.
+
 ## Estructura del repositorio
 
 ```
