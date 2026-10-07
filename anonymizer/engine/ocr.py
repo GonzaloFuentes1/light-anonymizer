@@ -9,9 +9,11 @@ bounded.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
@@ -25,6 +27,12 @@ from anonymizer.paths import package_dir
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 OCR_LOCK = threading.Lock()
+# What OCR read in images seen before in this session (a letterhead or a logo repeated on every page
+# and in every file): key, the decoded pixels' hash and the reading's parameters. Memory only, never
+# written anywhere, at most ``CACHE_IMAGES`` images (the least recently used goes first).
+CACHE_IMAGES = 256
+_cache: OrderedDict[tuple, list[OcrLine]] = OrderedDict()
+_cache_lock = threading.Lock()
 ROTATIONS = (0, 1, 3)  # np.rot90 turns: 0°, 90° and 270°
 OCR_THREADS = 4
 # A line is legible text with this score and at least this many letters or digits (D6, ``legible``).
@@ -120,14 +128,43 @@ def read_lines(
     reaches 736 px: without padding, a thin crop of 800x120 px was enlarged six times and took
     tens of seconds. ``check`` is called before each pass (it raises to cancel).
 
+    An image read before in this session with the same parameters (the same decoded pixels: a
+    logo or a letterhead repeated across pages and files) is not read again (``CACHE_IMAGES``).
+
     ``mirror`` (D6): when none of the lines is legible but some look like text, the mirrored
     image is read too, in the same three orientations, and its lines are mapped back to the
     image. That doubles the OCR time, but only of images without legible text.
     """
+    key = (
+        bgr.shape,
+        str(bgr.dtype),
+        hashlib.blake2b(np.ascontiguousarray(bgr).tobytes(), digest_size=16).digest(),
+        min_side,
+        mirror,
+        ROTATIONS,
+    )
+    with _cache_lock:
+        cached = _cache.get(key)
+        if cached is not None:
+            _cache.move_to_end(key)
+    if cached is not None:
+        if check is not None:
+            check()
+        return [ln._replace(polygon=ln.polygon.copy()) for ln in cached]
     lines = _read(bgr, min_side, check, mirrored=False)
     if mirror and needs_mirror(lines):
         lines += _read(bgr, min_side, check, mirrored=True)
+    with _cache_lock:
+        _cache[key] = [ln._replace(polygon=ln.polygon.copy()) for ln in lines]
+        while len(_cache) > CACHE_IMAGES:
+            _cache.popitem(last=False)
     return lines
+
+
+def clear_cache() -> None:
+    """Forgets every reading kept by ``read_lines``."""
+    with _cache_lock:
+        _cache.clear()
 
 
 def _read(bgr: np.ndarray, min_side: int, check: Callable[[], None] | None, mirrored: bool) -> list[OcrLine]:
