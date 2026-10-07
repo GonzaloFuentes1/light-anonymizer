@@ -1,4 +1,4 @@
-"""File-by-file evaluation: applies checks C, T, B, P, I, O and V of ``docs/metrics.md``.
+"""File-by-file evaluation: applies checks C, T, B, P, I, O and V.
 
 Every manifest element gets a status:
 

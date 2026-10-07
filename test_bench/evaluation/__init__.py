@@ -1,6 +1,6 @@
 """Anonymizer evaluator: compares the output of a system with the ground truth.
 
-The metric is defined in ``docs/metrics.md``. Programmatic entry point::
+Programmatic entry point::
 
     from test_bench.evaluation import evaluate
     result = evaluate(manifest, report, output_dir)

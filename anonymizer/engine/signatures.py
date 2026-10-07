@@ -1,6 +1,6 @@
 """Handwritten and drawn signatures, found by rules over ink strokes, keywords and lines.
 
-No pretrained signature detector passed the license review (PLAN.md, section 5.7: every one we
+No pretrained signature detector passed the license review (see LICENSES.md: every one we
 found is trained on data whose copyright is unclear, such as Tobacco800), so these rules look for
 what a signature leaves on a page:
 

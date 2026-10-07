@@ -6,7 +6,7 @@ Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computado
 
 > **Estado: fase 0 terminada, fases 1 y 2 en curso, fase 3 pendiente.** El repositorio contiene el banco de pruebas (un conjunto de prueba ficticio con verdad de terreno exacta, el evaluador y las líneas base), el motor y una aplicación de escritorio preliminar que lo usa, con un instalador para Windows. La revisión humana de cada documento antes de publicarlo es obligatoria, siempre.
 
-**Plataforma:** la versión 1 es solo para Windows 10 y 11 (64 bits); macOS no está soportado (decisión D4 en [PLAN.md](PLAN.md)).
+**Plataforma:** la versión 1 es solo para Windows 10 y 11 (64 bits); macOS no está soportado.
 
 ## Principios
 
@@ -20,7 +20,7 @@ Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computado
 
 **Algunas páginas de un PDF pueden exportarse como imagen.** Cuando la censura de una página no puede asegurar que no quede nada dibujado bajo un rectángulo negro (una letra dibujada como trazo que el rectángulo corta, un trazo que cruza su borde, una trama o un degradado debajo), esa página no se bloquea: se exporta como una sola imagen de la página ya censurada (300 dpi), sin capa de texto, sin dibujos vectoriales y sin anotaciones. La columna "después" de la revisión ya la muestra así, y el informe de auditoría indica qué páginas se exportaron como imagen y por qué ("Páginas exportadas como imagen"). La exportación se sigue bloqueando cuando quedan datos legibles fuera de los rectángulos negros o quedan metadatos.
 
-**Los RUT dudosos se muestran, pero no se censuran por defecto.** Un número escrito solo con dígitos (sin puntos ni guion), cuyo dígito verificador no coincide y sin la palabra «RUT» justo antes, suele ser un folio o un código: aparece junto a las demás sugerencias («No se censuran por defecto») para que quien revisa decida censurarlo o dejarlo visible, y el informe de auditoría registra la decisión. Los RUT con formato (puntos o guion) o con la etiqueta «RUT» cuyo dígito verificador no coincide se censuran y se marcan como dudosos (decisión D15 en [PLAN.md](PLAN.md)). Lo que el OCR lee en imágenes idénticas (un logo o un membrete repetido en varias páginas y archivos) se guarda en memoria durante la sesión, así que se lee una sola vez; no se escribe nada en el disco.
+**Los RUT dudosos se muestran, pero no se censuran por defecto.** Un número escrito solo con dígitos (sin puntos ni guion), cuyo dígito verificador no coincide y sin la palabra «RUT» justo antes, suele ser un folio o un código: aparece junto a las demás sugerencias («No se censuran por defecto») para que quien revisa decida censurarlo o dejarlo visible, y el informe de auditoría registra la decisión. Los RUT con formato (puntos o guion) o con la etiqueta «RUT» cuyo dígito verificador no coincide se censuran y se marcan como dudosos. Lo que el OCR lee en imágenes idénticas (un logo o un membrete repetido en varias páginas y archivos) se guarda en memoria durante la sesión, así que se lee una sola vez; no se escribe nada en el disco.
 
 ## Estructura del repositorio
 
@@ -124,7 +124,7 @@ Un equipo que deba tener cero tráfico necesita que informática lo imponga fuer
 
 - **102 archivos ficticios** en 10 familias, con **971 datos personales** de ubicación exacta conocida, **44 metadatos sensibles escondidos** y 7 archivos que deben rechazarse (con contraseña, corruptos, vacíos o con formato falso).
 - Los rostros vienen de fuentes con licencia libre documentada (Face Research Lab London Set, Open Images, retratos de dominio público de EE. UU.); se descargan, se verifican por SHA-256 y nunca se distribuyen.
-- El evaluador mide el **recall** (¿lo encontró?) y las **fugas** (¿se puede recuperar todavía del archivo de salida?); ver [docs/metrics.md](docs/metrics.md). Se valida a sí mismo: la línea base *identidad* debe filtrar todo y el *oráculo*, nada.
+- El evaluador mide el **recall** (¿lo encontró?) y las **fugas** (¿se puede recuperar todavía del archivo de salida?). Se valida a sí mismo: la línea base *identidad* debe filtrar todo y el *oráculo*, nada.
 - Criterio de aceptación de la fase 1: cero fugas de RUT, correo y teléfono en el nivel base, y cero fugas de metadatos.
 
 ## Privacidad
@@ -133,11 +133,8 @@ Nunca subas documentos reales ni nada derivado de ellos (nombres, montos, frases
 
 ## Documentación
 
-- [PLAN.md](PLAN.md): plan detallado, hallazgos y decisiones pendientes para las fases 1 a 3.
-- [docs/metrics.md](docs/metrics.md): cómo se miden el recall y las fugas.
 - [LICENSES.md](LICENSES.md): licencia de cada dependencia, modelo y fuente de datos de prueba.
 - [docs/user-manual/manual-de-usuario.md](docs/user-manual/manual-de-usuario.md) ([PDF](docs/user-manual/manual-de-usuario.pdf)): el manual para usuarios finales. El instalador incluye el PDF; después de cambiar el Markdown, vuelve a generarlo con `uv run --with markdown python scripts/build_manual_pdf.py`.
-- [docs/usability-test/](docs/usability-test/guia-del-facilitador.md): un kit para una prueba de usabilidad (guía del facilitador, tareas, hoja de observación y cuestionario final), con los documentos de práctica de `scripts/generate_practice_docs.py`.
 
 ## Licencia
 

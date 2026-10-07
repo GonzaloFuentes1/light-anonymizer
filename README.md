@@ -6,7 +6,7 @@ A desktop tool that anonymizes PDFs and images **locally**, built for Chilean pu
 
 > **Status: phase 0 finished, phases 1–2 in progress, phase 3 pending.** The repository contains the test bench (a fictitious test set with exact ground truth, the evaluator and baselines), the engine and a preliminary desktop app that runs it, with a Windows installer. Human review of every document before publishing is mandatory, always.
 
-**Platform:** version 1 targets Windows 10 and 11 (64-bit) only; macOS is not supported (decision D4 in [PLAN.md](PLAN.md)).
+**Platform:** version 1 targets Windows 10 and 11 (64-bit) only; macOS is not supported.
 
 ## Principles
 
@@ -20,7 +20,7 @@ A desktop tool that anonymizes PDFs and images **locally**, built for Chilean pu
 
 **Some PDF pages may be exported as images.** When the redaction of a page cannot be certain that nothing drawn is left under a black box (a letter drawn as a path that a box cuts, a stroke crossing the edge of a box, a pattern or gradient under it), that page is not blocked: it is exported as a single image of the redacted page (300 dpi), with no text layer, vector content or annotations left. The review's "after" column already shows it that way, and the audit report lists those pages and the reason for each ("Páginas exportadas como imagen"). Exports are still blocked when data stays readable outside the black boxes or metadata remains.
 
-**Doubtful RUTs are shown, not censored by default.** A number written as bare digits (no dots, no dash) whose check digit does not match and with no "RUT" label right before it is often a folio or a code: it is listed with the other suggestions ("No se censuran por defecto") for the reviewer to censor or leave visible, and the audit records the decision. Formatted or labelled RUTs with a wrong check digit are censored and marked doubtful (decision D15 in [PLAN.md](PLAN.md)). OCR results of identical images (a logo or letterhead repeated across pages and files) are kept in memory during the session, so they are read once; nothing is written to disk.
+**Doubtful RUTs are shown, not censored by default.** A number written as bare digits (no dots, no dash) whose check digit does not match and with no "RUT" label right before it is often a folio or a code: it is listed with the other suggestions ("No se censuran por defecto") for the reviewer to censor or leave visible, and the audit records the decision. Formatted or labelled RUTs with a wrong check digit are censored and marked doubtful. OCR results of identical images (a logo or letterhead repeated across pages and files) are kept in memory during the session, so they are read once; nothing is written to disk.
 
 ## Repository layout
 
@@ -124,7 +124,7 @@ A machine that must have zero traffic needs IT to enforce it outside the app: an
 
 - **102 fictitious files** in 10 families with **971 personal-data elements** whose exact location is known, **44 hidden sensitive metadata items** and 7 files that must be rejected (password-protected, corrupt, empty, wrong format).
 - Faces come from sources with documented free licenses (Face Research Lab London Set, Open Images, US public-domain portraits) and are downloaded and SHA-256 checked; they are never shipped.
-- The evaluator measures **recall** (did the system find it?) and **leaks** (can it still be recovered from the output file?) — see [docs/metrics.md](docs/metrics.md). It validates itself: the *identity* baseline must leak everything and the *oracle* must leak nothing.
+- The evaluator measures **recall** (did the system find it?) and **leaks** (can it still be recovered from the output file?). It validates itself: the *identity* baseline must leak everything and the *oracle* must leak nothing.
 - Acceptance criterion for phase 1: zero leaks of RUT, email and phone at the base level, and zero metadata leaks.
 
 ## Privacy
@@ -133,11 +133,8 @@ Never commit real documents or anything derived from them (names, amounts, phras
 
 ## Documentation
 
-- [PLAN.md](PLAN.md) — detailed plan, findings, and the open decisions for phases 1–3.
-- [docs/metrics.md](docs/metrics.md) — how recall and leaks are measured.
 - [LICENSES.md](LICENSES.md) — license of every dependency, model and test-data source.
 - [docs/user-manual/manual-de-usuario.md](docs/user-manual/manual-de-usuario.md) ([PDF](docs/user-manual/manual-de-usuario.pdf)): the end-user manual, in Spanish. The installer ships the PDF; rebuild it with `uv run --with markdown python scripts/build_manual_pdf.py` after changing the Markdown.
-- [docs/usability-test/](docs/usability-test/guia-del-facilitador.md): a usability-test kit, in Spanish (facilitator's guide, tasks, observation sheet and final questionnaire), with the practice documents of `scripts/generate_practice_docs.py`.
 
 ## License
 

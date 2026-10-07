@@ -1,4 +1,4 @@
-"""Baselines that validate the evaluator (``docs/metrics.md``, section 6).
+"""Baselines that validate the evaluator.
 
 Each module exposes ``process(file_entry, manifest, folder, details) -> FileResult``:
 

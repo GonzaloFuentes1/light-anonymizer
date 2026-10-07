@@ -1,4 +1,4 @@
-"""Aggregation of the per-element results into the metrics of ``docs/metrics.md`` (sections 4 and 5)."""
+"""Aggregation of the per-element results into the metrics."""
 
 from __future__ import annotations
 

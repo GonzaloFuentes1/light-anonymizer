@@ -1,4 +1,4 @@
-"""Evaluates the output of a redaction system against the ground truth (metric of docs/metrics.md).
+"""Evaluates the output of a redaction system against the ground truth.
 
 Usage:
     uv run python -m test_bench.evaluate --manifest test_data/generated/manifest.json \\

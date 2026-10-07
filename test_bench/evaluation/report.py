@@ -206,7 +206,7 @@ def markdown(r: dict[str, Any]) -> str:
         L += [f"- {m}" for m in v["reasons"]]
         L.append("")
     L += _table(
-        ["#", "Criterio (sección 5 de docs/metrics.md)", "Cumple", "Detalle"],
+        ["#", "Criterio", "Cumple", "Detalle"],
         [[c["n"], c["criterion"], "sí" if c["met"] else "**NO**", c["detail"]] for c in v["criteria"]],
     )
 

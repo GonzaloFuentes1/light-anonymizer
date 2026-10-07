@@ -1,7 +1,7 @@
 """Search for values (canaries) and their critical fragments in extracted text and in bytes.
 
 Every manifest value becomes one or more *needles*: the normalized form of the full value and
-the critical fragments defined in ``docs/metrics.md``:
+the critical fragments:
 
 - RUT: body without the check digit (if it has at least 7 digits).
 - Phone: last 7 digits.
