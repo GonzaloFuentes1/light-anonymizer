@@ -44,6 +44,8 @@ module-root = ""
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+# Plans and notes: their Markdown code blocks are quotes, not code to reformat.
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
