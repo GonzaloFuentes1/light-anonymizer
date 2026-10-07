@@ -429,12 +429,14 @@ def _render_zones(page: pymupdf.Page, zones: list[pymupdf.Rect], drop: set[int],
         for d in copy.get_drawings():
             if _redaction_box(d) and any(_same(d["rect"], b) for b in boxes):
                 return None
-        dx, dy = copy.cropbox.x0, copy.cropbox.y0  # page space -> media box space
-        copy.set_cropbox(copy.mediabox)
+        to_user = ~copy.transformation_matrix  # page space -> PDF user space, with the crop box
+        tmp.xref_set_key(copy.xref, "CropBox", "null")  # the page now shows its whole media box
+        copy = tmp[0]
+        to_media = to_user * copy.transformation_matrix
         media = copy.rect
         out = []
         for z in zones:
-            z = (z + (dx, dy, dx, dy)) & media
+            z = (z * to_media).normalize() & media
             if z.is_empty:
                 continue
             inner = z + (INK_INSET, INK_INSET, -INK_INSET, -INK_INSET)
