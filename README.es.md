@@ -30,7 +30,7 @@ test_bench/      herramientas de desarrollo: generadores del conjunto de prueba,
   generators/    un módulo por familia de documentos (PDF con texto, escaneos, imágenes giradas, EXIF, cédula, pantallazos, rostros…)
   evaluation/    comprobaciones de recall y fugas (texto, bytes, píxeles, imágenes tapadas, imágenes huérfanas, trazos, metadatos)
   baselines/     identidad, oráculo, cuaderno y prototipo (ejecuta el motor real)
-scripts/         generate_test_data.py, download_models.py, build_exe.py, build_installer.py, demo_notebook_leak.py
+scripts/         generate_test_data.py, generate_practice_docs.py, download_models.py, build_exe.py, build_installer.py, demo_notebook_leak.py
 packaging/       especificación de PyInstaller, lanzador y script del instalador (Inno Setup) para Windows, y los textos de licencia que faltan en los wheels
 tests/           pruebas con pytest
 docs/            definición de la métrica
@@ -49,6 +49,7 @@ Requiere [uv](https://docs.astral.sh/uv/) y Python 3.12.
 uv sync --all-groups                        # dependencias
 uv run python scripts/download_models.py    # modelo de rostros YuNet, con verificación SHA-256
 uv run python scripts/generate_test_data.py # conjunto de prueba ficticio -> test_data/generated
+uv run python scripts/generate_practice_docs.py # documentos de práctica del manual y de la prueba de usabilidad -> test_data/practice
 uv run python -m anonymizer.app             # aplicación de escritorio (--browser para abrirla en el navegador)
 
 # correr un sistema sobre el conjunto de prueba y evaluarlo

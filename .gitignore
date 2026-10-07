@@ -8,10 +8,11 @@ build/
 dist/
 *.spec.bak
 
-# Generated data (regenerated with scripts/generate_test_data.py and scripts/generate_long_docs.py)
+# Generated data (regenerated with scripts/generate_test_data.py, generate_long_docs.py and generate_practice_docs.py)
 test_data/generated/
 test_data/cache/
 test_data/long/
+test_data/practice/
 output/
 results/
 

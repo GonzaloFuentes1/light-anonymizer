@@ -30,7 +30,7 @@ test_bench/      development tooling: test-set generators, evaluator, baselines,
   generators/    one module per document family (text PDFs, scans, rotated images, EXIF, ID card, screenshots, faces…)
   evaluation/    recall and leak checks (text, bytes, pixels, covered images, orphan images, vector paths, metadata)
   baselines/     identity, oracle, notebook and prototype (runs the real engine)
-scripts/         generate_test_data.py, download_models.py, build_exe.py, build_installer.py, demo_notebook_leak.py
+scripts/         generate_test_data.py, generate_practice_docs.py, download_models.py, build_exe.py, build_installer.py, demo_notebook_leak.py
 packaging/       PyInstaller spec, launcher and Inno Setup installer script for Windows, and the license texts the wheels lack
 tests/           pytest suite
 docs/            metric definition
@@ -49,6 +49,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.12.
 uv sync --all-groups                        # dependencies
 uv run python scripts/download_models.py    # YuNet face model, SHA-256 checked
 uv run python scripts/generate_test_data.py # fictitious test set -> test_data/generated
+uv run python scripts/generate_practice_docs.py # practice documents of the user manual and the usability test -> test_data/practice
 uv run python -m anonymizer.app             # desktop app (--browser to open it in the browser instead)
 
 # run a system over the test set and evaluate it
