@@ -44,6 +44,7 @@ def at(text: str, value: str) -> tuple[int, int]:
         (f"Folio {BARE_GOOD}", False),  # a valid one is a RUT
         (f"Folio {DOTTED_BAD}", False),  # written as a RUT: applied and doubtful
         ("Folio 12345678-0", False),
+        ("Llamar a 991332178", False),  # a mobile number written bare: a phone, applied
     ],
 )
 def test_which_ruts_are_only_suggested(line, expected):

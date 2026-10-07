@@ -144,12 +144,14 @@ _BARE = re.compile(r"\d{6,9}[\dkKxX]")
 
 def rut_suggested(text: str, a: int, b: int, value: str | None = None) -> bool:
     """The RUT at ``text[a:b]`` is only suggested (``OPTIONAL_RUT``): its check digit does not match,
-    it is a bare run of digits and no "RUT", "RUN", "R.U.T." or "Rol Único" comes within
-    ``RUT_LABEL_REACH`` characters before it on its line. ``value``: the number as read (an OCR
+    it is a bare run of digits, it is not also a phone number, and no "RUT", "RUN", "R.U.T." or
+    "Rol Único" comes within ``RUT_LABEL_REACH`` characters before it on its line. ``value``: the number as read (an OCR
     variant of ``text[a:b]``, same length), if not ``text[a:b]``."""
     value = (text[a:b] if value is None else value).strip()
     if not _BARE.fullmatch(value) or rut_is_valid(value):
         return False
+    if any(pa < b and a < pb for pa, pb in phones(text)):
+        return False  # also a phone number (a mobile written without +56): personal data anyway
     start = max(text.rfind(chr(10), 0, a) + 1, a - RUT_LABEL_REACH)
     return not RUT_LABEL.search(text[start:a])
 
