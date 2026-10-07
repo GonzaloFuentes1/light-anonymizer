@@ -659,7 +659,10 @@ def snap_rects(
 
 
 def apply_page_zones(
-    page: pymupdf.Page, rects: list[pymupdf.Rect], keep: list[pymupdf.Rect] | tuple = ()
+    page: pymupdf.Page,
+    rects: list[pymupdf.Rect],
+    keep: list[pymupdf.Rect] | tuple = (),
+    applied: list[pymupdf.Rect] | None = None,
 ) -> list[list[pymupdf.Rect]]:
     """Applies ``rects`` (unrotated page space; the page must have no /Rotate while this runs) on
     ``page`` and returns what ``snap_rects`` took for each zone. The one entry point for the export
@@ -669,7 +672,8 @@ def apply_page_zones(
     it is removed: first the letters' rectangles alone (overlapping ones joined, never into a kept
     area), then the zones, which decide alone on everything else. In one pass, a letter's rectangle
     touching a large shape the zone covers whole (an outline over 40 pt, a fill-and-stroke shape)
-    came first and kept it in the file."""
+    came first and kept it in the file. ``applied``: receives every rectangle the redaction paints
+    black (the letters' and the zones')."""
     groups = snap_rects(page, rects, keep)
     letters = vectors.join_overlapping([r for group in groups for r in group[1:]], keep)
     if letters:
@@ -679,6 +683,8 @@ def apply_page_zones(
     for group in groups:
         page.add_redact_annot(group[0], fill=(0, 0, 0))
     page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+    if applied is not None:
+        applied += [pymupdf.Rect(r) for r in letters] + [pymupdf.Rect(g[0]) for g in groups]
     return groups
 
 
@@ -710,6 +716,9 @@ class PageOutcome:
     # text and the box of each character, unrotated page space): the leak check still reads it,
     # so data nobody marked blocks the export as it would on a page that stayed text.
     text_layer: tuple[str, list] | None = None
+    # Every rectangle the redaction painted black on the page (the letters' and the zones'): the
+    # check tells them from the page's own black rectangles by these exact boxes.
+    boxes: list[pymupdf.Rect] = field(default_factory=list)
 
     @property
     def rasterized(self) -> bool:
@@ -804,9 +813,11 @@ def redact_page(
         strokes.remove(page, rects, list(drawn), whole, status)
         outcome.strokes_removed_whole = [pymupdf.Rect(box) for box in whole]
     # D8: every zone, the reviewer's too, also takes the letters drawn as paths under it.
-    outcome.grown = [group[1:] for group in apply_page_zones(page, rects, keep)]
+    outcome.grown = [group[1:] for group in apply_page_zones(page, rects, keep, outcome.boxes)]
     if rects:
-        outcome.reasons = ["time"] if status.get("timeout") else leftovers.check(page, rects, deadline)
+        outcome.reasons = (
+            ["time"] if status.get("timeout") else leftovers.check(page, rects, deadline, boxes=outcome.boxes)
+        )
     if outcome.reasons:
         outcome.text_layer = chars(page)[:2]
         log.info("page %d exported as an image: %s", n, ", ".join(outcome.reasons))

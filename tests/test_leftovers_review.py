@@ -270,8 +270,8 @@ def test_no_module_survives_under_a_zone(tmp_path, name):
             assert max(pix.samples) < 60
     else:
         assert after == 0, (name, outcome.reasons)
-    if name.startswith("v3"):
-        assert outcome.rasterized and outcome.reasons == ["ink"]
+    if name.startswith("v3"):  # the clip of modules, or what it paints, makes the page an image
+        assert outcome.rasterized and outcome.reasons in (["clip"], ["ink"], ["clip", "ink"])
 
 
 def test_a_barcode_crossing_the_zone_leaves_nothing_under_it(tmp_path):
@@ -324,26 +324,30 @@ def tiling(doc):
 
 
 @pytest.mark.parametrize(
-    "name, content, resources, setup",
+    "name, content, resources, setup, image",
     [
         (
             "gradient",
             b"q /Sh0 sh Q",
             "<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>/Shading<</Sh0 {sh} 0 R>>>>",
             shading,
+            False,
         ),
+        ("flat_band", b"0.85 0.9 1 rg 0 0 300 300 re f", HELV, None, False),
+        # A hatched background shows edges under the zone however light it is: it may be data, and the
+        # page is an image (the closing review: light data must not pass).
         (
             "light_hatch",
             b"/Pattern cs /P0 scn 0 0 300 300 re f",
             "<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>/Pattern<</P0 {pat} 0 R>>>>",
             tiling,
+            True,
         ),
-        ("flat_band", b"0.85 0.9 1 rg 0 0 300 300 re f", HELV, None),
     ],
 )
-def test_a_background_that_holds_the_zone_keeps_the_page_vector(tmp_path, name, content, resources, setup):
+def test_a_background_that_holds_the_zone(tmp_path, name, content, resources, setup, image):
     outcome, _, _ = redact(tmp_path, name, content + b" 0 g " + TEXT, resources, setup, [(103, 127, 218, 143)], "blue")
-    assert not outcome.rasterized, (name, outcome.reasons)
+    assert outcome.rasterized is image, (name, outcome.reasons)
 
 
 # ---------------------------------------------------------------------------
@@ -472,3 +476,65 @@ def test_text_outside_the_crop_box_does_not_make_the_page_an_image(tmp_path):
     assert not outcome.rasterized, outcome.reasons
     with pymupdf.open(out) as doc:
         assert "Patricia" not in pdf.chars(doc[0])[0]
+
+
+# ---------------------------------------------------------------------------
+# Closing re-review: data riding on layout, look-alike boxes, light data (full export)
+# ---------------------------------------------------------------------------
+
+MODS = " ".join(f"{100 + 3 * i} {130 + 3 * j} 3 3 re" for i, j in GRID)
+THIN = " ".join(f"{100 + 3 * i} {130 + 3 * j} 0.05 3 re" for i, j in GRID)
+SOFT = "<</ExtGState<</GS1<</SMask<</S/Luminosity/G {grp} 0 R>>>>>>>>"
+CLOSING = {
+    # a layout rectangle that neither holds the zone nor lies in it, painting a QR through a clip
+    "a1a_clip_modules_fill_qr_box": (f"q {MODS} W n 0 0 0 rg 100 130 36 36 re f Q", "<<>>", None, (104, 138, 150, 166), "dark"),
+    "a1b_clip_modules_red_qr_box": (f"q {MODS} W n 1 0 0 rg 100 130 36 36 re f Q", "<<>>", None, (104, 138, 150, 166), "red"),
+    # the same rectangle through a soft mask
+    "a1d_softmask_rect_partial": ("q /GS1 gs 1 0 0 rg 100 130 40 40 re f Q", SOFT, softmask_group_img, (105, 135, 150, 165), "red"),
+    # a stroked rule through the module clip
+    "a1e_clip_modules_stroked_rule": (f"q {MODS} W n 0 0 0 RG 3 w 90 148 m 160 148 l S Q", "<<>>", None, (104, 138, 150, 166), "dark"),
+    # the document's own box, painted exactly like MuPDF's, through a clip of modules
+    "a2b_own_black_fs_box_clip_zin": (f"q {MODS} W n 0 0 0 rg 0 0 0 RG 0 0 300 300 re B Q", "<<>>", None, (102, 138, 132, 166), "dark"),
+    # light data: a grey QR, a light soft-mask checkerboard, sub-pixel modules
+    "a3a_light_qr_086": (f"q {MODS} W n 0.86 g 0 0 300 300 re f Q", "<<>>", None, (102, 138, 132, 166), "light"),
+    "a5a_softmask_light_087": ("q /GS1 gs 0.87 g 90 120 120 60 re f Q", SOFT, softmask_group_img, (110, 140, 130, 160), "light"),
+    "a5b_thin_modules_005": (f"q {THIN} W n 0 g 0 0 300 300 re f Q", "<<>>", None, (102, 138, 132, 166), "light"),
+}  # fmt: skip
+
+
+def _secret_pixels(path: Path, zone, colour: str, zoom: float = 16) -> int:
+    with pymupdf.open(path) as doc:
+        pix = doc[0].get_pixmap(
+            matrix=pymupdf.Matrix(zoom, zoom), clip=pymupdf.Rect(zone) + (1, 1, -1, -1), alpha=False
+        )
+    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].astype(int)
+    if colour == "red":
+        return int(((a[:, :, 0] > 150) & (a[:, :, 1] < 120)).sum())
+    if colour == "dark":
+        return int((a.max(axis=2) < 100).sum())
+    return int((a.min(axis=2) < 250).sum())
+
+
+@pytest.mark.parametrize("name", list(CLOSING))
+def test_no_data_rides_on_layout_or_hides_in_light_colours(tmp_path, name):
+    content, resources, setup, zone, colour = CLOSING[name]
+    src = build(tmp_path / f"{name}.pdf", content.encode(), resources, setup)
+    assert _secret_pixels(src, zone, colour) > 0
+    file = AnalyzedFile(id="c", name=src.name, path=str(src), kind="pdf", findings=[_manual(*zone)], status="confirmed")
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    assert result.exported, [leak.message for leak in result.leaks]
+    out = Path(result.output_path)
+    if result.rasterized_pages:  # one image: nothing but its pixels, black in the zone
+        with pymupdf.open(out) as doc:
+            page = doc[0]
+            assert not page.get_drawings() and not page.get_text().strip() and len(page.get_images()) == 1
+        inner = pymupdf.Rect(zone) + (1, 1, -1, -1)
+        with pymupdf.open(out) as doc:
+            assert max(doc[0].get_pixmap(matrix=pymupdf.Matrix(4, 4), clip=inner, alpha=False).samples) < 60
+        return
+    stripped = tmp_path / "stripped.pdf"
+    with pymupdf.open(out) as doc:
+        for x in doc[0].get_contents():
+            doc.update_stream(x, _BOX.sub(b"", doc.xref_stream(x)))
+        doc.save(stripped)
+    assert _secret_pixels(stripped, zone, colour) == 0, name

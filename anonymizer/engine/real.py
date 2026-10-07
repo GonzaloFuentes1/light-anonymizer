@@ -494,10 +494,10 @@ class RealEngine:
                 if Path(name).suffix.lower() != ".pdf":
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
-                whole, grown, images, layers = self._export_pdf(file, active, kept, staged)
+                whole, grown, images, layers, boxes = self._export_pdf(file, active, kept, staged)
                 # A page exported as an image is checked with the text it had before (``layers``).
                 leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer, layers)
-                leaks += verify.vector_leaks(staged, active, skip=set(layers))
+                leaks += verify.vector_leaks(staged, active, skip=set(layers), boxes=boxes)
                 leaks += verify.string_leaks(staged, active)
             else:
                 from anonymizer.engine import image
@@ -549,14 +549,15 @@ class RealEngine:
     @staticmethod
     def _export_pdf(
         file: AnalyzedFile, active: list[Finding], kept: list[Finding], staged: Path
-    ) -> tuple[list[dict], list[dict], list[dict], dict[int, tuple[str, list]]]:
+    ) -> tuple[list[dict], list[dict], list[dict], dict[int, tuple[str, list]], dict[int, list]]:
         """Applies the active findings; nothing is added over what was left visible (``kept``).
 
         Returns, in view space for the audit report, the strokes removed whole
         (``ExportResult.strokes_removed_whole``), the letters drawn as paths that each zone also
         took (D8, ``pdf.snap_rects``; ``ExportResult.grown``) and the pages exported as an image
         (``ExportResult.rasterized_pages``); and, by page, the text layer each page exported as an
-        image had after its redaction (``PageOutcome.text_layer``), for the leak check."""
+        image had after its redaction (``PageOutcome.text_layer``), and the black boxes the redaction
+        painted on each page (``PageOutcome.boxes``), for the leak check."""
         import pymupdf
 
         from anonymizer.engine import pdf
@@ -583,4 +584,5 @@ class RealEngine:
             if o.rasterized:
                 log.info("page %d of %s exported as an image: %s (%s)", n, file.id, o.reasons, o.image)
         layers = {n: o.text_layer for n, o in outcomes.items() if o.rasterized and o.text_layer is not None}
-        return out, grown, images, layers
+        boxes = {n: o.boxes for n, o in outcomes.items()}
+        return out, grown, images, layers, boxes

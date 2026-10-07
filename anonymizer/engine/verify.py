@@ -267,11 +267,14 @@ def _inner_mask(shape: tuple[int, int], polygon: np.ndarray) -> np.ndarray:
     return cv2.erode(mask, kernel).astype(bool)
 
 
-def vector_leaks(path: Path, active: list[Finding], skip: set[int] | frozenset = frozenset()) -> list[Leak]:
+def vector_leaks(
+    path: Path, active: list[Finding], skip: set[int] | frozenset = frozenset(), boxes: dict[int, list] | None = None
+) -> list[Leak]:
     """Drawings still under an active zone in an exported PDF (``leftovers.check``, with the same
     zones as the redaction): a guard that should never fire, since ``pdf.redact_page`` exports such a
     page as an image. ``skip``: the pages exported as an image (their black boxes are pixels now;
-    ``uncovered`` checks them). Each page is looked at unrotated, only in memory."""
+    ``uncovered`` checks them). ``boxes``: by page, the black boxes the redaction painted
+    (``pdf.PageOutcome.boxes``; default: the zones). Each page is looked at unrotated, only in memory."""
     leaks: list[Leak] = []
     with PDF_LOCK:
         with pymupdf.open(path) as doc:
@@ -284,7 +287,10 @@ def vector_leaks(path: Path, active: list[Finding], skip: set[int] | frozenset =
                 if rotation:
                     page.set_rotation(0)
                 try:
-                    found = leftovers.check(page, [r for r, _ in items], time.monotonic() + 2 * leftovers.SECONDS)
+                    rects = [r for r, _ in items]
+                    found = leftovers.check(
+                        page, rects, time.monotonic() + 2 * leftovers.SECONDS, boxes=(boxes or {}).get(n, rects)
+                    )
                 finally:
                     if rotation:
                         page.set_rotation(rotation)

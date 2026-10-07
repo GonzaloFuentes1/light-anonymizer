@@ -135,7 +135,7 @@ def test_a_curved_clip_under_a_zone_is_a_leftover():
 
 
 @pytest.mark.parametrize(
-    "clip, expected", [("100 280 200 40 re", []), ("160 295 4 4 re 170 295 4 4 re 180 299 4 4 re", ["ink"])]
+    "clip, expected", [("100 280 200 40 re", []), ("160 295 4 4 re 170 295 4 4 re 180 299 4 4 re", ["clip"])]
 )
 def test_a_gradient_under_a_zone_is_judged_by_what_it_paints(clip, expected):
     # A smooth gradient that holds the zone hides nothing (no edge under the box); painted through

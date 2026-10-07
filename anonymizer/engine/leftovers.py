@@ -56,7 +56,7 @@ _LINE_UP = 0.6  # points: a filter call drawn this close to a listed path's plac
 _BLACK = (0.0, 0.0, 0.0)
 INK_ZOOM = 3.0  # the inside of the zones is rendered at 216 dpi
 INK_INSET = 1.0  # points: the zone's border is left out (antialiasing of the box's own edge)
-INK_STEP = 40  # a jump of this much (0-255) between neighbouring pixels is a sharp edge
+INK_STEP = 10  # a jump of this much (0-255) between neighbouring pixels is an edge; this far from white is ink
 INK_EDGES = 3  # this many sharp edges inside a zone are ink
 
 # Why a page is exported as an image (Spanish: shown to the user and written in the audit report).
@@ -285,17 +285,18 @@ def _redaction_box(d: dict) -> bool:
     )
 
 
-def _judge(d: dict, zones: np.ndarray, visible, deadline: float | None) -> _Judged:
+def _judge(d: dict, zones: np.ndarray, visible, deadline: float | None, black: bool = False) -> _Judged:
     """Judges the drawing ``d`` (``get_drawings(extended=True)``) against ``zones`` (rows x0, y0,
-    x1, y1), where it is ``visible`` (its box cut to its clip; None: everywhere)."""
+    x1, y1), where it is ``visible`` (its box cut to its clip; None: everywhere). ``black``: it is
+    one of the black boxes this page's redaction painted."""
     kind = d.get("type") or ""
     stroked = "s" in kind
     filled = "f" in kind
     width = float(d.get("width") or 0) if stroked else 0.0
     reach = max(width, 0.5) / 2 if stroked else 0.0
     subs = subpaths(d.get("items") or ())
-    black = _redaction_box(d)
     why = None
+    many = len(subs) > 1
     layout = bool(subs)
     holder = False
     tag = "clip" if kind == "clip" else ("stroke" if kind == "s" else "shape")
@@ -308,7 +309,14 @@ def _judge(d: dict, zones: np.ndarray, visible, deadline: float | None) -> _Judg
         frame = _frame(sub) or _rounded_frame(sub)
         straight = (_rule(sub) or (_axis_open(sub) and not filled)) and kind != "clip"
         if (frame or straight) and width <= LAYOUT_WIDTH:  # page layout
-            if kind == "clip" or black or (straight and not stroked):  # a clip, a black box, nothing painted
+            if kind == "clip":
+                # A clip of several rectangles, or of a small one, whole inside a zone: what it lets
+                # through draws data there (a QR code's modules, bars).
+                small = frame and min(np.ptp(sub.ctrl, axis=0)) <= 3
+                if why is None and frame and (many or small) and any(_inside(sub.ctrl, z) for z in near):
+                    why = "clip"
+                continue
+            if black or (straight and not stroked):  # a black box of the redaction, nothing painted
                 continue
             if why is None and any(
                 _inside(sub.ctrl, (z[0] - EDGE, z[1] - EDGE, z[2] + EDGE, z[3] + EDGE)) for z in near
@@ -408,20 +416,27 @@ class _Dropper(strokes._Culler):
         return super().culler(ctx, bbox, kind)
 
 
-def _render_zones(page: pymupdf.Page, zones: list[pymupdf.Rect], drop: set[int], shadings: bool):
+def _render_zones(page: pymupdf.Page, zones: list[pymupdf.Rect], drop: set[int], shadings: bool, boxes):
     """The inside of each zone (``INK_INSET`` in) rendered on a copy of the page from which the
-    filter calls ``drop`` (and, with ``shadings``, the smooth shadings) were taken out; None when a
-    black box of the redaction that fills a zone is still in the copy (the calls did not line up:
-    nothing can be judged)."""
+    filter calls ``drop`` (and, with ``shadings``, the smooth shadings) were taken out. The copy
+    shows its whole media box: what a zone covers outside the crop box is still in the file. None
+    when one of the redaction's ``boxes`` is still in the copy (the calls did not line up: nothing
+    can be judged)."""
     with pymupdf.open() as tmp:
         tmp.insert_pdf(page.parent, from_page=page.number, to_page=page.number, links=False, annots=False)
         copy = tmp[0]
         strokes._filter(copy, _Dropper(set(drop), shadings), update=True)
         for d in copy.get_drawings():
-            if _redaction_box(d) and any((pymupdf.Rect(d["rect"]) & z) == z for z in zones):
+            if _redaction_box(d) and any(_same(d["rect"], b) for b in boxes):
                 return None
+        dx, dy = copy.cropbox.x0, copy.cropbox.y0  # page space -> media box space
+        copy.set_cropbox(copy.mediabox)
+        media = copy.rect
         out = []
         for z in zones:
+            z = (z + (dx, dy, dx, dy)) & media
+            if z.is_empty:
+                continue
             inner = z + (INK_INSET, INK_INSET, -INK_INSET, -INK_INSET)
             if inner.is_empty or inner.width < 1 or inner.height < 1:
                 continue
@@ -431,18 +446,17 @@ def _render_zones(page: pymupdf.Page, zones: list[pymupdf.Rect], drop: set[int],
         return out
 
 
-def _ink_under(page: pymupdf.Page, zones: list[pymupdf.Rect], layout: set[int], backgrounds: set[int]) -> bool:
+def _same(r, box) -> bool:
+    return all(abs(a - b) <= 0.02 for a, b in zip(r, box, strict=True))
+
+
+def _ink_under(page: pymupdf.Page, zones: list[pymupdf.Rect], layout: set[int], backgrounds: set[int], boxes) -> bool:
     """Something is still painted inside a zone. Two renders of a copy of the page, inside the zones:
     without the redaction's black boxes and the page layout (``layout``), any sharp edge is ink
     (an image a soft mask carries, data painted through a clip, a glyph); without the backgrounds
     too (``backgrounds``: fills that hold a zone whole under rectangular clips, and smooth
     shadings), anything not white is ink (a uniform image or pattern under the box)."""
-    # Only what shows: the part of each zone on the page (text placed off the page is removed by
-    # the redaction and never shows).
-    zones = [z & page.rect for z in zones if z.intersects(page.rect)]
-    if not zones:
-        return False
-    edges = _render_zones(page, zones, layout, False)
+    edges = _render_zones(page, zones, layout, False, boxes)
     if edges is None:
         return True
     for a in edges:
@@ -452,7 +466,7 @@ def _ink_under(page: pymupdf.Page, zones: list[pymupdf.Rect], layout: set[int], 
         n += int((np.abs(np.diff(a, axis=0)).max(axis=2) > INK_STEP).sum())
         if n >= INK_EDGES:
             return True
-    plain = _render_zones(page, zones, layout | backgrounds, True)
+    plain = _render_zones(page, zones, layout | backgrounds, True, boxes)
     if plain is None:
         return True
     return any(int((a.min(axis=2) < 255 - INK_STEP).sum()) >= INK_EDGES for a in plain)
@@ -481,14 +495,19 @@ def _soft_masks(doc: pymupdf.Document) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def check(page: pymupdf.Page, zones: list[pymupdf.Rect], deadline: float | None = None) -> list[str]:
+def check(
+    page: pymupdf.Page, zones: list[pymupdf.Rect], deadline: float | None = None, boxes: list | None = None
+) -> list[str]:
     """Reasons (keys of ``REASONS``) why what is left on ``page`` after its redaction may still hold
     something under ``zones``; empty when nothing is. Call on the unrotated page, after its
-    redaction, with ``PDF_LOCK`` held. Past ``deadline`` (monotonic; ``SECONDS`` from now by
-    default) the answer is ["time"]."""
+    redaction, with ``PDF_LOCK`` held. ``boxes``: every rectangle this page's redaction painted
+    black (the zones and the letters' rectangles; default: the zones); a black rectangle that is
+    not one of them is page content. Past ``deadline`` (monotonic; ``SECONDS`` from now by default)
+    the answer is ["time"]."""
     zones = [pymupdf.Rect(z) for z in zones if not pymupdf.Rect(z).is_empty]
     if not zones:
         return []
+    boxes = [tuple(pymupdf.Rect(b)) for b in (zones if boxes is None else boxes)]
     deadline = time.monotonic() + SECONDS if deadline is None else deadline
     table = np.array([[z.x0, z.y0, z.x1, z.y1] for z in zones], np.float64)
     found: set[str] = set()
@@ -501,10 +520,10 @@ def check(page: pymupdf.Page, zones: list[pymupdf.Rect], deadline: float | None 
         probe = strokes._Culler()
         strokes._filter(page, probe, update=False)
         match = strokes._match(probe.calls, entries, ~page.transformation_matrix, deadline, clips)
-        boxes = _boxes(drawings)
+        rough = _boxes(drawings)
         near = np.zeros(len(drawings), bool)
         for x0, y0, x1, y1 in table:  # NaN rows (groups) compare False
-            near |= (boxes[:, 0] < x1) & (x0 < boxes[:, 2]) & (boxes[:, 1] < y1) & (y0 < boxes[:, 3])
+            near |= (rough[:, 0] < x1) & (x0 < rough[:, 2]) & (rough[:, 1] < y1) & (y0 < rough[:, 3])
         # Shapes painted with a pattern that hold the zones whole under rectangular clips (a page's
         # background pattern): judged by what they paint there, with their cells.
         holder_calls: set[int] = set()
@@ -526,10 +545,14 @@ def check(page: pymupdf.Page, zones: list[pymupdf.Rect], deadline: float | None 
                 holder_calls.add(n)
                 holder_clips.add(seq)
         judged: dict[int, _Judged] = {}
+        ours: set[int] = set()  # the black boxes this page's redaction painted (positions in the listing)
         for k in np.flatnonzero(near):
             strokes._check(deadline)
             d = drawings[k]
             if (d.get("type") or "") == "group":
+                continue
+            if _redaction_box(d) and any(_same(d["rect"], b) for b in boxes):
+                ours.add(int(k))
                 continue
             visible = None
             if k in by_seq:
@@ -560,15 +583,21 @@ def check(page: pymupdf.Page, zones: list[pymupdf.Rect], deadline: float | None 
                 if owner < 0 or probe.calls[n][0] not in strokes._PATH_KINDS:
                     continue
                 seq = index.get(owner, -1)
+                if seq in ours:
+                    layout.add(n)  # the redaction's own boxes always go
+                    continue
                 j = judged.get(seq)
-                if j is None:
+                # Page layout and backgrounds are left out of the renders only where they show as
+                # plain boxes: under rectangular clips, in a document without soft masks. Anything
+                # else may carry data (a QR painted through a clip, a soft mask's image).
+                if j is None or masked or not (by_seq[seq][1].clip < 0 or plain.get(by_seq[seq][1].clip)):
                     continue
                 if j.layout and not j.holder:
                     layout.add(n)
-                elif j.holder and not masked and (by_seq[seq][1].clip < 0 or plain.get(by_seq[seq][1].clip)):
+                elif j.holder:
                     backgrounds.add(n)
             strokes._check(deadline)
-            if _ink_under(page, zones, layout, backgrounds):
+            if _ink_under(page, zones, layout, backgrounds, boxes):
                 found.add("ink")
     except TimeoutError:
         return ["time"]
