@@ -38,7 +38,7 @@ TYPES = ("rut", "phone")
 
 _DASH = r"\-‐‑‒–—−"  # for character classes: the hyphen is escaped
 _RUT_DV = re.compile(rf"[{_DASH}]\s*[\dkK]\s*$")  # a dash right before a one-character check digit
-_DOTTED = re.compile(rf"^\s*\d{{1,2}}\.\d{{3}}\.\d{{3}}\s*[{_DASH}]?\s*[\dkK]\s*$")  # 12.345.678-5
+_DOTTED = re.compile(rf"^\s*\d{{1,2}}\.\d{{3}}\.\d{{3}}\s*[{_DASH}]?\s*[\dkK]\s*$")  # a RUT written NN.NNN.NNN-D
 _RUT_CHARS = re.compile(rf"[\d\s.{_DASH}kK]+")
 _PHONE_CHARS = re.compile(rf"[\d\s.{_DASH}+()]+")
 # A finding whose text is only a value (digits and separators), with no label or words around it.
@@ -62,7 +62,7 @@ _NUMBER_SIGN = re.compile(r"(?i)\bn\s*[°º]")  # "N°", "Nº": número
 
 
 def rut_key(text: str) -> str | None:
-    """``"72.123.456-8"`` -> ``"721234568"``; None when it cannot be a RUT (OCR's X is read as K)."""
+    """a RUT written with dots and dash -> its digits and check digit; None when it cannot be a RUT (OCR's X is read as K)."""
     key = re.sub(r"[^\dkKxX]", "", text).upper().replace("X", "K")
     return key if re.fullmatch(r"\d{6,9}[\dK]", key) else None
 
