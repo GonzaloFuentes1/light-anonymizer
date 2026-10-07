@@ -10,7 +10,8 @@ PP-OCR models inside the installed ``rapidocr`` package, whose wheel is pinned b
 runs PyInstaller with ``packaging/light_anonymizer.spec`` (one folder, windowed), writes the
 third-party license texts (``THIRD_PARTY_LICENSES/``, see collect_licenses.py) and ``LEEME.txt``
 (how to open it, the license and where its exact source code is: the commit it was built from)
-next to the executable, checks that nothing development-only or document-like ended up in the
+next to the executable, copies the user manual there (``docs/user-manual/manual-de-usuario.pdf``,
+see build_manual_pdf.py), checks that nothing development-only or document-like ended up in the
 bundle, and writes ``dist/LightAnonymizer-<version>-windows.zip`` and the build record the
 installer needs (``dist/LightAnonymizer-build.json``). With ``--installer`` it then compiles
 ``dist/LightAnonymizer-<version>-setup.exe`` (see build_installer.py).
@@ -49,6 +50,8 @@ SPEC = ROOT / "packaging" / "light_anonymizer.spec"
 DIST = ROOT / "dist"
 WORK = ROOT / "build"
 REPOSITORY = "https://github.com/GonzaloFuentes1/light-anonymizer"
+# The user manual (Spanish), next to LEEME.txt: the only PDF the bundle may hold, byte for byte this one.
+MANUAL = ROOT / "docs" / "user-manual" / "manual-de-usuario.pdf"
 # Modules that must never be bundled (development tools, test bench, unused heavy libraries).
 FORBIDDEN_MODULES = {"test_bench", "tests", "scripts", "matplotlib", "pypdfium2", "pytest", "_pytest", "tkinter"}
 # Files and folders that must never be bundled: FFmpeg (LGPL, unused) and any test data or results.
@@ -104,8 +107,12 @@ def remove_previous_outputs(version: str) -> None:
         path.unlink(missing_ok=True)
 
 
-def check_bundle(app_dir: Path) -> list[str]:
-    """Development-only modules, forbidden or unexpected files and RUTs that ended up in the bundle."""
+def check_bundle(app_dir: Path, manual: bytes | None = None) -> list[str]:
+    """Development-only modules, forbidden or unexpected files and RUTs that ended up in the bundle.
+
+    ``manual``: the user manual's bytes; a file with them, named like it, next to the executable is
+    the one document the bundle may hold.
+    """
     problems = []
     tocs = list(WORK.glob("light_anonymizer/PYZ-*.toc"))  # (archive path, [(module, source, type), ...])
     if not tocs:
@@ -126,7 +133,8 @@ def check_bundle(app_dir: Path) -> list[str]:
             problems.append(f"file bundled: {relative}")
         if not path.is_file():
             continue
-        if path.suffix.lower() in FORBIDDEN_SUFFIXES:
+        is_manual = manual is not None and relative == Path(MANUAL.name) and path.read_bytes() == manual
+        if path.suffix.lower() in FORBIDDEN_SUFFIXES and not is_manual:
             problems.append(f"document or data file bundled: {relative}")
         if path.parent == internal / "models" and path.name not in expected_models:
             problems.append(f"unexpected file in models/: {relative}")
@@ -174,6 +182,9 @@ Con el .zip ({NAME}-{version}-windows.zip):
 1. Descomprime el .zip completo en una carpeta con una ruta corta y fuera de OneDrive, por
    ejemplo C:\\Anonimizador. No abras el programa desde dentro del .zip.
 2. Abre {NAME}.exe. La carpeta _internal es parte del programa: déjala junto al .exe.
+
+El manual de usuario está en {MANUAL.name}, en la carpeta del programa (con el
+instalador, también en el menú Inicio: "Manual del Anonimizador").
 
 Necesita Microsoft Edge WebView2 Runtime, que ya viene en Windows 10 y 11 actualizados.
 
@@ -259,11 +270,14 @@ def main(argv: list[str] | None = None) -> int:
         print("Inno Setup 6 (ISCC.exe) was not found: see scripts/build_installer.py.", file=sys.stderr)
         return 1
     problems = check_models()
+    if not MANUAL.is_file():
+        problems.append(f"{MANUAL} is missing: run  uv run --with markdown python scripts/build_manual_pdf.py")
     if problems:
         print("Cannot build:\n  " + "\n  ".join(problems), file=sys.stderr)
         return 1
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
+    manual = MANUAL.read_bytes()  # read before PyInstaller, like everything else from the working copy
     started = time.perf_counter()
     remove_previous_outputs(version)
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN"]
@@ -286,7 +300,8 @@ def main(argv: list[str] | None = None) -> int:
         print("The working copy or HEAD changed during the build: it is marked as a test build.", file=sys.stderr)
         dirty = True
     write_readme(app_dir, version, commit, dirty)
-    problems = check_bundle(app_dir)
+    (app_dir / MANUAL.name).write_bytes(manual)
+    problems = check_bundle(app_dir, manual)
     if problems:
         print("The bundle contains forbidden content:\n  " + "\n  ".join(problems), file=sys.stderr)
         return 1

@@ -9,7 +9,8 @@
 ;   AppVersion         version of the build (pyproject.toml), e.g. 0.1.0
 ;   AppNumericVersion  the same with four numbers, for the file properties, e.g. 0.1.0.0
 ;   SourceDir          the one-folder build: LightAnonymizer.exe, _internal\, LEEME.txt, LICENSE.txt,
-;                      LICENSES.md and THIRD_PARTY_LICENSES\ (the AGPL notices travel with the program)
+;                      LICENSES.md and THIRD_PARTY_LICENSES\ (the AGPL notices travel with the program),
+;                      and the user manual, manual-de-usuario.pdf
 ;   TestBuild          defined for a build that is not exactly a commit: marked "no distribuir", and
 ;                      its file name ends in -PRUEBA-no-distribuir
 ;   AppId, AppMutex, StartMenuName
@@ -136,10 +137,12 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 [Icons]
 Name: "{autoprograms}\{#StartMenuName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Comment: "Anonimiza documentos PDF e imágenes en este computador"; Check: not WizardNoIcons
 Name: "{autodesktop}\{#StartMenuName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Comment: "Anonimiza documentos PDF e imágenes en este computador"; Tasks: desktopicon
+Name: "{autoprograms}\Manual del {#StartMenuName}"; Filename: "{app}\manual-de-usuario.pdf"; Comment: "Manual de usuario del Anonimizador"; Check: not WizardNoIcons
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Abrir el Anonimizador"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\LEEME.txt"; Description: "Leer LEEME.txt (uso, licencia y código fuente)"; Flags: nowait postinstall skipifsilent shellexec unchecked
+Filename: "{app}\manual-de-usuario.pdf"; Description: "Leer el manual de usuario"; Flags: nowait postinstall skipifsilent shellexec unchecked
 
 [UninstallDelete]
 ; Anything the program files gained after installing (the user's data is elsewhere).

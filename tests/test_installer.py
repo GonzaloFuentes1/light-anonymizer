@@ -19,6 +19,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -115,6 +116,17 @@ def test_the_whole_build_folder_is_installed_with_its_license_notices():
     assert files[0]["Source"] == r"{#SourceDir}\*" and files[0]["DestDir"] == "{app}"
     assert {"recursesubdirs", "createallsubdirs", "ignoreversion"} <= set(files[0]["Flags"].split())
     assert {"LEEME.txt", "LICENSE.txt", "LICENSES.md", "THIRD_PARTY_LICENSES/INDEX.txt"} <= set(builder.REQUIRED)
+
+
+def test_the_user_manual_is_installed_next_to_leeme():
+    manual = ROOT / "docs" / "user-manual" / "manual-de-usuario.pdf"
+    assert manual.is_file() and manual.read_bytes().startswith(b"%PDF")
+    assert manual.name in builder.REQUIRED
+    icons = {entry["Name"]: entry for entry in entries("Icons")}
+    start = icons[r"{autoprograms}\Manual del {#StartMenuName}"]  # renamed with the test's StartMenuName
+    assert start["Filename"] == rf"{{app}}\{manual.name}" and start["Check"] == "not WizardNoIcons"
+    run = next(entry for entry in entries("Run") if entry["Filename"] == rf"{{app}}\{manual.name}")
+    assert {"postinstall", "shellexec", "unchecked", "skipifsilent"} <= set(run["Flags"].split())
 
 
 def test_upgrades_replace_the_libraries_and_never_delete_user_data(monkeypatch, tmp_path):
@@ -244,7 +256,7 @@ def fake_build(tmp_path: Path, *, commit="a" * 40, dirty=False, version="0.1.0")
     (app / "THIRD_PARTY_LICENSES").mkdir()
     (app / "LightAnonymizer.exe").write_bytes(b"MZ fake executable")
     (app / "_internal" / "core.dll").write_bytes(b"core")
-    for name in ("LEEME.txt", "LICENSE.txt", "LICENSES.md", "THIRD_PARTY_LICENSES/INDEX.txt"):
+    for name in ("LEEME.txt", "LICENSE.txt", "LICENSES.md", "THIRD_PARTY_LICENSES/INDEX.txt", "manual-de-usuario.pdf"):
         (app / name).write_text(name, encoding="utf-8")
     info = app.parent / "LightAnonymizer-build.json"
     builder.write_build_info(info, version, commit, dirty, app)
@@ -267,7 +279,7 @@ def fake_build(tmp_path: Path, *, commit="a" * 40, dirty=False, version="0.1.0")
 def test_build_record_vouches_for_every_file_of_the_folder(tmp_path, change):
     app, info = fake_build(tmp_path)
     record, problems = builder.read_build_info(info, app)
-    assert problems == [] and record["version"] == "0.1.0" and record["dirty"] is False and record["files"] == 6
+    assert problems == [] and record["version"] == "0.1.0" and record["dirty"] is False and record["files"] == 7
     change(app)
     assert any("is not the build" in p for p in builder.read_build_info(info, app)[1])
 
@@ -411,6 +423,38 @@ def test_iscc_without_installer_is_pointed_out(build_exe, monkeypatch, capsys):
     assert "--iscc has no effect without --installer" in capsys.readouterr().err
 
 
+def test_the_manual_is_the_only_document_the_bundle_may_hold(build_exe, monkeypatch, tmp_path):
+    monkeypatch.setattr(build_exe, "WORK", tmp_path / "work")
+    app = tmp_path / "LightAnonymizer"
+    (app / "_internal").mkdir(parents=True)
+    manual = b"%PDF-1.7 the manual"
+    (app / build_exe.MANUAL.name).write_bytes(manual)
+
+    def documents(**kw) -> list[str]:
+        return [p for p in build_exe.check_bundle(app, **kw) if p.startswith("document")]
+
+    assert documents(manual=manual) == []
+    assert documents() == [f"document or data file bundled: {build_exe.MANUAL.name}"]  # not vouched for
+    assert documents(manual=b"%PDF-1.7 another manual") != []  # not the manual's bytes
+    (app / "_internal" / build_exe.MANUAL.name).write_bytes(manual)  # the right bytes, the wrong place
+    (app / "informe.pdf").write_bytes(manual)  # the right bytes, another name
+    assert sorted(documents(manual=manual)) == [
+        f"document or data file bundled: {Path('_internal', build_exe.MANUAL.name)}",
+        "document or data file bundled: informe.pdf",
+    ]
+
+
+def test_a_build_without_the_manual_is_refused(build_exe, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(build_exe, "MANUAL", tmp_path / "manual-de-usuario.pdf")
+    monkeypatch.setattr(build_exe, "git_state", lambda: ("a" * 40, False))
+    monkeypatch.setattr(build_exe, "check_models", lambda: [])
+    monkeypatch.setattr(build_exe.sys, "platform", "win32")
+    found = SimpleNamespace(util=SimpleNamespace(find_spec=lambda name: object()))  # PyInstaller "installed"
+    monkeypatch.setattr(build_exe, "importlib", found)
+    assert build_exe.main([]) == 1
+    assert "build_manual_pdf.py" in capsys.readouterr().err
+
+
 def test_main_says_how_to_get_inno_setup(monkeypatch, capsys):
     monkeypatch.setattr(builder, "find_iscc", lambda explicit=None: None)
     monkeypatch.setattr(builder.sys, "platform", "win32")
@@ -504,6 +548,7 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
     shortcut = Path(
         os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs", f"{test_defines['StartMenuName']}.lnk"
     )
+    manual_shortcut = shortcut.with_name(f"Manual del {test_defines['StartMenuName']}.lnk")
 
     def install(setup: Path, icons: bool = True) -> int:
         args = [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", f"/DIR={target}"]
@@ -534,7 +579,8 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
         # It says so in the installed-apps list (and the accents survive the compiler).
         assert installed("DisplayName") == "Anonimizador (compilación de prueba: no distribuir)"
         assert installed("Publisher") == "Gonzalo Fuentes"
-        assert shortcut.is_file()
+        assert shortcut.is_file() and manual_shortcut.is_file()
+        assert (target / "manual-de-usuario.pdf").is_file()
 
         with Mutex(test_defines["AppMutex"]):  # the app is running: Setup gives up, nothing changes
             assert install(new_setup) != 0
@@ -562,13 +608,14 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
         (target / "_internal" / "written_later.txt").write_text("x", encoding="utf-8")
         assert uninstall() == 0
         assert not target.exists() and installed() is None and not shortcut.exists()
+        assert not manual_shortcut.exists()
         assert not stale.exists() and not no_pid.exists()  # deleted even when uninstalling silently
         assert alive.exists() and (alive / "informe_ficticio.pdf").is_file()  # its app still runs
         assert export.exists()  # kept while any session is alive: it may be that app's export
 
         # A scripted install without the Start-menu shortcut.
         assert install(new_setup, icons=False) == 0
-        assert installed() == "0.0.2" and not shortcut.exists()
+        assert installed() == "0.0.2" and not shortcut.exists() and not manual_shortcut.exists()
         assert uninstall() == 0 and not target.exists() and installed() is None
     finally:
         if (target / "unins000.exe").exists():
@@ -578,5 +625,6 @@ def test_fake_app_installs_upgrades_and_uninstalls(tmp_path):
             key.Close()
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"{UNINSTALL_KEYS}\{test_defines['AppId']}_is1")
         shortcut.unlink(missing_ok=True)
+        manual_shortcut.unlink(missing_ok=True)
         for folder in planted:
             shutil.rmtree(folder, ignore_errors=True)

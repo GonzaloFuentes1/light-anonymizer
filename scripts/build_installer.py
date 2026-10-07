@@ -44,7 +44,14 @@ APP_DIR = DIST / NAME
 BUILD_INFO = DIST / f"{NAME}-build.json"
 ISS = ROOT / "packaging" / "installer.iss"
 # What must travel with the program (the AGPL's notices and the source-code offer).
-REQUIRED = (f"{NAME}.exe", "LEEME.txt", "LICENSE.txt", "LICENSES.md", "THIRD_PARTY_LICENSES/INDEX.txt")
+REQUIRED = (
+    f"{NAME}.exe",
+    "LEEME.txt",
+    "LICENSE.txt",
+    "LICENSES.md",
+    "THIRD_PARTY_LICENSES/INDEX.txt",
+    "manual-de-usuario.pdf",
+)
 # What goes into the installer besides the build folder: they must be those of the build's commit.
 INSTALLER_SOURCES = ("packaging/installer.iss", "LICENSE", "scripts/build_installer.py")
 # End of a test build's installer file name (OutputSuffix in installer.iss).

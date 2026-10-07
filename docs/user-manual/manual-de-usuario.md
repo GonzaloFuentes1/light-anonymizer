@@ -56,7 +56,7 @@ La aplicación funciona en Windows 10 y Windows 11 de 64 bits. No funciona en Ma
 5. Puedes elegir crear un acceso directo en el escritorio. Viene desmarcado.
 6. Al final, deja marcada la casilla **"Abrir el Anonimizador"** si quieres empezar de inmediato.
 
-Después, abre la aplicación desde el menú Inicio: se llama **Anonimizador**. La primera vez puede tardar un poco más, porque el antivirus la revisa.
+Después, abre la aplicación desde el menú Inicio: se llama **Anonimizador**. La primera vez puede tardar un poco más, porque el antivirus la revisa. Este manual queda en el menú Inicio como **Manual del Anonimizador**.
 
 Si tu equipo tiene el "Control inteligente de aplicaciones" o reglas de la institución, puede que Windows no te deje abrirla. En ese caso, pide ayuda a soporte informático.
 
@@ -66,6 +66,8 @@ A veces la aplicación se entrega como `LightAnonymizer-<versión>-windows.zip`.
 
 1. Descomprime el .zip completo en una carpeta con una ruta corta y fuera de OneDrive, por ejemplo `C:\Anonimizador`. No abras el programa desde dentro del .zip.
 2. Abre `LightAnonymizer.exe`. Deja la carpeta `_internal` junto al programa: es parte de él.
+
+Este manual viene en la misma carpeta, como `manual-de-usuario.pdf`.
 
 ### Actualizar
 
