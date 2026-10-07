@@ -694,6 +694,9 @@ Also: `LICENSES.md` generated from the actual license files, a test that there i
 traffic, the final size, `README.md` with screenshots and `DEVELOPMENT.md`. Windows only (D4:
 macOS is not a version-1 target).
 
+The end-user manual exists (2026-10-06): `docs/user-manual/manual-de-usuario.md` and its PDF, which the
+installer ships next to `LEEME.txt`, plus a usability-test kit in `docs/usability-test/`.
+
 ---
 
 ## 11. Test set and metric (phase 0 deliverables)
