@@ -2,7 +2,7 @@
 
 **Español** · [English](README.md)
 
-Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computador**, pensada para funcionarios públicos chilenos que publican documentos por transparencia (CoP 33 / SmartGORE). Encuentra datos personales —RUT, correo, teléfono, URL, nombres de una lista, rostros, firmas manuscritas y dibujadas (siempre marcadas como dudosas, para revisarlas) y texto dentro de escaneos y fotos—, los elimina de verdad (no con rectángulos negros dibujados encima), limpia los metadatos y después revisa la salida para detectar fugas. Nada sale del computador.
+Herramienta de escritorio que anonimiza PDF e imágenes **en el propio computador**, pensada para funcionarios públicos chilenos que publican documentos por transparencia. Encuentra datos personales —RUT, correo, teléfono, URL, nombres de una lista, rostros, firmas manuscritas y dibujadas (siempre marcadas como dudosas, para revisarlas) y texto dentro de escaneos y fotos—, los elimina de verdad (no con rectángulos negros dibujados encima), limpia los metadatos y después revisa la salida para detectar fugas. Nada sale del computador.
 
 > **Estado: fase 0 terminada, fases 1 y 2 en curso, fase 3 pendiente.** El repositorio contiene el banco de pruebas (un conjunto de prueba ficticio con verdad de terreno exacta, el evaluador y las líneas base), el motor y una aplicación de escritorio preliminar que lo usa, con un instalador para Windows. La revisión humana de cada documento antes de publicarlo es obligatoria, siempre.
 
@@ -59,7 +59,7 @@ uv run python -m test_bench.evaluate --manifest test_data/generated/manifest.jso
     --outputs-dir results/details/prototype/files --report-dir results/details/prototype
 
 uv run python -m test_bench.compare         # láminas de antes y después -> results/examples
-uv run python -m test_bench.process_folder <carpeta con tus documentos> --output results/gore
+uv run python -m test_bench.process_folder <carpeta con tus documentos> --output results/folder
 uv run pytest -q                            # pruebas
 ```
 
