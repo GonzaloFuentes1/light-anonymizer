@@ -25,6 +25,12 @@ component with its version, license and source package, and is the authoritative
 what ships; this file records the decisions. The build fails if a bundled package has no license
 text, or if a document, image or test file ends up in the bundle.
 
+**The Windows installer** (`packaging/installer.iss`) installs that same folder, `LEEME.txt`,
+`LICENSE.txt`, this file and `THIRD_PARTY_LICENSES/` included, so the AGPL notices and the offer
+of the source code travel with it; it shows the AGPL before installing. It is compiled with Inno
+Setup, whose own setup and uninstall program goes inside every installer: the Inno Setup License
+allows that (see section 1).
+
 ## 1. Components planned for the application
 
 Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
@@ -49,6 +55,7 @@ Status: ✅ compatible · ⚠️ compatible with conditions · ⛔ not used.
 | Starlette / Uvicorn / Pydantic / python-multipart | 1.7.0 / 0.54.0 / 2.13.5 / 0.0.32 | BSD-3 / BSD-3 / MIT / Apache-2.0 | ✅ | |
 | pywebview | 6.2.1 | BSD-3-Clause | ✅ | Includes Microsoft's WebView2 SDK (BSD-style license; the notice is reproduced). On Windows it uses pythonnet (MIT), clr-loader (MIT), proxy-tools (MIT) and bottle (MIT). On macOS it uses pyobjc (MIT). |
 | PyInstaller | 6.22.3 | GPL-2.0 with a bootloader exception | ✅ | It is a build tool; the exception covers what ends up inside the executable. |
+| Inno Setup | 6.7.3 | Inno Setup License (permissive) | ✅ | Compiles the Windows installer. Its license (`license.txt` in its installation, verified 2026-10-05) lets anyone use it "for any purpose, including commercial applications" and redistribute it, as long as its copyright notices and web addresses stay (they do: the installer's "Acerca de Instalar" box shows them); so the installers it compiles, which contain its setup and uninstall program, can be handed out freely, also by a public institution. Its site asks commercial users to buy a license, which the license itself does not require. It only packs the application: the installer is not part of the AGPL program. |
 | reportlab | 5.0.1 | BSD | ⚠️ | Includes the DarkGarden font (GPL-2.0), which will be excluded from the package if reportlab is used for the PDF report. |
 | piexif | 1.1.3 | MIT | ✅ | |
 | qrcode / segno | 8.2 / 1.6.6 | BSD-3 / BSD-3 | ✅ | Only if QR generation is needed. QR reading is done by OpenCV. |

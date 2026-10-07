@@ -2,6 +2,7 @@
 
 Usage (from the repository root, on Windows, with every change committed):
     uv run --group build python scripts/build_exe.py
+    uv run --group build python scripts/build_exe.py --installer      # also the installer (Inno Setup 6)
     uv run --group build python scripts/build_exe.py --allow-dirty    # test build of uncommitted changes
 
 It checks the models first (YuNet in ``models/`` with its SHA-256, from download_models.py; the
@@ -10,11 +11,13 @@ runs PyInstaller with ``packaging/light_anonymizer.spec`` (one folder, windowed)
 third-party license texts (``THIRD_PARTY_LICENSES/``, see collect_licenses.py) and ``LEEME.txt``
 (how to open it, the license and where its exact source code is: the commit it was built from)
 next to the executable, checks that nothing development-only or document-like ended up in the
-bundle, and writes ``dist/LightAnonymizer-<version>-windows.zip``.
+bundle, and writes ``dist/LightAnonymizer-<version>-windows.zip`` and the build record the
+installer needs (``dist/LightAnonymizer-build.json``). With ``--installer`` it then compiles
+``dist/LightAnonymizer-<version>-setup.exe`` (see build_installer.py).
 
 The AGPL obliges whoever hands the executable to someone else to offer its exact source code, so
 a working copy with uncommitted changes is refused unless ``--allow-dirty`` is given; such a build
-says so in ``LEEME.txt`` and must not be distributed.
+says so in ``LEEME.txt`` (and its installer in its own texts) and must not be distributed.
 """
 
 from __future__ import annotations
@@ -32,6 +35,8 @@ import zipfile
 from datetime import date
 from pathlib import Path
 
+from build_installer import BUILD_INFO, find_iscc, write_build_info
+from build_installer import build as build_installer
 from collect_licenses import collect as collect_licenses
 from download_models import DESTINATION as MODELS_DIR
 from download_models import MODELS
@@ -88,6 +93,17 @@ def git_state() -> tuple[str | None, bool]:
     return commit, bool(status.strip())
 
 
+def changed_during_build(commit: str | None, dirty: bool) -> bool:
+    """Whether HEAD moved or the working copy changed since a clean build started."""
+    return not dirty and git_state() != (commit, False)
+
+
+def remove_previous_outputs(version: str) -> None:
+    """This version's zip, installers (release or test) and build record: they describe an older build."""
+    for path in [DIST / f"{NAME}-{version}-windows.zip", BUILD_INFO, *DIST.glob(f"{NAME}-{version}-setup*.exe")]:
+        path.unlink(missing_ok=True)
+
+
 def check_bundle(app_dir: Path) -> list[str]:
     """Development-only modules, forbidden or unexpected files and RUTs that ended up in the bundle."""
     problems = []
@@ -142,21 +158,35 @@ Anonimiza documentos PDF e imágenes en tu computador: detecta datos personales 
 correos, teléfonos, direcciones, rostros y otros), te deja revisarlos y exporta copias censuradas.
 Funciona sin conexión: los documentos no salen del computador.
 
-Cómo abrirlo
-------------
+Cómo instalarlo y abrirlo
+-------------------------
+Se entrega de dos formas; las dos traen el mismo programa.
+
+Con el instalador ({NAME}-{version}-setup.exe):
+1. Ábrelo y sigue los pasos. No pide permisos de administrador: se instala solo para tu usuario,
+   en %LOCALAPPDATA%\\Programs\\{NAME}.
+2. Abre el Anonimizador desde el menú Inicio.
+Una versión nueva se instala encima de la anterior. Para desinstalarlo: Configuración >
+Aplicaciones > Aplicaciones instaladas (en Windows 10, Aplicaciones y características) >
+Anonimizador.
+
+Con el .zip ({NAME}-{version}-windows.zip):
 1. Descomprime el .zip completo en una carpeta con una ruta corta y fuera de OneDrive, por
    ejemplo C:\\Anonimizador. No abras el programa desde dentro del .zip.
-2. Abre LightAnonymizer.exe. La carpeta _internal es parte del programa: déjala junto al .exe.
-3. Necesita Microsoft Edge WebView2 Runtime, que ya viene en Windows 10 y 11 actualizados.
+2. Abre {NAME}.exe. La carpeta _internal es parte del programa: déjala junto al .exe.
 
-Windows puede avisar "Windows protegió tu PC" porque el programa todavía no tiene firma digital.
-Si lo recibiste de una fuente confiable, elige "Más información" y luego "Ejecutar de todos
-modos". Si tu equipo tiene Control inteligente de aplicaciones o reglas de la institución, puede
-que Windows no lo deje abrir: en ese caso pide ayuda a soporte informático.
+Necesita Microsoft Edge WebView2 Runtime, que ya viene en Windows 10 y 11 actualizados.
+
+Windows puede avisar "Windows protegió su PC" (editor desconocido) al abrir el instalador o el
+programa, porque todavía no tienen firma digital. Si lo recibiste de una fuente confiable, elige
+"Más información" y luego "Ejecutar de todas formas". Si tu equipo tiene Control inteligente de
+aplicaciones o reglas de la institución, puede que Windows no lo deje abrir: en ese caso pide
+ayuda a soporte informático.
 
 Mientras trabajas, la aplicación guarda una copia de los documentos en la carpeta temporal de
 Windows y la borra al cerrarse. Si se cierra de forma inesperada, esa copia se borra la próxima
-vez que la abras.
+vez que la abras. En %LOCALAPPDATA%\\Anonimizador guarda su registro técnico y sus estimaciones
+de tiempo (nunca documentos): desinstalar el programa no los borra, salvo que lo pidas.
 
 Licencia
 --------
@@ -178,7 +208,8 @@ Para compilarla en Windows: instala uv (https://docs.astral.sh/uv/) y, en la car
   uv sync --group build
   uv run python scripts/download_models.py
   uv run --group build python scripts/build_exe.py
-(detalles en README.md, sección "Building the Windows executable").
+(con --installer también genera el instalador, para lo que se necesita Inno Setup 6; detalles en
+README.md, sección "Building the Windows executable").
 Dónde está el código fuente de los componentes de terceros con licencias copyleft (PyMuPDF y
 MuPDF, GEOS, certifi, tqdm): THIRD_PARTY_LICENSES\\INDEX.txt.
 """
@@ -204,7 +235,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--allow-dirty", action="store_true", help="build from uncommitted changes (test builds only: do not hand out)"
     )
+    parser.add_argument("--installer", action="store_true", help="also compile the installer (needs Inno Setup 6)")
+    parser.add_argument("--iscc", help="with --installer: path of ISCC.exe (default: looked up)")
     args = parser.parse_args(argv)
+    if args.iscc and not args.installer:
+        print("--iscc has no effect without --installer: no installer will be compiled.", file=sys.stderr)
     if sys.platform != "win32":
         print("This script builds the Windows executable: run it on Windows.", file=sys.stderr)
         return 1
@@ -219,6 +254,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    iscc = find_iscc(args.iscc) if args.installer else None
+    if args.installer and iscc is None:
+        print("Inno Setup 6 (ISCC.exe) was not found: see scripts/build_installer.py.", file=sys.stderr)
+        return 1
     problems = check_models()
     if problems:
         print("Cannot build:\n  " + "\n  ".join(problems), file=sys.stderr)
@@ -226,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
     started = time.perf_counter()
+    remove_previous_outputs(version)
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN"]
     command += ["--distpath", str(DIST), "--workpath", str(WORK), str(SPEC)]
     if subprocess.run(command, cwd=ROOT).returncode != 0:
@@ -240,6 +280,11 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         print("License texts missing:\n  " + "\n  ".join(problems), file=sys.stderr)
         return 1
+    # Nothing is read from the working copy after this point: a change made while PyInstaller ran
+    # may or may not be in the bundle, so such a build cannot vouch for its commit.
+    if changed_during_build(commit, dirty):
+        print("The working copy or HEAD changed during the build: it is marked as a test build.", file=sys.stderr)
+        dirty = True
     write_readme(app_dir, version, commit, dirty)
     problems = check_bundle(app_dir)
     if problems:
@@ -248,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
 
     archive = DIST / f"{NAME}-{version}-windows.zip"
     write_zip(app_dir, archive)
+    write_build_info(BUILD_INFO, version, commit, dirty, app_dir)
     mb = 1024 * 1024
     print(
         f"\nBuilt in {time.perf_counter() - started:.0f} s from {commit or 'no commit'}{' + changes' if dirty else ''}"
@@ -255,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  executable: {exe}")
     print(f"  folder:     {folder_size(app_dir) / mb:.0f} MB")
     print(f"  zip:        {archive} ({archive.stat().st_size / mb:.0f} MB)")
+    if iscc is not None:
+        return build_installer(iscc, app_dir, BUILD_INFO, allow_dirty=args.allow_dirty)
     return 0
 
 

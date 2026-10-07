@@ -69,7 +69,8 @@ CLOSE_QUESTION = (
 )
 ENGINE_MISSING = (
     "Faltan componentes del motor de anonimización; puede que el antivirus haya bloqueado alguno.\n\n"
-    "Descomprime de nuevo la carpeta completa de la aplicación y vuelve a abrirla."
+    "Instala de nuevo la aplicación (o, si usas la versión .zip, descomprime de nuevo la carpeta "
+    "completa) y vuelve a abrirla."
 )
 
 

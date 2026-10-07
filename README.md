@@ -4,7 +4,7 @@
 
 A desktop tool that anonymizes PDFs and images **locally**, built for Chilean public officials who publish documents under transparency rules (CoP 33 / SmartGORE). It finds personal data — RUT, email, phone, URL, names from a list, faces, handwritten and drawn signatures (always flagged as doubtful, for review), and text inside scans and photos — removes it for real (not with black boxes drawn on top), strips metadata, and then re-checks the output for leaks. Nothing leaves the computer.
 
-> **Status: phase 0 finished, phases 1–2 in progress, phase 3 pending.** The repository contains the test bench (a fictitious test set with exact ground truth, the evaluator and baselines), the engine and a preliminary desktop app that runs it. There is no installer yet. Human review of every document before publishing is mandatory, always.
+> **Status: phase 0 finished, phases 1–2 in progress, phase 3 pending.** The repository contains the test bench (a fictitious test set with exact ground truth, the evaluator and baselines), the engine and a preliminary desktop app that runs it, with a Windows installer. Human review of every document before publishing is mandatory, always.
 
 **Platform:** version 1 targets Windows 10 and 11 (64-bit) only; macOS is not supported (decision D4 in [PLAN.md](PLAN.md)).
 
@@ -28,8 +28,8 @@ test_bench/      development tooling: test-set generators, evaluator, baselines,
   generators/    one module per document family (text PDFs, scans, rotated images, EXIF, ID card, screenshots, faces…)
   evaluation/    recall and leak checks (text, bytes, pixels, covered images, orphan images, vector paths, metadata)
   baselines/     identity, oracle, notebook and prototype (runs the real engine)
-scripts/         generate_test_data.py, download_models.py, build_exe.py, demo_notebook_leak.py
-packaging/       PyInstaller spec and launcher of the Windows executable, and the license texts its wheels lack
+scripts/         generate_test_data.py, download_models.py, build_exe.py, build_installer.py, demo_notebook_leak.py
+packaging/       PyInstaller spec, launcher and Inno Setup installer script for Windows, and the license texts the wheels lack
 tests/           pytest suite
 docs/            metric definition
 test_data/       generated test set and caches (not versioned)
@@ -64,19 +64,41 @@ Use at most 3 parallel processes on a machine with 8 GB of RAM (each OCR worker 
 
 ## Building the Windows executable
 
-A preliminary Windows build (there is no installer yet), made with PyInstaller in one-folder mode:
+A preliminary Windows build, made with PyInstaller in one-folder mode and handed out as an installer or as a zip:
 
 ```bash
-uv run python scripts/download_models.py           # once: YuNet face model, SHA-256 checked
-uv run --group build python scripts/build_exe.py   # about 2 minutes, from a clean working copy
+uv run python scripts/download_models.py                       # once: YuNet face model, SHA-256 checked
+uv run --group build python scripts/build_exe.py --installer   # from a clean working copy; without --installer, no installer
 ```
 
-The AGPL requires offering the exact source of what is handed out, so the script refuses a working copy with uncommitted changes; `--allow-dirty` makes a test build, which its `LEEME.txt` marks as not for distribution. It checks the models (YuNet's SHA-256 and the PP-OCR models inside `rapidocr`), runs PyInstaller with `packaging/light_anonymizer.spec`, collects the third-party licenses (`scripts/collect_licenses.py`: the license files of every bundled package, plus the texts in `packaging/licenses/` that their wheels lack; the build fails if a bundled package has none), checks that nothing development-only or document-like was bundled (test bench, test data, pytest, matplotlib, OpenCV's FFmpeg DLL, any PDF, image or office file, a dotted RUT in the app's code…) and writes:
+The AGPL requires offering the exact source of what is handed out, so the script refuses a working copy with uncommitted changes; `--allow-dirty` makes a test build, which its `LEEME.txt` (and its installer) marks as not for distribution. It checks the models (YuNet's SHA-256 and the PP-OCR models inside `rapidocr`), runs PyInstaller with `packaging/light_anonymizer.spec`, collects the third-party licenses (`scripts/collect_licenses.py`: the license files of every bundled package, plus the texts in `packaging/licenses/` that their wheels lack; the build fails if a bundled package has none), checks that nothing development-only or document-like was bundled (test bench, test data, pytest, matplotlib, OpenCV's FFmpeg DLL, any PDF, image or office file, a dotted RUT in the app's code…) and writes:
 
 - `dist/LightAnonymizer/LightAnonymizer.exe` plus its `_internal/` folder (about 260 MB): the app, without a console window. Next to it: `LEEME.txt` (how to open it, the license, no warranty, and the commit and URL of its source code, in Spanish), `LICENSE.txt`, `LICENSES.md` and `THIRD_PARTY_LICENSES/` (with `INDEX.txt`: each component, its version, license and source). Always copy the whole folder, not just the `.exe`.
 - `dist/LightAnonymizer-<version>-windows.zip` (about 120 MB): the same folder, zipped, to hand out.
+- `dist/LightAnonymizer-build.json`: the build's version, commit, whether it had uncommitted changes (or the working copy changed while PyInstaller ran) and one SHA-256 over every file of the folder, for the installer.
+- With `--installer`, `dist/LightAnonymizer-<version>-setup.exe` (about 90 MB): the installer (see below).
 
-One folder rather than a single file: the app starts in one or two seconds instead of unpacking hundreds of MB to `%TEMP%` on every launch, and antivirus programs flag it less often (the first launch after unzipping is slower while the antivirus scans it). It needs the WebView2 runtime, which Windows 10 and 11 include, and makes no network calls (WebView2 runs with its background services and its Windows-account sign-in turned off: with the sign-in on, it connected to Microsoft 365 on every launch). Unzip it to a short path outside OneDrive, such as `C:\Apps\LightAnonymizer`: with long paths Windows can fail to load native libraries.
+Each build first deletes that version's zip, installers and build record, so nothing left from an earlier build passes for the new one.
+
+One folder rather than a single file: the app starts in one or two seconds instead of unpacking hundreds of MB to `%TEMP%` on every launch, and antivirus programs flag it less often (the first launch after installing or unzipping is slower while the antivirus scans it). It needs the WebView2 runtime, which Windows 10 and 11 include, and makes no network calls (WebView2 runs with its background services and its Windows-account sign-in turned off: with the sign-in on, it connected to Microsoft 365 on every launch). Unzip it to a short path outside OneDrive, such as `C:\Apps\LightAnonymizer`: with long paths Windows can fail to load native libraries (the installer avoids that).
+
+### The installer
+
+`build_exe.py --installer`, or `uv run python scripts/build_installer.py` after a build, compiles `packaging/installer.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install --id JRSoftware.InnoSetup -e`; its license allows commercial use and handing out the installers, see [LICENSES.md](LICENSES.md)). Compiling it takes one to three minutes (LZMA2, maximum compression). The installer:
+
+- installs for the current user only, without administrator rights, in `%LOCALAPPDATA%\Programs\LightAnonymizer`: a short path outside OneDrive;
+- speaks Spanish; shows the AGPL on a "Licencia" page that asks for no "I accept" (the AGPL does not have to be accepted to receive or run the program); adds "Anonimizador" to the Start menu, a desktop shortcut only if chosen (unchecked by default) and an entry in Settings > Apps > Installed apps, and ends with an "Abrir el Anonimizador" checkbox;
+- installs the whole folder, with `LEEME.txt`, `LICENSE.txt`, `LICENSES.md` and `THIRD_PARTY_LICENSES/`, so the license notices and the source-code offer travel with it;
+- upgrades in place: a newer installer replaces the program, deleting the old `_internal/` and `THIRD_PARTY_LICENSES/` first so libraries of two versions never mix;
+- never touches the user's data in `%LOCALAPPDATA%\Anonimizador` (technical log, time estimates, WebView2 profiles; never documents) when installing or upgrading. Uninstalling asks whether to delete it too (and the `%TEMP%` fallbacks `anonimizador_logs` and `anonimizador_webview`), with No as the default; a silent uninstall always keeps it;
+- on uninstall, always deletes the working copies of documents that an app killed or crashed left in `%TEMP%` (`anonimizador_session_*` folders whose process is gone, and `anonimizador_export_*` when no session is alive), as the app itself does when it starts;
+- does not replace or delete files of a running app: every instance holds the named mutex `LightAnonymizer.Running` (`packaging/launcher.py`), and Setup and Uninstall ask to close it first. A silent run gives up only with `/SUPPRESSMSGBOXES`; with `/VERYSILENT` alone that message box still appears and waits for an answer.
+
+The AGPL rules hold for the installer too: it gets the version and commit of the build in `dist/LightAnonymizer`, which must still match `dist/LightAnonymizer-build.json` file by file; the installer of a test build says "compilación de prueba: no distribuir" (a warning on the welcome page, the installed-apps entry, the file properties) and is named `LightAnonymizer-<version>-setup-PRUEBA-no-distribuir.exe`; and `build_installer.py` refuses to compile when the installer's own sources (`packaging/installer.iss`, `LICENSE`, the script itself) differ from those of the build's commit, unless `--allow-dirty` is given (test installer). Documentation committed after the build does not matter.
+
+Silent install, for IT departments: `LightAnonymizer-<version>-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART` (plus `/DIR=<folder>`, `/NOICONS` for no Start menu shortcut, `/LOG=<file>`); silent uninstall: `"%LOCALAPPDATA%\Programs\LightAnonymizer\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES`.
+
+**No code signing yet.** The installer and the executable are not signed, so the first time Windows SmartScreen shows "Windows protegió su PC" ("Windows protected your PC") with "Editor desconocido" ("Unknown publisher"): the user clicks "Más información" and then "Ejecutar de todas formas" ("More info", "Run anyway"), as `LEEME.txt` explains. Smart App Control or the institution's policies may block unsigned programs altogether. Signing needs a code-signing certificate issued to the institution (from a certificate authority or a signing service); it would sign `LightAnonymizer.exe` during the build and the installer and uninstaller through Inno Setup's `SignTool` directive.
 
 The executable takes the same options as `python -m anonymizer.app` (`--browser`, `--no-open`, `--engine`), except that it always uses the real engine: it refuses `--engine fake`, ignores `ANONYMIZER_ENGINE`, and if the engine's components are missing (an antivirus may quarantine one) it shows an error instead of falling back to the development engine, which would export scanned pages and photos unredacted. Startup errors appear in a Spanish message box, and closing the window while files are being processed or are reviewed but not exported asks for confirmation. Because it has no console, `--url-file PATH` writes the URL and the session token to a JSON file for automated tests; nothing is written unless the flag is given, and the file is deleted when the app closes. With `--browser`, deleting that file stops the app cleanly (its working folder is deleted too), since the executable cannot receive Ctrl+C.
 
