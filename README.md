@@ -56,6 +56,8 @@ uv run python -m test_bench.evaluate --manifest test_data/generated/manifest.jso
 
 Use at most 3 parallel processes on a machine with 8 GB of RAM (each OCR worker uses ~600 MB).
 
+**The given-name dictionary** (`anonymizer/engine/data/given_names.txt`, versioned) holds the given names registered at least 100 times in Chile from 1920 to 2021, from the CC0 *guaguas* dataset (Servicio de Registro Civil e Identificación; see LICENSES.md). To rebuild it, run `uv run python scripts/build_given_names.py [--threshold 100]`: it downloads the dataset from a pinned commit, checks its SHA-256 and rewrites the file. Given names that are also ordinary words or places (Paz, Rosa, Santiago...) are listed in `anonymizer/engine/names.py` and do not start a name by themselves.
+
 ```
 anonymizer/      engine, local API and desktop app
 test_bench/      test-set generators, evaluator and baselines

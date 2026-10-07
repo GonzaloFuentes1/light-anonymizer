@@ -36,6 +36,7 @@ YUNET_MODELS = [ROOT / "models" / name for name in _load_script("download_models
 
 datas = [
     (str(ROOT / "anonymizer" / "ui"), "anonymizer/ui"),  # HTML, JS, CSS, fonts and their OFL texts
+    (str(ROOT / "anonymizer" / "engine" / "data"), "anonymizer/engine/data"),  # given-name dictionary
     *[(str(path), "models") for path in YUNET_MODELS],
     (str(ROOT / "LICENSE"), "."),
     (str(ROOT / "LICENSES.md"), "."),

@@ -90,6 +90,15 @@ The models are not committed to the repository: `scripts/download_models.py` (ph
 downloads them for development and verifies their SHA-256; packaging bundles them inside the
 executable.
 
+**Given-name dictionary (ships).** `anonymizer/engine/data/given_names.txt` lists the given
+names registered at least 100 times in Chile from 1920 to 2021. It is derived from the
+**guaguas** dataset by Riva Quiroga (https://github.com/rivaquiroga/guaguas, CRAN package
+`guaguas`; file `data-raw/1920-2021.csv` at commit `2e4d4ef`, SHA-256 `ff253ffe…05e0`): names
+registered with the Servicio de Registro Civil e Identificación de Chile, obtained through the
+Transparency Portal. License: **CC0 1.0** (verified 2026-10-07 in the repository's `LICENSE.md`
+and in the package's `DESCRIPTION`), compatible with the AGPL; no attribution is required, it is
+given here. `scripts/build_given_names.py` rebuilds the list and checks the SHA-256.
+
 **Signatures: no model ships.** Handwritten and drawn signatures are found by rules
 (`anonymizer/engine/signatures.py`). The open pretrained signature detectors reviewed in October
 2026 were all rejected because of their training data, whatever the license of their weights

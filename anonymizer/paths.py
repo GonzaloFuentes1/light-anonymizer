@@ -7,6 +7,7 @@ and every resource is unpacked under ``sys._MEIPASS`` (the ``_internal`` folder 
 ``.exe``) with the same relative layout, so the same relative path works in both cases::
 
     <root>/anonymizer/ui/...         interface (HTML, JS, CSS, fonts and their OFL texts)
+    <root>/anonymizer/engine/data/   given-name dictionary (given_names.txt)
     <root>/models/*.onnx             YuNet face model
     <root>/rapidocr/models/*.onnx    PP-OCR models (in development: inside site-packages)
     <root>/LICENSE, LICENSES.md

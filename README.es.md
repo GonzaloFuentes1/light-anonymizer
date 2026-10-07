@@ -56,6 +56,8 @@ uv run python -m test_bench.evaluate --manifest test_data/generated/manifest.jso
 
 Usa como máximo 3 procesos en paralelo en un equipo con 8 GB de RAM (cada proceso de OCR usa unos 600 MB).
 
+**El diccionario de nombres de pila** (`anonymizer/engine/data/given_names.txt`, versionado) contiene los nombres inscritos al menos 100 veces en Chile entre 1920 y 2021, tomados del conjunto de datos *guaguas* (CC0; Servicio de Registro Civil e Identificación; ver LICENSES.md). Para regenerarlo, ejecuta `uv run python scripts/build_given_names.py [--threshold 100]`: descarga los datos de un commit fijo, comprueba su SHA-256 y reescribe el archivo. Los nombres que también son palabras comunes o lugares (Paz, Rosa, Santiago...) están en `anonymizer/engine/names.py` y no inician un nombre por sí solos.
+
 ```
 anonymizer/      motor, API local y aplicación de escritorio
 test_bench/      generadores del conjunto de prueba, evaluador y líneas base
