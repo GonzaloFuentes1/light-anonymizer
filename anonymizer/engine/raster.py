@@ -64,6 +64,7 @@ def detect_in_image(
     signature_whole: bool = False,
     signature_lone: bool = True,
     signature_page_size: tuple[int, int] | None = None,
+    signature_signers: list | None = None,
 ) -> list[Zone]:
     """Zones with personal data in an RGB image.
 
@@ -77,7 +78,8 @@ def detect_in_image(
     ``signature_lines``: text-layer lines of a PDF near this image, in its pixels (signature
     keywords); ``signature_whole``: the image itself may be a signature; ``signature_lone=False``: a
     stroke needs a keyword or a line; ``signature_page_size``: the size of the page this image is a
-    region of (``signatures.detect_raster``).
+    region of; ``signature_signers``: text-layer lines with a person's name near this image, in its
+    pixels (``signatures.detect_raster``).
 
     A line whose only data are URLs that are not personal is an optional zone (D12), except in
     ``all_text`` mode, where every line is redacted.
@@ -98,6 +100,7 @@ def detect_in_image(
         with stage(STAGE_OCR):
             lines = ocr.read_lines(bgr, ocr_min_side, check_ocr)
             zones += _text_zones(lines, name_list, all_urls, all_text, options, w, h)
+            zones = [z for z in zones if not _empty_signature_column(z, bgr)]
     if options.faces and (face_regions is None or face_regions):
         if step is not None:
             step(STAGE_FACES)
@@ -117,6 +120,9 @@ def detect_in_image(
         if step is not None:
             step(STAGE_SIGNATURES)
         with stage(STAGE_SIGNATURES):
+            # Lines OCR read with a person's name: the signer's name under a signature.
+            named = {id(z.polygon) for z in zones if z.type == "name"}
+            signers = [ln for ln in lines if id(ln.polygon) in named]
             zones += signatures.detect_raster(
                 bgr,
                 [*lines, *(signature_lines or [])],
@@ -124,6 +130,7 @@ def detect_in_image(
                 whole=signature_whole,
                 lone=signature_lone,
                 page_size=signature_page_size,
+                signers=[*signers, *(signature_signers or [])],
             )
     if qr_enabled:
         if step is not None:
@@ -131,6 +138,11 @@ def detect_in_image(
         with stage(STAGE_QR):
             zones += qr.detect(bgr)
     return signatures.merge_zones(dedup(zones))
+
+
+def _empty_signature_column(z: Zone, bgr: np.ndarray) -> bool:
+    """A "Firma" column of a table (context rule) with no ink in it: nobody signed, nothing to hide."""
+    return z.type == "signature" and z.detector == "context" and not signatures.has_ink(bgr, z.polygon)
 
 
 def _text_zones(

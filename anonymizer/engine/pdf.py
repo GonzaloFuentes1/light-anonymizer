@@ -415,6 +415,36 @@ def _signature_lines(tp: TextPage, to_pix: pymupdf.Matrix, region: tuple[int, in
     return out
 
 
+def _signer_lines(tp: TextPage, to_pix: pymupdf.Matrix, region: tuple[int, int, int, int]) -> list[OcrLine]:
+    """Short lines of the text layer alone on their row with a person's name or a role (the signer's
+    name and role typed under a signature) near an image region, in that region's pixels."""
+    named = [(a, b) for type_, a, b, _ in tp.spans if type_ == "name"]
+    lines = [ln for _, _, ln in tp.lines]
+    x0, y0, x1, y1 = region
+    out = []
+    for start, end, ln in tp.lines:
+        if not 0 < len(ln.text.split()) <= 8:
+            continue
+        if not (any(a < end and start < b for a, b in named) or signatures.is_role_line(ln.text)):
+            continue
+        height = max(1.0, ln.y1 - ln.y0)
+        if any(
+            o is not ln
+            and min(o.y1, ln.y1) - max(o.y0, ln.y0) > 0.4 * min(height, o.y1 - o.y0)
+            and o.x1 >= ln.x0 - 4 * height
+            and o.x0 <= ln.x1 + 4 * height
+            for o in lines
+        ):
+            continue  # a cell of a table, or running text
+        corners = ((ln.x0, ln.y0), (ln.x1, ln.y0), (ln.x1, ln.y1), (ln.x0, ln.y1))
+        pts = np.array([[p.x, p.y] for p in (pymupdf.Point(c) * to_pix for c in corners)], np.float64)
+        (lx0, ly0), (lx1, ly1) = pts.min(axis=0), pts.max(axis=0)
+        reach = 12 * max(1.0, float(min(lx1 - lx0, ly1 - ly0)))
+        if lx0 <= x1 + reach and x0 - reach <= lx1 and ly0 <= y1 + reach and y0 - reach <= ly1:
+            out.append(OcrLine(pts - [x0, y0], ln.text, 1.0, 0))
+    return out
+
+
 def _overlaps(r: pymupdf.Rect, box: tuple[int, int, int, int]) -> bool:
     return not r.is_empty and r.x0 < box[2] and box[0] < r.x1 and r.y0 < box[3] and box[1] < r.y1
 
@@ -570,6 +600,7 @@ def raster_zones(
         for x0, y0, x1, y1 in regions:
             crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
             keywords = _signature_lines(tp, to_pix, (x0, y0, x1, y1)) if options.signatures else []
+            signers = _signer_lines(tp, to_pix, (x0, y0, x1, y1)) if options.signatures else []
             # A small image (not a photo or a scanned card) may be a signature by itself, and a curly
             # stroke alone in an image may be one. An image repeated at the same place on other pages
             # is a letterhead's emblem unless something marks it as a signature (a keyword, a
@@ -592,7 +623,7 @@ def raster_zones(
                 hashlib.blake2b(crop.tobytes(), digest_size=16).digest(),
                 whole,
                 bool(repeated),
-                tuple((ln.text, ln.polygon.round(1).tobytes()) for ln in keywords),
+                tuple((ln.text, ln.polygon.round(1).tobytes()) for ln in [*keywords, *signers]),
             )
             if key not in cache:
                 cache[key] = raster.detect_in_image(
@@ -607,6 +638,7 @@ def raster_zones(
                     signature_whole=whole,
                     signature_lone=not repeated,
                     signature_page_size=(width, height),
+                    signature_signers=signers,
                 )
             for z in cache[key]:
                 moved = z._replace(polygon=z.polygon + [x0, y0])

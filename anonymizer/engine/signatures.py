@@ -9,14 +9,20 @@ what a signature leaves on a page:
   line that covers it), long, thin and curved, and neither a straight rule, a ring or a frame (a
   stamp), a grid (a table, a QR code), a filled shape nor part of a texture (a photo). A stroke
   counts near a signature keyword ("Firma", "Firmado", "V°B°", "p.p."), over a signature line of a
-  document or inside a small image placed on a text page; next to a keyword, letters written apart
-  count too. A stroke that OCR read as part of a line of text (a title in a script font) needs a
-  keyword, or a signature line with the signer's name or role on its other side. On a plain sheet
-  of paper a large curly stroke that OCR did not read counts by itself. In a table, the column
-  under the header "Firma" is a zone whatever it holds. An image repeated at the same place on
-  several pages (a letterhead emblem) is never a signature by itself. A zone covers the stroke and the
-  marks that touch it (the letters of a name it crosses, their accents); a stamp pressed on the
-  signature joins it.
+  document, over a signer block (a short line alone on its row with a person's name or a role:
+  "Alcaldesa", "Secretario Municipal (S)") or inside a small image placed on a text page; next to a
+  keyword, letters written apart count too. A stroke that OCR read as part of a line of text (a
+  title in a script font) needs a keyword, a signer block, or a signature line with the signer's
+  name or role on its other side. On a plain sheet of paper a large curly stroke counts by itself
+  when OCR did not read it, or when it is much taller than the line OCR read across it (a
+  signature over the signer's typed name). In a table, the column under the header "Firma" is a
+  zone if anything is written in it, and handwriting in the table's other columns (names, e-mails)
+  is left alone. Photos inside a page (continuous tones), coloured emblems, logos and the seals of
+  electronic signatures and receipts ("Firma Electrónica Avanzada" is no keyword) are not
+  signatures. An image repeated at the same place on several pages (a letterhead emblem) is never a
+  signature by itself. A zone covers the stroke and the marks that touch it (the letters of a name
+  it crosses, their accents), then grows over the unexplained marks within a letter of it (the rest
+  of the signature); a stamp pressed on the signature joins it.
 - Vector (text pages of a PDF): clusters of curved stroked paths near a keyword or a signature
   line, or long and curly enough to be one by themselves; closed convex outlines (rings, ovals,
   rounded boxes: seals, radio buttons) are never part of one. Pages whose text reads vertically
@@ -52,6 +58,38 @@ _KEYWORD = re.compile(
 )
 _KEYWORD_MAX_WORDS = 8  # a keyword in running text ("el acta se firma en dos ejemplares") anchors nothing
 _HEADER = re.compile(r"^\s*firmas?\b")  # header of a signature column
+# An electronic signature ("Firma Electrónica Avanzada", "Firmado electrónicamente por"): printed by
+# the software that signed the file, it anchors no handwritten signature.
+_ELECTRONIC = re.compile(
+    r"(?:firm(?:a|ado|ada)|documento|transaccion)\s+(?:electronic|digital)|electronica\s+avanzada"
+    r"|(?:electronica|digital)mente|firma\s?\.?\s?gob"
+)
+# Words of an e-signature emblem or of an electronic receipt's seal (a small image that is not a
+# handwritten signature).
+_ELECTRONIC_IMAGE = re.compile(_ELECTRONIC.pattern + r"|comprobante|verifi(?:que|car|cacion)")
+# The role a signer signs as, at the start of the line under a signature: "Alcaldesa", "Secretario
+# Municipal (S)", "Jefe Departamento...", "Prestador de Servicios".
+_ROLE = re.compile(
+    r"^\s*(?:(?:sub|vice|pro)?\s?(?:alcalde|alcaldesa|secretari[oa]|director|directora|jef[ea]|presidente|presidenta"
+    r"|gobernador|gobernadora|ministr[oa]|encargad[oa]|coordinador|coordinadora|administrador|administradora"
+    r"|tesorer[oa]|gerente|rector|rectora|decan[oa]|delegad[oa]|seremi|intendente|consejer[oa]|concejal|concejala"
+    r"|asesor|asesora|abogad[oa]|inspector|inspectora|supervisor|supervisora|funcionari[oa]|analista|asistente"
+    r"|profesional|prestador|prestadora|representante|lider|lideresa|responsable|visador|visadora|notari[oa]"
+    r"|oficial|ingenier[oa]|arquitect[oa]))\b"
+)
+_SIGNER_MAX_WORDS = 8
+
+
+def is_role_line(text: str) -> bool:
+    """A short line that starts with a role: "ALCALDE (S)", "Secretaria Municipal", "Prestador de Servicios"."""
+    n = norm(text or "")
+    return len(n.split()) <= _SIGNER_MAX_WORDS and bool(_ROLE.match(n))
+
+
+def is_electronic(text: str) -> bool:
+    """A line about an electronic signature or receipt ("Firma Electrónica Avanzada")."""
+    return bool(_ELECTRONIC.search(norm(text or "")))
+
 
 WORK_SIDE = 2000  # larger rasters are analyzed downscaled to this long side
 PRINTED_SCORE = 0.8  # OCR lines at least this confident explain their ink as printed text
@@ -61,7 +99,7 @@ _MIN_AREA = 6  # pixels: specks of noise are ignored
 def is_keyword_line(text: str) -> bool:
     """A short line with a signature keyword: "Firma del titular", "V°B° Jefatura", "p.p. Director"."""
     n = norm(text or "")
-    return len(n.split()) <= _KEYWORD_MAX_WORDS and bool(_KEYWORD.search(n))
+    return len(n.split()) <= _KEYWORD_MAX_WORDS and bool(_KEYWORD.search(n)) and not _ELECTRONIC.search(n)
 
 
 # ---------------------------------------------------------------------------
@@ -232,11 +270,28 @@ class _Page:
         self.printed = (covered >= 0.6 * area) & (self.extent <= 1.8 * tallest)
         self.printed[0] = False
         self.in_line = covered / np.maximum(area, 1)  # share of each mark inside a confident OCR line
-        any_map = np.zeros((self.h, self.w), np.uint8)
+        any_map = np.zeros((self.h, self.w), np.float32)
+        for ln in sorted(lines, key=lambda ln: line_frame(ln.polygon)[3]):
+            cv2.fillPoly(any_map, [np.round(ln.polygon).astype(np.int32)], max(1.0, float(line_frame(ln.polygon)[3])))
+        # Share inside any line OCR read, however unsure: a stroke OCR took for text, unless it is much
+        # taller than that line (a signature across the signer's typed name).
+        in_any = any_map > 0
+        self.in_any = np.bincount(self.labels[in_any], minlength=n) / np.maximum(area, 1)
+        self.any_h = np.zeros(n, np.float32)
+        np.maximum.at(self.any_h, self.labels[in_any], any_map[in_any])
+        # Lines about an electronic signature or receipt: the seal or emblem around them is printed.
+        electronic = np.zeros((self.h, self.w), np.uint8)
         for ln in lines:
-            cv2.fillPoly(any_map, [np.round(ln.polygon).astype(np.int32)], 1)
-        # Share inside any line OCR read, however unsure: a stroke OCR took for text.
-        self.in_any = np.bincount(self.labels[any_map > 0], minlength=n) / np.maximum(area, 1)
+            if _ELECTRONIC_IMAGE.search(norm(ln.text)):
+                c, u, length, height = line_frame(ln.polygon)
+                f = Frame(c, u, length / 2 + 2 * height, 2 * height)
+                cv2.fillPoly(electronic, [np.round(f.polygon(-f.a, f.a, -f.b, f.b)).astype(np.int32)], 1)
+        self.electronic = np.bincount(self.labels[electronic > 0], minlength=n) >= 0.3 * area
+        self.electronic[0] = False
+        # Photos inside a page (a scanned report with pictures): their marks are never pen strokes.
+        self.photo_map = _photo_mask(gray, self.bg, self.ink, self.text_h)
+        self.photo = np.bincount(self.labels[self.photo_map > 0], minlength=n) > 0.5 * area
+        self.photo[0] = False
         self.confident = confident
         keyword_map = np.zeros((self.h, self.w), np.uint8)
         for ln in lines:
@@ -323,7 +378,7 @@ class _Page:
         ``lone``: no keyword or line anchors it, so it must be curlier and lie outside every line of
         text that OCR read, however unsure (letters run together by blur, a bold or script font).
         """
-        if self.printed[i] or self.face[i] or self.area[i] < _MIN_AREA:
+        if self.printed[i] or self.face[i] or self.photo[i] or self.electronic[i] or self.area[i] < _MIN_AREA:
             return False
         if not min_extent <= self.extent[i] <= max_extent:
             return False
@@ -337,7 +392,7 @@ class _Page:
             return False
         if straight > 0.5 or axis > 0.6:
             return False
-        if lone and (curly < 1.6 or self.in_any[i] >= 0.4):
+        if lone and (curly < 1.6 or (self.in_any[i] >= 0.4 and min(w, h) <= 2.5 * self.any_h[i])):
             return False
         m = int(self.text_h)
         around = self.ink[max(0, y - m) : y + h + m, max(0, x - m) : x + w + m]
@@ -363,13 +418,19 @@ class _Page:
         weak: bool,
         lone: bool = False,
         signed: frozenset[int] | None = None,
+        exclude: Sequence[np.ndarray] = (),
+        exclude_all: bool = False,
     ) -> list[tuple[np.ndarray, float]]:
         """Signature zones inside ``frame``: clusters of unexplained ink that hold a stroke (or, with
-        ``weak``, look like handwriting), grown over the printed marks that touch them.
+        ``weak``, look like handwriting), grown over the printed marks that touch them and over the
+        unexplained marks next to them.
 
         ``signed`` (a signature line): the sides of the line (-1, +1 across the frame) with a printed
         line next to it (the signer's name or role). A stroke that OCR read as text only counts on the
         side opposite such a line: a title in a script font over a decorative rule does not.
+        ``exclude``: polygons (the other columns of a table with a "Firma" column) where a cluster
+        that only looks like handwriting is not taken (a name or an e-mail written by hand), nor,
+        with ``exclude_all``, any cluster.
         """
         st = frame.st(self.corners.reshape(-1, 2)).reshape(-1, 4, 2)
         s0, s1 = st[:, :, 0].min(axis=1), st[:, :, 0].max(axis=1)
@@ -377,7 +438,7 @@ class _Page:
         center = frame.st(self.centroids)
         inside = (np.abs(center[:, 0]) <= frame.a) & (np.abs(center[:, 1]) <= frame.b) & (self.area >= _MIN_AREA)
         inside[0] = False
-        ids = np.flatnonzero(inside & ~self.printed & ~self.face)
+        ids = np.flatnonzero(inside & ~self.printed & ~self.face & ~self.photo)
         if not ids.size:
             return []
         seeds = {int(i) for i in ids if self.is_stroke(int(i), min_extent, max_extent, lone)}
@@ -417,6 +478,8 @@ class _Page:
             seeded = bool(seeds.intersection(members.tolist()))
             if not seeded and not (weak and self._blob_is_handwriting(members, frame)):
                 continue
+            if (exclude_all or not seeded) and self._centred_in(members, exclude):
+                continue
             r = [s0[members].min(), s1[members].max(), t0[members].min(), t1[members].max()]
             # The marks that touch it: first any mark within one and a half letters (the letters of a
             # name it crosses), then the loose marks next to those (their accents and dots). Printed
@@ -433,10 +496,54 @@ class _Page:
                 ]  # fmt: skip
                 r = [min(r[0], s0[near].min(initial=r[0])), max(r[1], s1[near].max(initial=r[1])),
                      min(r[2], t0[near].min(initial=r[2])), max(r[3], t1[near].max(initial=r[3]))]  # fmt: skip
+            lim = [frame.a, frame.b]
+            if seeded:
+                r = self._grow(r, (s0, s1, t0, t1), min_extent, max_extent)
+                lim = [frame.a + 4 * self.text_h, frame.b + 4 * self.text_h]
             m = max(2.0, 0.15 * self.text_h)
-            r = [max(-frame.a, r[0] - m), min(frame.a, r[1] + m), max(-frame.b, r[2] - m), min(frame.b, r[3] + m)]
+            r = [max(-lim[0], r[0] - m), min(lim[0], r[1] + m), max(-lim[1], r[2] - m), min(lim[1], r[3] + m)]
             out.append((frame.polygon(*r), 0.6 if seeded else 0.4))
         return out
+
+    def _centred_in(self, members: np.ndarray, polygons: Sequence[np.ndarray]) -> bool:
+        """The centre of the box of the marks ``members`` is inside one of ``polygons``."""
+        if not len(polygons):
+            return False
+        pts = self.corners[members].reshape(-1, 2)
+        cx, cy = (pts.min(axis=0) + pts.max(axis=0)) / 2
+        return any(
+            cv2.pointPolygonTest(np.asarray(p, np.float32), (float(cx), float(cy)), False) >= 0 for p in polygons
+        )
+
+    def _grow(self, r: list[float], boxes: tuple[np.ndarray, ...], min_extent: float, max_extent: float) -> list[float]:
+        """A signature zone ``r`` (frame coordinates) grown, step by step, over the unexplained marks
+        within a letter of it (the rest of a signature whose strokes do not touch: a loop, the
+        initials, a flourish), whatever OCR read there, up to four letters (or half its size) beyond
+        where it started. Rings, frames and grids (stamps, tables) do not join."""
+        s0, s1, t0, t1 = boxes
+        step = 1.0 * self.text_h
+        ds, dt = max(4 * self.text_h, 0.5 * (r[1] - r[0])), max(4 * self.text_h, 0.5 * (r[3] - r[2]))
+        cap = [r[0] - ds, r[1] + ds, r[2] - dt, r[3] + dt]
+        pool = (
+            ~self.printed & ~self.face & ~self.photo & ~self.keyword & (self.area >= _MIN_AREA) & (self.extent <= max_extent)
+            & (s0 >= cap[0]) & (s1 <= cap[1]) & (t0 >= cap[2]) & (t1 <= cap[3])
+        )  # fmt: skip
+        pool[0] = False
+        for _ in range(12):
+            near = np.flatnonzero(
+                pool & (s0 <= r[1] + step) & (s1 >= r[0] - step) & (t0 <= r[3] + step) & (t1 >= r[2] - step)
+            )
+            pool[near] = False
+            near = [int(i) for i in near if not (self.extent[i] >= min_extent and self._structural(int(i)))]
+            if not near:
+                break
+            r = [
+                min(r[0], s0[near].min()),
+                max(r[1], s1[near].max()),
+                min(r[2], t0[near].min()),
+                max(r[3], t1[near].max()),
+            ]
+        return r
 
     # -- anchors ---------------------------------------------------------
 
@@ -456,6 +563,8 @@ class _Page:
                     continue
                 if across[max(0, y - 4) : y + h + 4, max(0, x - 4) : x + w + 4].any():
                     continue  # crossed by a rule the other way: a table
+                if self.photo_map[int(y + h / 2), int(x + w / 2)]:
+                    continue  # the straight edge of something in a photo
                 u = np.array([1.0, 0.0]) if horizontal else np.array([0.0, 1.0])
                 frame = Frame(np.array([x + w / 2, y + h / 2]), u, 0.6 * length, min(5 * self.text_h, 0.6 * length))
                 frames.append((frame, self._signed_sides(frame, length / 2)))
@@ -475,8 +584,10 @@ class _Page:
                 sides.add(-1)
         return frozenset(sides)
 
-    def keyword_frames(self, lines: list[_Line]) -> list[Frame]:
-        frames: list[Frame] = []
+    def keyword_frames(self, lines: list[_Line]) -> list[tuple[Frame, _Line]]:
+        """Around each keyword label, with the line it comes from: a few words to each side, six
+        letters below and ten above (a signature is usually over its label)."""
+        frames: list[tuple[Frame, _Line]] = []
         for ln in lines:
             if not is_keyword_line(ln.text):
                 continue
@@ -484,10 +595,75 @@ class _Page:
             if length < 2:
                 continue
             big = max(height, self.text_h)
-            frame = Frame(c, u, length / 2 + max(length, 10 * big), height / 2 + 6 * big)
-            if not any(np.hypot(*(f.c - c)) < height and abs(float(f.u @ u)) > 0.9 for f in frames):
-                frames.append(frame)  # the same label read in several orientations counts once
+            frame = _upward(
+                c, u, ln.turn, length / 2 + max(length, 10 * big), height / 2 + 6 * big, height / 2 + 10 * big
+            )
+            if not any(np.hypot(*(f.c - frame.c)) < height and abs(float(f.u @ u)) > 0.9 for f, _ in frames):
+                frames.append((frame, ln))  # the same label read in several orientations counts once
         return frames
+
+    def signer_frames(self, lines: list[_Line], names: Sequence[_Line]) -> list[Frame]:
+        """Signer blocks: over and around a short line alone on its row that is a person's name
+        (``names``) or a role ("Alcalde (S)", "Secretaria Municipal"), on a page (not in a photo).
+        The signature is over the name, often across it and the role under it."""
+        frames: list[Frame] = []
+        for ln in [*names, *(ln for ln in lines if is_role_line(ln.text))]:
+            if len(norm(ln.text).split()) > _SIGNER_MAX_WORDS:
+                continue
+            c, u, length, height = line_frame(ln.polygon)
+            if length < 2 or not self._alone(ln, lines):
+                continue
+            big = max(height, self.text_h)
+            frame = _upward(c, u, ln.turn, length / 2 + 3 * big, height / 2 + 1.5 * big, height / 2 + 7 * big)
+            if not self._doclike_in(frame):
+                continue
+            if not any(np.hypot(*(f.c - frame.c)) < height and abs(float(f.u @ u)) > 0.9 for f in frames):
+                frames.append(frame)
+        return frames
+
+    def _alone(self, ln: _Line, lines: Sequence[_Line]) -> bool:
+        """No other line on the same row within four letters of ``ln`` (a cell of a table has some)."""
+        c, u, length, height = line_frame(ln.polygon)
+        frame = Frame(c, u, length / 2, height / 2)
+        gap = 4 * max(height, self.text_h)
+        for other in lines:
+            st = frame.st(other.polygon)
+            (o0, o1), (t0, t1) = (st[:, 0].min(), st[:, 0].max()), (st[:, 1].min(), st[:, 1].max())
+            if min(t1, frame.b) - max(t0, -frame.b) <= 0.4 * min(t1 - t0, 2 * frame.b):
+                continue  # another row
+            if min(o1, frame.a) - max(o0, -frame.a) > 0.5 * min(o1 - o0, length):
+                continue  # the line itself, or the same text read again
+            if o1 >= -frame.a - gap and o0 <= frame.a + gap:
+                return False
+        return True
+
+    def _doclike_in(self, frame: Frame) -> bool:
+        """Light paper and sparse ink inside ``frame``, not a photo."""
+        box = frame.polygon(-frame.a, frame.a, -frame.b, frame.b)
+        x0, y0 = np.maximum(0, np.floor(box.min(axis=0)).astype(int))
+        x1, y1 = np.minimum([self.w, self.h], np.ceil(box.max(axis=0)).astype(int))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return False
+        return (
+            float(np.median(self.bg[y0:y1, x0:x1])) >= 170
+            and float(self.ink[y0:y1, x0:x1].mean()) <= 0.25
+            and float(self.photo_map[y0:y1, x0:x1].mean()) < 0.5
+        )
+
+
+_UP = {0: (0.0, -1.0), 1: (1.0, 0.0), 2: (0.0, 1.0), 3: (-1.0, 0.0)}
+
+
+def _upward(c: np.ndarray, u: np.ndarray, turn: int, a: float, below: float, above: float) -> Frame:
+    """A frame along a line (center ``c``, direction ``u``) that reaches ``below`` under it and
+    ``above`` over it, "over" as the text reads (the OCR pass ``turn`` that read it). When the line
+    does not run across that pass (a sideways reading), the frame reaches the larger of both to each
+    side."""
+    v = np.array([-u[1], u[0]])
+    up = float(np.dot(_UP.get(int(turn) % 4, _UP[0]), v))
+    if abs(up) < 0.7:
+        return Frame(c, u, a, max(below, above))
+    return Frame(c + np.sign(up) * v * (above - below) / 2, u, a, (above + below) / 2)
 
 
 def _background(gray: np.ndarray) -> np.ndarray:
@@ -498,8 +674,54 @@ def _background(gray: np.ndarray) -> np.ndarray:
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
+PHOTO_SHARE = 0.5  # share of pixels darker than the paper around in a block of a photo
+PAPER_INK = 0.02  # share of ink (printed text) in a sheet of paper photographed on a table
+
+
+def _photo_mask(gray: np.ndarray, bg: np.ndarray, ink: np.ndarray, text_h: float) -> np.ndarray:
+    """Where a raster holds a photo (or a dark area): blocks about two letters wide where most pixels
+    are darker than the paper some letters around (printed text and pen strokes leave most of the
+    paper bare, a photo covers it), or where the paper itself is dark, joined into regions at least
+    three blocks wide and high (a dense scribble is smaller)."""
+    h, w = gray.shape
+    s = max(12, int(round(2 * text_h)))
+    bw, bh = max(1, w // s), max(1, h // s)
+    small = cv2.resize(gray, (bw, bh), interpolation=cv2.INTER_AREA)
+    paper = cv2.blur(cv2.dilate(small, np.ones((5, 5), np.uint8)), (3, 3))
+    paper = cv2.resize(paper, (w, h), interpolation=cv2.INTER_LINEAR)
+    covered = (gray.astype(np.int16) < paper.astype(np.int16) - 35).astype(np.float32)
+    covered_b = cv2.resize(covered, (bw, bh), interpolation=cv2.INTER_AREA)
+    dark_b = cv2.resize((bg < 140).astype(np.float32), (bw, bh), interpolation=cv2.INTER_AREA)
+    blocks = ((covered_b > PHOTO_SHARE) | (dark_b > 0.5)).astype(np.uint8)
+    blocks = cv2.morphologyEx(blocks, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(blocks, connectivity=8)
+    keep = (stats[:, cv2.CC_STAT_WIDTH] >= 3) & (stats[:, cv2.CC_STAT_HEIGHT] >= 3) & (stats[:, cv2.CC_STAT_AREA] >= 6)
+    keep[0] = False
+    blocks = keep[labels].astype(np.uint8)
+    # The light parts of a photo (a sky, a white wall) are inside it: fill its holes, except a sheet
+    # of paper or a card photographed on a dark table: a hole larger than the photo, or one with
+    # printed text in it that fills an eighth of the picture or more.
+    outside = np.pad(1 - blocks, 1, constant_values=1)
+    cv2.floodFill(outside, None, (0, 0), 2)
+    n, holes, stats, _ = cv2.connectedComponentsWithStats((outside[1:-1, 1:-1] == 1).astype(np.uint8), connectivity=4)
+    ink_b = cv2.resize(ink.astype(np.float32), (bw, bh), interpolation=cv2.INTER_AREA)
+    inked = np.bincount(holes.ravel(), ink_b.ravel(), minlength=n) / np.maximum(stats[:, cv2.CC_STAT_AREA], 1)
+    area = stats[:, cv2.CC_STAT_AREA]
+    paper = (area >= 0.12 * bw * bh) & (inked >= PAPER_INK)
+    small = (area <= int(blocks.sum())) & ~paper
+    small[0] = False
+    blocks[small[holes]] = 1
+    return cv2.resize(blocks, (w, h), interpolation=cv2.INTER_NEAREST)
+
+
 def _column_zones(lines: list[_Line], w: int, h: int) -> list[tuple[np.ndarray, float]]:
     """The column under a "Firma" header of a table, down to the table's last row, in every orientation."""
+    return [(corners, score) for corners, score, _, _ in _columns(lines, w, h)]
+
+
+def _columns(lines: list[_Line], w: int, h: int) -> list[tuple[np.ndarray, float, _Line, list[np.ndarray]]]:
+    """``_column_zones`` with, for each column, its header line and the other columns of the table
+    (from the header row down to the last row)."""
     out = []
     for k in (0, 1, 3):
         size = (w, h) if k % 2 == 0 else (h, w)
@@ -510,8 +732,8 @@ def _column_zones(lines: list[_Line], w: int, h: int) -> list[tuple[np.ndarray, 
             p = to_turn(ln.polygon, k, w, h)
             (x0, y0), (x1, y1) = p.min(axis=0), p.max(axis=0)
             if x1 - x0 >= y1 - y0:  # read across this orientation, not along it
-                boxes.append((float(x0), float(y0), float(x1), float(y1), norm(ln.text)))
-        for i, (hx0, hy0, hx1, hy1, text) in enumerate(boxes):
+                boxes.append((float(x0), float(y0), float(x1), float(y1), norm(ln.text), ln))
+        for i, (hx0, hy0, hx1, hy1, text, header) in enumerate(boxes):
             if not _HEADER.match(text) or len(text.split()) > 4:
                 continue
             hh, hw = hy1 - hy0, hx1 - hx0
@@ -552,8 +774,40 @@ def _column_zones(lines: list[_Line], w: int, h: int) -> list[tuple[np.ndarray, 
             pitch = float(np.median(np.diff(tops))) if len(tops) >= 2 else 3 * hh
             bottom = min(size[1], bottom + 0.6 * pitch)
             corners = rotate_points(np.array([[xs, hy1], [xe, hy1], [xe, bottom], [xs, bottom]]), k, w, h)
-            out.append((corners, 0.5))
+            others = []
+            for j, head in enumerate(heads):
+                if head is boxes[i]:
+                    continue
+                lo = mids[j - 1] if j > 0 else head[0] - hh
+                hi = mids[j] if j < len(mids) else head[2] + hh
+                lo, hi = max(lo, xe) if head[0] > hx1 else lo, min(hi, xs) if head[2] < hx0 else hi
+                if hi > lo:
+                    others.append(rotate_points(np.array([[lo, hy0], [hi, hy0], [hi, bottom], [lo, bottom]]), k, w, h))
+            out.append((corners, 0.5, header, others))
     return out
+
+
+def has_ink(bgr: np.ndarray, polygon) -> bool:
+    """Something is written or drawn inside ``polygon`` (pixels of ``bgr``), apart from the straight
+    rules of a table: an empty column of a table has none."""
+    pts = np.asarray(polygon, np.float64).reshape(-1, 2)
+    h, w = bgr.shape[:2]
+    x0, y0 = np.maximum(0, np.floor(pts.min(axis=0)).astype(int))
+    x1, y1 = np.minimum([w, h], np.ceil(pts.max(axis=0)).astype(int))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return False
+    gray = cv2.cvtColor(np.ascontiguousarray(bgr[y0:y1, x0:x1]), cv2.COLOR_BGR2GRAY)
+    bg = _background(gray)
+    ink = ((bg.astype(np.int16) - gray.astype(np.int16)) > np.maximum(40, bg * 0.25)).astype(np.uint8)
+    length = max(15, (x1 - x0) // 3)
+    rules = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (length, 1)))
+    rules |= cv2.morphologyEx(
+        ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(15, (y1 - y0) // 6)))
+    )
+    marks = ink & (cv2.dilate(rules, np.ones((5, 5), np.uint8)) == 0)
+    _, _, stats, _ = cv2.connectedComponentsWithStats(marks, connectivity=8)
+    big = stats[1:][(stats[1:, cv2.CC_STAT_AREA] >= 12) & (np.maximum(stats[1:, 2], stats[1:, 3]) >= 6)]
+    return int(big[:, cv2.CC_STAT_AREA].sum()) >= max(40, 0.002 * (x1 - x0) * (y1 - y0))
 
 
 def _column_frame(corners: np.ndarray, reach: float) -> Frame:
@@ -572,6 +826,7 @@ def detect_raster(
     whole: bool = False,
     lone: bool = True,
     page_size: tuple[int, int] | None = None,
+    signers: Sequence[Any] = (),
 ) -> list[Zone]:
     """Signature zones of a BGR image, in its pixels.
 
@@ -581,29 +836,47 @@ def detect_raster(
     ``lone=False``: a stroke needs a keyword, a line or a column (an image repeated on every page).
     ``page_size``: (width, height) in these pixels of the page the image is on, when it is a region of
     a page: a mark half the page long is a frame or a chart; half the image long may be a signature.
+    ``signers``: lines (same form as ``lines``) that are a person's name, typed under a signature
+    (``signer_frames``); the role lines under them are found here.
     """
     h0, w0 = bgr.shape[:2]
     if min(h0, w0) < 16:
         return []
     f = min(1.0, WORK_SIDE / max(h0, w0))
     img = cv2.resize(bgr, (round(w0 * f), round(h0 * f)), interpolation=cv2.INTER_AREA) if f < 1 else bgr
-    work = [
-        _Line(np.asarray(ln.polygon, np.float64).reshape(-1, 2) * f, str(ln.text), float(ln.score), int(getattr(ln, "turn", 0)))
-        for ln in lines
-        if np.asarray(ln.polygon).size >= 8
-    ]  # fmt: skip
+
+    def scaled(items: Sequence[Any]) -> list[_Line]:
+        return [
+            _Line(np.asarray(ln.polygon, np.float64).reshape(-1, 2) * f, str(ln.text), float(ln.score), int(getattr(ln, "turn", 0)))
+            for ln in items
+            if np.asarray(ln.polygon).size >= 8
+        ]  # fmt: skip
+
+    work = scaled(lines)
     page = _Page(img, work, [np.asarray(p, np.float64).reshape(-1, 2) * f for p in faces])
-    found = _column_zones(work, page.w, page.h)
+    cols = _columns(work, page.w, page.h)
+    found = [(corners, score) for corners, score, _, _ in cols]
     anchored = max(20.0, 3 * page.text_h)
     # A mark half the page long is a frame or a chart, not a signature.
     largest = 0.5 * (max(page_size) * f if page_size else max(page.w, page.h))
-    columns = [_column_frame(corners, 4 * page.text_h) for corners, _ in found]
-    # Keyword labels and table columns allow a signature in separate letters; a bare line needs a stroke.
-    for frame in page.keyword_frames(work) + columns:
-        found += page.zones_in(frame, anchored, largest, weak=True)
+    # The other columns of a table with a "Firma" column hold names and e-mails written by hand.
+    others = [o for _, _, _, col_others in cols for o in col_others]
+    headers = [header for _, _, header, _ in cols]
+    # Keyword labels and table columns allow a signature in separate letters; a bare line needs a
+    # stroke. The header of a "Firma" column has its column: next to it, only strokes outside the
+    # other columns count.
+    for frame, ln in page.keyword_frames(work):
+        header = any(ln is h for h in headers)
+        found += page.zones_in(frame, anchored, largest, weak=not header, exclude=others, exclude_all=header)
+    for corners, _, _, col_others in cols:
+        found += page.zones_in(
+            _column_frame(corners, 4 * page.text_h), anchored, largest, weak=True, exclude=col_others
+        )
     for frame, signed in page.rule_frames():
         found += page.zones_in(frame, anchored, largest, weak=False, signed=signed)
-    if whole and page.paper:
+    for frame in page.signer_frames(work, scaled(signers)):
+        found += page.zones_in(frame, anchored, largest, weak=False)
+    if whole and page.paper and not _emblem(img, page, work):
         frame = Frame(np.array([page.w / 2, page.h / 2]), np.array([1.0, 0.0]), page.w / 2, page.h / 2)
         found += page.zones_in(frame, max(12.0, 0.25 * min(page.w, page.h)), float("inf"), weak=True)
     if lone and page.paper:  # a large curly stroke on its own, on a sheet of paper
@@ -621,10 +894,38 @@ def detect_raster(
             ):
                 continue  # already inside a zone
             x, y, w, h = page.stats[i, :4]
-            frame = Frame(np.array([x + w / 2, y + h / 2]), np.array([1.0, 0.0]), w / 2 + 4 * page.text_h,
-                          h / 2 + 4 * page.text_h)  # fmt: skip
-            found += page.zones_in(frame, lone, largest, weak=False, lone=True)
+            frame = Frame(np.array([x + w / 2, y + h / 2]), np.array([1.0, 0.0]), w / 2 + 6 * page.text_h,
+                          h / 2 + 6 * page.text_h)  # fmt: skip
+            found += page.zones_in(frame, lone, largest, weak=False, lone=True, exclude=others, exclude_all=True)
     return [Zone("signature", pol / f, "", DETECTOR, score, DOUBT_SIGNATURE) for pol, score in merge(found)]
+
+
+def _emblem(img: np.ndarray, page: _Page, lines: list[_Line]) -> bool:
+    """A small image that is not a handwritten signature: an e-signature emblem or an electronic
+    receipt's seal (its words say so), a strip of line art much wider than tall, a coloured emblem
+    (ink in three hues or more; a pen writes in one, a stamp adds another) or filled shapes (a logo)."""
+    if any(_ELECTRONIC_IMAGE.search(norm(ln.text)) for ln in lines):
+        return True
+    h, w = img.shape[:2]
+    if max(w, h) > 6 * min(w, h):
+        return True
+    ink = page.ink > 0
+    total = int(ink.sum())
+    if total < 20:
+        return False
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    colour = ink & (hsv[:, :, 1] >= 90) & (hsv[:, :, 2] >= 50)
+    if colour.sum() >= 0.2 * total:
+        hist = np.bincount((hsv[:, :, 0][colour].astype(np.int32) // 15) % 12, minlength=12).astype(np.float64)
+        hist /= hist.sum()
+        # Hues: runs of neighbouring bins that hold a tenth of the colour each.
+        strong = hist >= 0.1
+        hues = sum(1 for k in range(12) if strong[k] and not strong[k - 1]) if not strong.all() else 1
+        if hues >= 3:
+            return True
+    k = max(5, int(round(0.04 * min(w, h)))) | 1
+    solid = cv2.erode(ink.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    return int(solid.sum()) >= 0.25 * total
 
 
 # ---------------------------------------------------------------------------

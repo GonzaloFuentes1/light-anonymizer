@@ -13,8 +13,8 @@ on every run for a given seed:
   looks like a RUT without dots or dash and whose check digit does not match (a doubtful RUT, not
   censored by default) and an institutional link (another link, not censored by default);
 - ``oficio_fotografiado.jpg``: a letter photographed under uneven light (so not a plain sheet of
-  paper) with a handwritten signature that has no "Firma" label and no signature line next to it,
-  which the app does not find: it has to be covered with "Dibujar zona".
+  paper) with a handwritten signature that has no "Firma" label, no signature line and no typed
+  name or role under it, which the app does not find: it has to be covered with "Dibujar zona".
 """
 
 from __future__ import annotations
@@ -145,7 +145,8 @@ def oficio_fotografiado(fake: FakeData, size: tuple[int, int] = (1240, 1754)) ->
         if text:
             draw.text((margin, y), text, fill=20, font=font("sans_bold" if bold else "sans", int(11 * px)))
         y += int(20 * px)
-    _signature(draw, margin + 30 * px, y + 40 * px, px * 0.75, rng)
+    # Beside the closing, away from the signer's typed name (a signature over a name is found).
+    _signature(draw, margin + 290 * px, y + 10 * px, px * 0.75, rng)
     y += int(95 * px)
     draw.text((margin, y), chief.full_name.upper(), fill=20, font=font("sans_bold", int(10 * px)))
     draw.text((margin, y + int(15 * px)), "Jefatura de Gabinete", fill=20, font=font("sans", int(10 * px)))

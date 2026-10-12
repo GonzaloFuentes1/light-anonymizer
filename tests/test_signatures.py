@@ -933,3 +933,189 @@ def test_a_repeated_signature_on_rotated_pages(tmp_path, no_models, anchor):
     doc.close()
     found = [f for f in _analyze(tmp_path / "girada.pdf").findings if f.type == "signature"]
     assert sorted(f.page for f in found) == [0, 1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Raster: signer blocks, photos inside a page, emblems, table columns, growth
+# ---------------------------------------------------------------------------
+
+
+def _signer_block(img: np.ndarray, mask: np.ndarray, x: int, y: int, seed: int) -> list[OcrLine]:
+    """A signature drawn across the signer's typed name, with the role under it; OCR reads the name
+    line over the strokes, unsure."""
+    name = put_line(img, "Juana Inventada Soto", x, y, 0.7)
+    draw_signature(img, mask, x - 10, y - 95, 300, 125, seed=seed)
+    role = put_line(img, "Directora Regional de Prueba", x - 20, y + 34, 0.6)
+    return [name._replace(score=0.55), role]
+
+
+def test_signature_across_the_signers_name_and_role():
+    img, mask = page()
+    lines = paragraph(img, 120)
+    lines += _signer_block(img, mask, 380, 900, seed=51)
+    # Neither a keyword nor a line: the role line under the name anchors it (lone strokes off).
+    zones = signatures.detect_raster(img, lines, lone=False)
+    assert_signature_zones(zones)
+    assert covered(zones, mask) >= 0.95
+    assert not any(touches(zones, ln.polygon) for ln in lines[:4])
+
+
+def test_signature_across_a_name_found_by_the_name_detector():
+    img, mask = page()
+    lines = paragraph(img, 120)
+    name = put_line(img, "Juana Inventada Soto", 380, 900, 0.7)._replace(score=0.5)
+    draw_signature(img, mask, 370, 805, 300, 125, seed=52)
+    zones = signatures.detect_raster(img, [*lines, name], lone=False, signers=[name])
+    assert_signature_zones(zones)
+    assert covered(zones, mask) >= 0.95
+    assert signatures.detect_raster(img, [*lines, name], lone=False) == []
+
+
+def test_a_role_in_a_table_row_anchors_nothing():
+    img, mask = page(1300, 900)
+    y = 400
+    lines = [put_line(img, "Director", 100, y, 0.7), put_line(img, "Unidad de Prueba", 260, y, 0.7),
+             put_line(img, "Region Ficticia", 520, y, 0.7)]  # fmt: skip
+    draw_signature(img, mask, 90, y - 110, 160, 70, seed=53)  # a scribble over the cell, OCR read it
+    scribble = np.array([[85.0, y - 115.0], [260.0, y - 115.0], [260.0, y - 35.0], [85.0, y - 35.0]])
+    lines.append(OcrLine(scribble, "Dlrcckr", 0.3, 0))
+    assert signatures.detect_raster(img, lines, lone=False) == []
+
+
+def test_role_and_electronic_signature_lines():
+    for text in ("ALCALDE (S)", "Secretaria Municipal", "Jefe Departamento de Prueba", "Prestador de Servicios",
+                 "SUBSECRETARIO DEL INTERIOR (S)", "Ministro de Fe"):  # fmt: skip
+        assert signatures.is_role_line(text), text
+    for text in ("La directora informa que el proyecto fue aprobado por la comision regional de prueba", "Fecha"):
+        assert not signatures.is_role_line(text), text
+    for text in ("Firma Electrónica Avanzada", "Firmado electrónicamente por", "Documento firmado digitalmente"):
+        assert not signatures.is_keyword_line(text), text
+        assert signatures.is_electronic(text), text
+    assert signatures.is_keyword_line("Firma del titular") and not signatures.is_electronic("Firma del titular")
+
+
+def _photo(width: int, height: int, seed: int) -> np.ndarray:
+    """A grey photo-like texture with dark curly contours (the edges of things in a picture)."""
+    rng = np.random.default_rng(seed)
+    noise = cv2.GaussianBlur(rng.normal(0, 1, (height, width)).astype(np.float32), (0, 0), 5)
+    tone = np.clip(noise * 60 + 140, 30, 230).astype(np.uint8)
+    photo = cv2.cvtColor(tone, cv2.COLOR_GRAY2BGR)
+    for k in range(6):
+        pts = cursive(20 + 40 * k, 30 + 30 * k, width - 120, 120, seed=seed + k, loops=3)
+        cv2.polylines(photo, [np.round(pts).astype(np.int32).reshape(-1, 1, 2)], False, (20, 20, 20), 2, cv2.LINE_AA)
+    return photo
+
+
+def _bg_ink(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    bg = signatures._background(gray)
+    return bg, ((bg.astype(np.int16) - gray.astype(np.int16)) > np.maximum(40, bg * 0.25)).astype(np.uint8)
+
+
+def test_a_photo_inside_a_scanned_page_is_not_a_signature():
+    img, mask = page(1240, 1754)
+    lines = paragraph(img, 120, rows=6)
+    img[400:900, 200:1000] = _photo(800, 500, seed=60)
+    cv2.line(img, (200, 1000), (700, 1000), BLACK, 2)
+    lines += paragraph(img, 1100, rows=4)
+    draw_signature(img, mask, 700, 1400, 300, 90, seed=61)
+    zones = signatures.detect_raster(img, lines)
+    assert_signature_zones(zones)
+    assert covered(zones, mask) >= 0.95
+    assert not touches(zones, [[220, 420], [980, 420], [980, 880], [220, 880]])
+    photo_map = signatures._photo_mask(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), *_bg_ink(img), 25.0)
+    assert photo_map[450:850, 250:950].mean() > 0.9
+    assert photo_map[mask > 0].mean() < 0.05
+    assert photo_map[100:300, 60:900].mean() < 0.05  # the paragraph
+
+
+def test_a_sheet_photographed_on_a_dark_table_is_not_a_photo():
+    sheet, mask = page(700, 450)
+    lines = [put_line(sheet, "CEDULA DE PRUEBA", 40, 60), put_line(sheet, "Nombre: Patricia Vega", 40, 120)]
+    draw_signature(sheet, mask, 380, 280, 260, 80, seed=62)
+    lines.append(put_line(sheet, "Firma del titular", 420, 400, 0.6))
+    img = _photo(1000, 750, seed=63) // 3  # a dark table around the sheet
+    img[150:600, 150:850] = sheet
+    full = np.zeros(img.shape[:2], np.uint8)
+    full[150:600, 150:850] = mask
+    photo_map = signatures._photo_mask(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), *_bg_ink(img), 25.0)
+    assert photo_map[200:550, 200:800].mean() < 0.05
+    moved = [OcrLine(ln.polygon + [150, 150], ln.text, ln.score, ln.turn) for ln in lines]
+    assert covered(signatures.detect_raster(img, moved), full) >= 0.9
+
+
+def test_whole_image_mode_leaves_emblems_and_electronic_seals():
+    emblem, _ = page(300, 300)
+    for k, color in enumerate([(30, 30, 200), (20, 180, 230), (40, 160, 40), (170, 60, 20)]):
+        pts = cursive(30, 40 + 55 * k, 240, 50, seed=70 + k, loops=4)
+        cv2.polylines(emblem, [np.round(pts).astype(np.int32).reshape(-1, 1, 2)], False, color, 2, cv2.LINE_AA)
+    assert signatures.detect_raster(emblem, [], whole=True, lone=False) == []
+    img, mask = page(420, 140)
+    draw_signature(img, mask, 40, 25, 330, 90, seed=9)
+    seal = np.array([[60.0, 2.0], [360.0, 2.0], [360.0, 22.0], [60.0, 22.0]])
+    assert signatures.detect_raster(img, [OcrLine(seal, "Documento firmado electronicamente", 0.9, 0)], whole=True,
+                                    lone=False) == []  # fmt: skip
+    assert signatures.detect_raster(img, [], whole=True, lone=False)  # the signature alone is one
+
+
+def test_handwriting_in_the_other_columns_of_a_signature_table():
+    img, mask = page(1300, 900)
+    headers = [("Nombre", 120), ("Firma", 420), ("Correo", 560)]
+    lines = [put_line(img, text, x, 100, 0.7) for text, x in headers]
+    handwriting = np.zeros_like(mask)
+    for r in range(4):
+        y = 160 + 70 * r
+        lines.append(put_line(img, f"Persona Inventada {r + 1}", 120, y + 30, 0.7))
+        for k in range(5):  # an e-mail written by hand in separate letters, OCR could hardly read it
+            pts = cursive(565 + 45 * k, y + 8, 35, 40, seed=80 + 5 * r + k, loops=2)
+            p = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(img, [p], False, BLUE, 2, cv2.LINE_AA)
+            cv2.polylines(handwriting, [p], False, 255, 2)
+        cell = np.array([[560.0, y + 5.0], [700.0, y + 5.0], [700.0, y + 52.0], [560.0, y + 52.0]])
+        lines.append(OcrLine(cell, "pcrsona@cjcmplo", 0.4, 0))
+        draw_signature(img, mask, 428, y + 6, 85, 46, seed=90 + r, flourish=False)
+    for x in (100, 410, 545, 900):
+        cv2.line(img, (x, 70), (x, 440), BLACK, 1)
+    for y in [70, 120] + [160 + 70 * r + 60 for r in range(4)]:
+        cv2.line(img, (100, y), (900, y), BLACK, 1)
+    zones = signatures.detect_raster(img, lines)
+    assert_signature_zones(zones)
+    assert covered(zones, mask) >= 0.99
+    assert covered(zones, handwriting) <= 0.05
+
+
+def test_a_signature_well_over_its_label():
+    img, mask = page()
+    lines = paragraph(img, 120)
+    draw_signature(img, mask, 400, 760, 260, 80, seed=3)  # about nine letters over the label
+    lines.append(put_line(img, "Firma", 480, 1020, 0.6))
+    zones = signatures.detect_raster(img, lines, lone=False)
+    assert_signature_zones(zones)
+    assert covered(zones, mask) >= 0.99
+
+
+def test_a_signature_in_pieces_is_covered_whole():
+    img, mask = page()
+    lines = paragraph(img, 120, rows=10)
+    draw_signature(img, mask, 300, 900, 300, 90, seed=4, flourish=False)
+    x = 300 + 300 + 25  # initials most of a letter to the right
+    for k in range(3):
+        pts = cursive(x + 34 * k, 930, 28, 50, seed=100 + k, loops=1)
+        p = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(img, [p], False, BLUE, 2, cv2.LINE_AA)
+        cv2.polylines(mask, [p], False, 255, 2)
+    zones = signatures.detect_raster(img, lines)
+    assert_signature_zones(zones)
+    assert covered(zones, mask) >= 0.97
+
+
+def test_an_empty_signature_column_has_no_ink():
+    img, mask = page(900, 700)
+    for x in (100, 500, 800):
+        cv2.line(img, (x, 100), (x, 600), BLACK, 1)
+    for y in range(100, 601, 60):
+        cv2.line(img, (100, y), (800, y), BLACK, 1)
+    column = np.array([[500.0, 130.0], [800.0, 130.0], [800.0, 600.0], [500.0, 600.0]])
+    assert not signatures.has_ink(img, column)
+    draw_signature(img, mask, 540, 300, 200, 50, seed=5)
+    assert signatures.has_ink(img, column)
