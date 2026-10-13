@@ -48,6 +48,7 @@ DETECTOR_LABELS = {
     "signatures": "firmas",
     "qr": "códigos QR",
     "reviewer": "agregada por quien revisó",
+    "verify": "encontrada por la verificación final",
 }
 # Stages of the analysis (``AnalyzedFile.timings``), in the order they are shown.
 STAGE_LABELS = {

@@ -31,7 +31,7 @@ El Anonimizador busca datos personales en documentos PDF y en imágenes, y te ay
 - Te muestra cada documento antes y después de censurar, lado a lado, para que revises todo.
 - Borra los datos de verdad. No pone un rectángulo negro encima con el dato todavía escondido debajo: el texto, la imagen o el dibujo que había bajo la zona censurada se elimina del archivo.
 - Limpia los datos ocultos del archivo, por ejemplo el autor, la ubicación GPS de una foto, los comentarios y los archivos adjuntos.
-- Revisa el resultado una vez más antes de guardarlo. Si encuentra un dato que sigue legible, no guarda ese archivo.
+- Revisa el resultado una vez más antes de guardarlo. Si encuentra un RUT, correo o teléfono que nadie marcó, lo censura y lo anota en el informe; si un dato marcado sigue legible, no guarda ese archivo.
 - Deja un informe de auditoría con lo que se censuró y lo que tú decidiste.
 
 **Lo que no hace:**
@@ -340,9 +340,11 @@ Antes de guardar cada archivo, la aplicación lo revisa otra vez con los mismos 
 
 "Sin fugas" significa que la revisión automática no encontró nada. No es una garantía: igual revisa los archivos exportados antes de publicarlos.
 
+**Si encuentra un RUT, un correo o un teléfono que nadie marcó**, no te devuelve a Revisar: lo censura ahí mismo y exporta el archivo. El mensaje lo avisa ("La verificación final encontró … datos sin marcar y los censuró") y el informe de auditoría dice dónde estaban, como censuras "encontradas por la verificación final". Pasa, por ejemplo, cuando al borrar un dato quedan juntos dos números que antes estaban separados.
+
 ### Si un archivo no se exporta
 
-Si la verificación encuentra un dato que sigue legible, **ese archivo no se guarda**. La tabla dice "No se exporta" y el mensaje "No se exportó: la verificación encontró … datos que siguen legibles. Vuelve a Revisar". Los demás archivos se exportan igual.
+Si la verificación encuentra un dato marcado que sigue legible (su censura no lo tapó), o datos ocultos, **ese archivo no se guarda**. La tabla dice "No se exporta" y el mensaje "No se exportó: la verificación encontró … datos que siguen legibles. Vuelve a Revisar". Los demás archivos se exportan igual.
 
 Qué hacer:
 

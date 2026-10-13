@@ -42,11 +42,13 @@ from anonymizer.engine.common import (
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import (
     ERROR_MESSAGES,
+    TYPE_LABELS,
     AnalyzedFile,
     DetectionOptions,
     ExportResult,
     Finding,
     HistoryEntry,
+    Leak,
     PageInfo,
 )
 from anonymizer.engine.patterns import norm, normalize_1to1
@@ -144,6 +146,30 @@ def missing_requirements() -> list[str]:
             log.warning("face model cannot be loaded", exc_info=True)
             missing.append(f"{faces.YUNET_MODEL} (cannot be loaded)")
     return missing
+
+
+def _adopt_unmarked(file: AnalyzedFile, leaks: list[Leak]) -> list[Finding]:
+    """Findings for the unmarked RUTs, e-mails and phones the leak check found (``Leak.polygons``),
+    added to ``file``, when they are the only leaks left; none when anything else leaked (a datum
+    marked but not removed, metadata): that still blocks the export."""
+    if not leaks or any(leak.finding_id or not leak.polygons for leak in leaks):
+        return []
+    added = []
+    for leak in leaks:
+        for polygon in leak.polygons:
+            finding = Finding(
+                id="v" + uuid.uuid4().hex[:11],
+                file_id=file.id,
+                page=leak.page or 0,
+                type=leak.type,
+                polygon=polygon,
+                detector="verify",
+                status="proposed",
+                history=[HistoryEntry(at=now_iso(), action="added", note="Encontrado por la verificación final")],
+            )
+            file.findings.append(finding)
+            added.append(finding)
+    return added
 
 
 class RealEngine:
@@ -480,26 +506,36 @@ class RealEngine:
         started = time.perf_counter()
         dest = Path(dest_dir)
         dest.mkdir(parents=True, exist_ok=True)
-        active = [f for f in file.findings if f.active]
-        # Left visible on purpose: removed by the reviewer, or a suggestion (D12) not applied.
-        kept = [f for f in file.findings if not f.active]
-        removed = sum(1 for f in file.findings if f.status == "removed")
         kind = file.kind or sniff(file.path)
         name = Path(file.name).name or "archivo"
         whole: list[dict] = []  # PDF strokes removed whole (ExportResult.strokes_removed_whole)
         grown: list[dict] = []  # PDF letters drawn as paths that the zones also took (ExportResult.grown)
         images: list[dict] = []  # PDF pages exported as an image (ExportResult.rasterized_pages)
+        adopted: list[Finding] = []  # unmarked data the leak check found and the export censored
         with tempfile.TemporaryDirectory(prefix="anonimizador_export_") as tmp:
             if kind == "pdf":
                 if Path(name).suffix.lower() != ".pdf":
                     name = Path(name).stem + ".pdf"
                 staged = Path(tmp) / "output.pdf"
-                whole, grown, images, layers, boxes = self._export_pdf(file, active, kept, staged)
-                # A page exported as an image is checked with the text it had before (``layers``).
-                leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer, layers)
-                leaks += verify.vector_leaks(staged, active, skip=set(layers), boxes=boxes)
-                leaks += verify.string_leaks(staged, active)
+                # A RUT, e-mail or phone the leak check finds unmarked in the text layer (after the
+                # redaction, text that was apart can read as one) is censored where it is and the
+                # file is exported again, once: sending the reviewer back for data that is always
+                # censored makes no sense. The audit report lists it.
+                for attempt in range(2):
+                    active = [f for f in file.findings if f.active]
+                    # Left visible on purpose: removed by the reviewer, or a suggestion (D12) not applied.
+                    kept = [f for f in file.findings if not f.active]
+                    whole, grown, images, layers, boxes = self._export_pdf(file, active, kept, staged)
+                    # A page exported as an image is checked with the text it had before (``layers``).
+                    leaks = verify.pdf_leaks(staged, active, kept, self._from_text_layer, layers)
+                    leaks += verify.vector_leaks(staged, active, skip=set(layers), boxes=boxes)
+                    leaks += verify.string_leaks(staged, active)
+                    new = _adopt_unmarked(file, leaks) if attempt == 0 else []
+                    if not new:
+                        break
+                    adopted += new
             else:
+                active = [f for f in file.findings if f.active]
                 from anonymizer.engine import image
 
                 polygons: dict[int, list] = {}
@@ -514,6 +550,7 @@ class RealEngine:
             output: Path | None = None
             if not leaks:
                 output = publish(staged, dest, name)
+        removed = sum(1 for f in file.findings if f.status == "removed")
         file.output_path = str(output) if output else None
         file.timings["export"] = round(time.perf_counter() - started, 3)
         if leaks:
@@ -525,6 +562,14 @@ class RealEngine:
             log.warning("export of %s blocked: %d leaks", file.id, n)
         else:
             message = "Archivo exportado. La verificación automática no encontró datos censurados legibles."
+            if adopted:
+                n = len(adopted)
+                kinds = sorted({TYPE_LABELS.get(f.type, f.type) for f in adopted})
+                message += (
+                    f" La verificación final encontró {n} {'dato' if n == 1 else 'datos'} sin marcar "
+                    f"({', '.join(kinds).lower()}) y {'lo' if n == 1 else 'los'} censuró; el informe de auditoría "
+                    f"dice dónde."
+                )
             if images:
                 pages = [str(r["page"] + 1) for r in images]
                 listed = pages[0] if len(pages) == 1 else ", ".join(pages[:-1]) + " y " + pages[-1]

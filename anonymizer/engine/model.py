@@ -53,7 +53,7 @@ class Finding:
     type: str  # one of FindingType
     polygon: list[list[float]]  # view space, at least 3 points
     text: str | None = None
-    detector: str = "regex"  # regex | name_list | context | ocr | faces | signatures | qr | reviewer
+    detector: str = "regex"  # regex | name_list | context | ocr | faces | signatures | qr | reviewer | verify
     score: float | None = None
     doubtful: bool = False
     doubt_reason: str | None = None  # Spanish, e.g. "El dígito verificador no coincide"
@@ -89,6 +89,9 @@ class Leak:
     type: str
     message: str  # Spanish, shown to the user
     finding_id: str | None = None
+    # Where an unmarked RUT, e-mail or phone of the text layer is, in view space (one rectangle per
+    # place it appears): the export censors it there instead of blocking (``RealEngine.export``).
+    polygons: list[list[list[float]]] = field(default_factory=list)
 
 
 @dataclass
