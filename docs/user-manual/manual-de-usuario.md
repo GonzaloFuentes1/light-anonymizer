@@ -136,6 +136,13 @@ Más abajo, en la misma pantalla, está el panel **Qué buscar**. Ahí eliges qu
 | Firmas | Firmas a mano y firmas dibujadas en los PDF. Siempre se marcan como dudosas. |
 | Códigos QR | Por ejemplo, el de la cédula de identidad, que guarda el RUN. |
 
+**Nivel de censura.** Arriba de la lista hay cinco botones, de **1 Muy bajo** a **5 Muy alto**. La aplicación parte en **3 Normal**. El nivel cambia qué tan seguro debe estar el detector antes de censurar un rostro o una firma:
+
+- En los niveles altos (4 y 5) también se censuran rostros y trazos dudosos. Se escapa menos, pero tapa más de la cuenta: revisa con más cuidado lo que sobra.
+- En los niveles bajos (1 y 2) solo se censuran los rostros y firmas más claros. Tapa menos de la cuenta, pero se pueden escapar más.
+
+RUT, correos, teléfonos, enlaces y nombres se buscan igual en todos los niveles. El nivel vale para los archivos que proceses desde ese momento, y el informe de auditoría dice con qué nivel se procesó cada uno.
+
 **Recomendación: deja todo marcado.** Un grupo apagado no se busca en absoluto. Por ejemplo, si apagas el OCR, no se lee ningún dato dentro de las imágenes y los escaneos. Cuando algo quedó apagado, la revisión, la exportación y el informe de auditoría te lo recuerdan con el aviso "En este archivo no se buscaron: …". En ese caso, revisa esas partes a mano.
 
 Lo que elijas vale solo mientras la aplicación esté abierta. Cada vez que la abres, todo vuelve a estar marcado.
@@ -279,6 +286,26 @@ Dibuja la zona justo sobre el dato. Si la zona toca letras de una línea vecina,
 
 Una zona dibujada se quita igual que cualquier censura, con **Quitar…**.
 
+### Agrandar o achicar una zona
+
+Cualquier zona censurada, la que encontró la aplicación o la que dibujaste, se puede ajustar:
+
+1. Haz clic en la zona (o en su hallazgo de la lista) para seleccionarla. Aparecen unos cuadraditos en sus bordes y esquinas.
+2. Arrastra un cuadradito hasta donde quieras. Al soltar, la columna Después se actualiza.
+3. Para cancelar mientras arrastras, presiona **Esc**.
+
+Si achicas una zona y el dato queda a la vista, la verificación lo detecta al exportar. El informe de auditoría registra cada zona que cambiaste de tamaño.
+
+### La goma: quitar varias censuras de una vez
+
+La goma es lo contrario de dibujar: quita las censuras que toca. Sirve, por ejemplo, cuando la aplicación marcó varias cosas que no son datos personales en el mismo lugar.
+
+1. Haz clic en **Goma** o presiona **G**. El botón cambia a "Goma · Esc para salir".
+2. En la columna **Antes**, arrastra un rectángulo (con borde rojo punteado) sobre las censuras que quieres quitar. Un clic quita la censura que está bajo el puntero.
+3. Al soltar, esas censuras quedan quitadas y un aviso dice cuántas fueron.
+
+Las censuras quitadas con la goma quedan en la lista, tachadas, con **Restaurar** por si te equivocas. En el informe de auditoría aparecen como quitadas, sin motivo indicado.
+
 ### "No se censuran por defecto"
 
 Este grupo reúne datos que la aplicación encontró pero que **no censura a menos que tú lo decidas**. Aparecen con borde punteado y la etiqueta "sin censurar". Hay tres tipos:
@@ -317,7 +344,8 @@ Los atajos funcionan en la pantalla Revisar, cuando no estás escribiendo en un 
 | K | Hallazgo anterior |
 | Supr | Quitar la censura del hallazgo seleccionado |
 | D | Dibujar zona (otra vez D para dejar de dibujar) |
-| Esc | Salir del modo dibujo |
+| G | Goma (otra vez G para dejarla) |
+| Esc | Salir del modo dibujo o de la goma; cancelar un cambio de tamaño |
 | + y − | Acercar y alejar |
 | R | Girar la vista |
 | V | Mostrar u ocultar la columna Después |
