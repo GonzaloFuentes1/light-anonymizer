@@ -472,16 +472,15 @@ def processed(client, data: bytes, name: str = "enlaces.pdf") -> str:
 def test_detection_levels(client):
     res = client.get("/api/options").json()
     assert [lv["level"] for lv in res["levels"]] == [1, 2, 3, 4, 5]
-    assert res["level"] == res["default_level"] == 4
-    assert res["levels"][3]["label"] == "Recomendado"
-    minimum = res["levels"][0]["groups"]
-    r = client.put("/api/options", json={"groups": minimum})
-    assert r.status_code == 200 and r.json()["level"] == 1
-    assert {g["key"]: g["enabled"] for g in r.json()["groups"]} == minimum
-    r = client.put("/api/options", json={"groups": {"faces": True}})
-    assert r.json()["level"] is None  # a switch changed by hand: no level matches
-    r = client.put("/api/options", json={"groups": res["levels"][4]["groups"]})
-    assert r.json()["level"] == 5 and {g["key"]: g["enabled"] for g in r.json()["groups"]}["urls_other"] is True
+    assert res["level"] == res["default_level"] == 3
+    assert res["levels"][2]["label"] == "Normal"
+    groups = {g["key"]: g["enabled"] for g in res["groups"]}
+    r = client.put("/api/options", json={"level": 5})
+    assert r.status_code == 200 and r.json()["level"] == 5
+    assert {g["key"]: g["enabled"] for g in r.json()["groups"]} == groups  # the switches do not move
+    assert client.put("/api/options", json={"groups": {"faces": False}}).json()["level"] == 5
+    assert client.put("/api/options", json={"level": 6}).status_code == 422
+    assert client.put("/api/options", json={"level": "5"}).status_code == 422
 
 
 def test_options_get_and_put(client):

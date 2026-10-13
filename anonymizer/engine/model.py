@@ -247,7 +247,8 @@ GROUPS_BY_KEY: dict[str, DetectionGroup] = {g.key: g for g in DETECTION_GROUPS}
 
 @dataclass(frozen=True)
 class DetectionOptions:
-    """Which detection groups run (one flag per group of ``DETECTION_GROUPS``).
+    """Which detection groups run (one flag per group of ``DETECTION_GROUPS``) and how sure the
+    detectors with a score must be (``level``, see ``DETECTION_LEVELS``).
 
     A group that is off skips its work (with OCR off no page or image is read), it does not just
     hide its results. ``urls_other`` does not change what is searched: it decides whether the
@@ -263,6 +264,7 @@ class DetectionOptions:
     faces: bool = True
     signatures: bool = True
     qr: bool = True
+    level: int = 3  # DEFAULT_LEVEL
 
     @classmethod
     def everything(cls) -> DetectionOptions:
@@ -270,16 +272,21 @@ class DetectionOptions:
         return cls(**{g.key: True for g in DETECTION_GROUPS})
 
     @classmethod
-    def from_dict(cls, values: dict[str, bool] | None) -> DetectionOptions:
-        """Options from a dict; missing keys take their default, unknown keys are ignored and
-        locked groups are always on."""
+    def from_dict(cls, values: dict[str, bool | int] | None) -> DetectionOptions:
+        """Options from a dict; missing keys take their default, unknown keys are ignored,
+        locked groups are always on and the level is kept between 1 and 5."""
         values = values or {}
-        return cls(**{g.key: True if g.locked else bool(values.get(g.key, g.default)) for g in DETECTION_GROUPS})
+        try:
+            level = min(5, max(1, int(values.get("level", DEFAULT_LEVEL))))
+        except (TypeError, ValueError):
+            level = DEFAULT_LEVEL
+        groups = {g.key: True if g.locked else bool(values.get(g.key, g.default)) for g in DETECTION_GROUPS}
+        return cls(**groups, level=level)
 
-    def to_dict(self) -> dict[str, bool]:
-        return {g.key: bool(getattr(self, g.key)) for g in DETECTION_GROUPS}
+    def to_dict(self) -> dict[str, bool | int]:
+        return {**{g.key: bool(getattr(self, g.key)) for g in DETECTION_GROUPS}, "level": self.level}
 
-    def replace(self, **changes: bool) -> DetectionOptions:
+    def replace(self, **changes: bool | int) -> DetectionOptions:
         return DetectionOptions.from_dict({**self.to_dict(), **changes})
 
     @property
@@ -290,40 +297,35 @@ class DetectionOptions:
 
 @dataclass(frozen=True)
 class DetectionLevel:
-    """A preset of the detection groups, from 1 (least redacted) to 5 (most): the switches of
-    "Qué buscar" set at once. Each level keeps every group of the levels below it."""
+    """How sure the detectors that give a score must be before they redact, from 1 (only the
+    clearest: fewer zones, more can slip through) to 5 (also the doubtful ones: more zones, less
+    slips through). It moves the score a face needs and how curly a lone stroke must be to count
+    as a signature; RUTs, e-mails, phones, URLs and names are rules without a score and are found
+    the same at every level."""
 
     level: int
     label: str  # Spanish
     description: str  # Spanish, one line
-    groups: frozenset[str]  # the groups that are on; the others are off
-
-    def options(self) -> DetectionOptions:
-        return DetectionOptions.from_dict({g.key: g.key in self.groups for g in DETECTION_GROUPS})
+    face_shift: float  # added to the face detector's score threshold
+    lone_curly: float  # how curly a stroke with nothing around must be to be a signature
 
 
-_L1 = frozenset({"patterns", "urls_personal"})
-_L2 = _L1 | {"names_list", "ocr"}
-_L3 = _L2 | {"names_context", "qr"}
-_L4 = _L3 | {"faces", "signatures"}
 DETECTION_LEVELS: tuple[DetectionLevel, ...] = (
-    DetectionLevel(1, "Mínimo", "Solo RUT, correos, teléfonos y enlaces personales escritos en el texto. No lee "
-                   "escaneos ni fotos.", _L1),
-    DetectionLevel(2, "Bajo", "RUT, correos, teléfonos, enlaces personales, los nombres de tu lista y el texto de "
-                   "escaneos y fotos.", _L2),
-    DetectionLevel(3, "Medio", "Lo del nivel 2, más nombres por contexto y códigos QR. No busca rostros ni firmas.",
-                   _L3),
-    DetectionLevel(4, "Recomendado", "Busca todo, también rostros y firmas. Los otros enlaces quedan sin censurar "
-                   "para que tú decidas. Es el nivel con que parte la aplicación.", _L4),
-    DetectionLevel(5, "Máximo", "Busca todo y además censura desde el inicio los otros enlaces (sitios "
-                   "institucionales).", _L4 | {"urls_other"}),
+    DetectionLevel(1, "Muy bajo", "Censura solo los rostros y firmas más claros. Tapa menos de la cuenta, pero se "
+                   "pueden escapar más.", 0.2, 2.0),
+    DetectionLevel(2, "Bajo", "Pide más seguridad que lo normal antes de censurar un rostro o una firma.", 0.1, 1.8),
+    DetectionLevel(3, "Normal", "El equilibrio recomendado. Es el nivel con que parte la aplicación.", 0.0, 1.6),
+    DetectionLevel(4, "Alto", "Censura también rostros y trazos con algo de duda.", -0.1, 1.45),
+    DetectionLevel(5, "Muy alto", "Censura también los rostros y trazos dudosos. Se escapa menos, pero tapa más de "
+                   "la cuenta: revisa con más cuidado.", -0.2, 1.3),
 )  # fmt: skip
-DEFAULT_LEVEL = 4
+DEFAULT_LEVEL = 3
+LEVELS_BY_NUMBER: dict[int, DetectionLevel] = {lv.level: lv for lv in DETECTION_LEVELS}
 
 
-def level_of(options: DetectionOptions) -> int | None:
-    """The level whose switches match ``options``, or None when they were set by hand."""
-    return next((lv.level for lv in DETECTION_LEVELS if lv.options() == options), None)
+def face_threshold(base: float, level: int) -> float:
+    """The face detector's score threshold at ``level`` for a pass whose normal threshold is ``base``."""
+    return round(min(0.95, max(0.2, base + LEVELS_BY_NUMBER[level].face_shift)), 3)
 
 
 # Plain-language error messages (Spanish) by error code.

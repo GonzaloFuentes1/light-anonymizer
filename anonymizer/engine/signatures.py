@@ -92,6 +92,7 @@ def is_electronic(text: str) -> bool:
 
 
 WORK_SIDE = 2000  # larger rasters are analyzed downscaled to this long side
+LONE_CURLY = 1.6  # curliness a stroke with nothing around needs at the normal level
 PRINTED_SCORE = 0.8  # OCR lines at least this confident explain their ink as printed text
 _MIN_AREA = 6  # pixels: specks of noise are ignored
 
@@ -234,6 +235,8 @@ class _Line:
 
 class _Page:
     """The ink of one raster: masks, connected strokes and what printed text explains."""
+
+    lone_curly = LONE_CURLY  # how curly a stroke with nothing around must be (the level, ``detect_raster``)
 
     def __init__(self, img: np.ndarray, lines: list[_Line], faces: list[np.ndarray]):
         self.h, self.w = img.shape[:2]
@@ -392,7 +395,7 @@ class _Page:
             return False
         if straight > 0.5 or axis > 0.6:
             return False
-        if lone and (curly < 1.6 or (self.in_any[i] >= 0.4 and min(w, h) <= 2.5 * self.any_h[i])):
+        if lone and (curly < self.lone_curly or (self.in_any[i] >= 0.4 and min(w, h) <= 2.5 * self.any_h[i])):
             return False
         m = int(self.text_h)
         around = self.ink[max(0, y - m) : y + h + m, max(0, x - m) : x + w + m]
@@ -827,8 +830,12 @@ def detect_raster(
     lone: bool = True,
     page_size: tuple[int, int] | None = None,
     signers: Sequence[Any] = (),
+    lone_curly: float | None = None,
 ) -> list[Zone]:
     """Signature zones of a BGR image, in its pixels.
+
+    ``lone_curly``: how curly a stroke with no keyword, line or signer near it must be to count
+    (the detection level, ``model.DETECTION_LEVELS``; default ``LONE_CURLY``).
 
     ``lines``: OCR lines (``ocr.OcrLine``: polygon, text, score, turn), plus any text-layer line of a
     PDF mapped to these pixels (score 1, turn 0). ``faces``: polygons of the faces found, left out.
@@ -854,6 +861,8 @@ def detect_raster(
 
     work = scaled(lines)
     page = _Page(img, work, [np.asarray(p, np.float64).reshape(-1, 2) * f for p in faces])
+    if lone_curly is not None:
+        page.lone_curly = lone_curly
     cols = _columns(work, page.w, page.h)
     found = [(corners, score) for corners, score, _, _ in cols]
     anchored = max(20.0, 3 * page.text_h)

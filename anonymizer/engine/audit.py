@@ -23,6 +23,7 @@ from anonymizer.engine.exceptions import REASON as EXCEPTION
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import (
     DETECTION_GROUPS,
+    LEVELS_BY_NUMBER,
     TYPE_LABELS,
     AnalyzedFile,
     DetectionOptions,
@@ -183,6 +184,7 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
         "message": result.message if result else None,
         "detections": [{"key": g.key, "label": g.label, "enabled": getattr(options, g.key)} for g in DETECTION_GROUPS],
         "detections_off": [g.key for g in DETECTION_GROUPS if g.detection and not getattr(options, g.key)],
+        "level": {"number": options.level, "label": LEVELS_BY_NUMBER[options.level].label},
         "images_unread": _unread_images(file),
         "timings": dict(file.timings),
         "other_urls": _optional_record(_other_urls(file)),
@@ -334,6 +336,8 @@ def _file_html(file: AnalyzedFile, result: ExportResult | None) -> str:
          ("Se buscó" if getattr(options, g.key) else "No se buscó")]
         for g in DETECTION_GROUPS
     ]  # fmt: skip
+    level = LEVELS_BY_NUMBER[options.level]
+    rows.append(["Nivel de censura (rostros y firmas)", f"{level.level} · {level.label}"])
     parts.append(_table(["Detección", "Estado"], rows))
     off = [g.short for g in DETECTION_GROUPS if g.detection and not getattr(options, g.key)]
     if off:

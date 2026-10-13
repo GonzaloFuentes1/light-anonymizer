@@ -15,7 +15,7 @@ import pymupdf
 import pytest
 from PIL import Image
 
-from anonymizer.engine import common, context, estimate, faces, ocr, qr, raster
+from anonymizer.engine import common, context, estimate, faces, ocr, qr, raster, signatures
 from anonymizer.engine.common import Zone
 from anonymizer.engine.model import (
     DEFAULT_LEVEL,
@@ -23,7 +23,7 @@ from anonymizer.engine.model import (
     DETECTION_LEVELS,
     AnalyzedFile,
     DetectionOptions,
-    level_of,
+    face_threshold,
 )
 from anonymizer.engine.patterns import rut_check_digit
 from anonymizer.engine.real import RealEngine
@@ -109,28 +109,35 @@ def test_groups_and_defaults():
         "patterns", "urls_personal", "urls_other", "names_list", "names_context", "ocr", "faces", "signatures", "qr"
     ]  # fmt: skip
     defaults = DetectionOptions().to_dict()
-    assert defaults == {g.key: g.default for g in DETECTION_GROUPS}
-    assert defaults["urls_other"] is False and all(v for k, v in defaults.items() if k != "urls_other")
+    assert defaults == {**{g.key: g.default for g in DETECTION_GROUPS}, "level": 3}
+    assert defaults["urls_other"] is False and all(defaults[g.key] for g in DETECTION_GROUPS if g.key != "urls_other")
     for g in DETECTION_GROUPS:
         assert g.label and g.description and g.short
         assert g.warning or g.locked or not g.detection  # every switch that can hide data warns
     assert [g.key for g in DETECTION_GROUPS if g.locked] == ["patterns"]
 
 
-def test_levels_go_from_least_to_most_redacted():
+def test_levels_move_the_face_and_signature_thresholds():
     assert [lv.level for lv in DETECTION_LEVELS] == [1, 2, 3, 4, 5]
-    keys = {g.key for g in DETECTION_GROUPS}
     for lower, higher in zip(DETECTION_LEVELS, DETECTION_LEVELS[1:], strict=False):
-        assert lower.groups < higher.groups  # each level keeps every group of the levels below
-    for lv in DETECTION_LEVELS:
-        assert lv.label and lv.description and lv.groups <= keys
-        assert lv.options().patterns  # the base of the leak check is on at every level
-        assert level_of(lv.options()) == lv.level
-    # The app starts at the recommended level: the defaults of every switch.
-    assert DETECTION_LEVELS[DEFAULT_LEVEL - 1].options() == DetectionOptions()
-    assert level_of(DetectionOptions()) == DEFAULT_LEVEL
-    assert level_of(DetectionOptions.everything()) == 5
-    assert level_of(DetectionOptions(faces=False)) is None  # set by hand
+        assert lower.face_shift > higher.face_shift  # a higher level needs a lower face score
+        assert lower.lone_curly > higher.lone_curly  # and a less curly lone stroke
+    normal = DETECTION_LEVELS[DEFAULT_LEVEL - 1]
+    assert normal.face_shift == 0 and normal.lone_curly == signatures.LONE_CURLY  # the level 3 of before
+    assert DetectionOptions().level == DEFAULT_LEVEL == 3
+    assert face_threshold(0.5, 3) == 0.5 and face_threshold(0.5, 1) == 0.7 and face_threshold(0.5, 5) == 0.3
+    assert DetectionOptions.from_dict({"level": 5}).level == 5
+    assert DetectionOptions.from_dict({"level": 9}).level == 5 and DetectionOptions.from_dict({"level": "x"}).level == 3
+    assert DetectionOptions.from_dict(DetectionOptions(level=2).to_dict()) == DetectionOptions(level=2)
+
+
+def test_the_level_reaches_the_face_detector(monkeypatch):
+    seen = []
+    monkeypatch.setattr(faces, "detect", lambda bgr, threshold, *a, **k: seen.append(threshold) or [])
+    rgb = np.full((200, 200, 3), 255, np.uint8)
+    for level in (1, 3, 5):
+        raster.detect_in_image(rgb, (), options=DetectionOptions(ocr=False, signatures=False, qr=False, level=level))
+    assert seen == [0.7, 0.5, 0.3]
 
 
 def test_patterns_cannot_be_turned_off(tmp_path):

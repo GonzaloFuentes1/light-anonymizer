@@ -245,8 +245,8 @@
     exceptionsCount: 0, // entries of the exceptions list (D10)
     engine: "",
     groups: [], // detection groups from GET /api/options (texts in Spanish, current state)
-    levels: [], // levels 1-5 that set the groups at once (GET /api/options)
-    level: null, // the level that matches the groups, null when they were set by hand
+    levels: [], // detection levels 1-5: how sure faces and signatures must be (GET /api/options)
+    level: null, // the current level
     estimate: null, // GET /api/estimate for the files that would be processed now
     estimateKey: null, // the ids that estimate is for
     loaded: false,
@@ -599,7 +599,7 @@
     return fmtEstimate(seconds);
   }
 
-  /** The five levels over the switches: choosing one sets every switch at once. */
+  /** The five detection levels over the switches: how sure faces and signatures must be. */
   function renderLevels() {
     const box = $("#levels");
     box.hidden = !S.levels.length;
@@ -620,14 +620,12 @@
       }));
     });
     const cur = S.levels.find((lv) => lv.level === S.level);
-    $("#level-desc").textContent = cur
-      ? cur.description
-      : "Personalizado: elegiste a mano qué buscar, en la lista de abajo.";
+    $("#level-desc").textContent = cur ? cur.description : "";
   }
 
   async function setLevel(lv) {
     try {
-      applyOptions(await api("/api/options", { method: "PUT", json: { groups: lv.groups } }));
+      applyOptions(await api("/api/options", { method: "PUT", json: { level: lv.level } }));
       let msg = `Nivel ${lv.level}, ${lv.label}. ${lv.description}`;
       if (S.files.some((f) => REVIEWABLE.has(f.status))) msg += " Se aplica a los archivos que proceses desde ahora.";
       toast(msg);

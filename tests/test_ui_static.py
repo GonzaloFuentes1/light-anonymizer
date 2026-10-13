@@ -113,7 +113,7 @@ def test_js_syntax(name):
                 "Ver página",
                 "Cargando el archivo…",
                 "Esta página se exportará como imagen",
-                "Personalizado: elegiste a mano qué buscar",
+                "Nivel ${lv.level}, ${lv.label}",
             ],
         ),
         (

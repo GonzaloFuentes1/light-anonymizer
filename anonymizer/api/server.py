@@ -77,7 +77,7 @@ from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from anonymizer import about
@@ -94,7 +94,6 @@ from anonymizer.engine.model import (
     ExportResult,
     Finding,
     HistoryEntry,
-    level_of,
 )
 from anonymizer.paths import resource
 
@@ -561,6 +560,7 @@ class OptionsBody(BaseModel):
 
 class DetectionBody(BaseModel):
     groups: dict[str, StrictBool] = Field(default_factory=dict, max_length=50)
+    level: StrictInt | None = Field(default=None, ge=1, le=5)
 
 
 class NamesBody(BaseModel):
@@ -612,13 +612,10 @@ def _rounded(values: dict[str, float]) -> dict[str, float]:
 
 def detection_groups(options: DetectionOptions) -> dict:
     """The detection groups as the UI shows them (Spanish texts), with their current state, and the
-    levels that set them at once (``level``: the one that matches, null when set by hand)."""
+    detection levels (how sure faces and signatures must be) with the current one."""
     return {
-        "levels": [
-            {"level": lv.level, "label": lv.label, "description": lv.description, "groups": lv.options().to_dict()}
-            for lv in DETECTION_LEVELS
-        ],
-        "level": level_of(options),
+        "levels": [{"level": lv.level, "label": lv.label, "description": lv.description} for lv in DETECTION_LEVELS],
+        "level": options.level,
         "default_level": DEFAULT_LEVEL,
         "groups": [
             {
@@ -898,7 +895,10 @@ def create_app(
             if group.locked and not value:
                 raise ApiError(400, "locked", f"«{group.label}» no se puede apagar. {group.locked_reason}")
         with session.lock:
-            session.options = session.options.replace(**body.groups)
+            changes: dict[str, bool | int] = dict(body.groups)
+            if body.level is not None:
+                changes["level"] = body.level
+            session.options = session.options.replace(**changes)
             log.info("detection groups: %s", session.options.to_dict())
             return detection_groups(session.options)
 
