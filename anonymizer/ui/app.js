@@ -42,6 +42,7 @@
     signatures: "firmas",
     qr: "código QR",
     reviewer: "agregada por ti",
+    verify: "encontrada al exportar",
   };
   // Stages of an analysis (summary "timings"), shown when a file is done.
   const STAGE_LABELS = { text: "texto", ocr: "texto en imágenes", faces: "rostros", signatures: "firmas", qr: "QR" };
@@ -347,11 +348,14 @@
     const files = S.files;
     const any = files.length > 0;
     const reviewable = files.filter((f) => REVIEWABLE.has(f.status));
+    // A file added (or processed again) after the others reopens every step after the first: the
+    // steps are done for the whole list, not for the files that happened to be there before.
+    const settled = any && !files.some(isActive) && !files.some(isPending) && reviewable.length > 0;
     const done = {
       1: any,
-      2: any && !files.some(isActive) && !files.some(isPending) && reviewable.length > 0,
-      3: reviewable.length > 0 && reviewable.every((f) => f.status !== "ready"),
-      4: files.some((f) => f.status === "exported"),
+      2: settled,
+      3: settled && reviewable.every((f) => f.status !== "ready"),
+      4: settled && reviewable.every((f) => f.status === "exported"),
     };
     $$(".step").forEach((b) => {
       const k = Number(b.dataset.go);
