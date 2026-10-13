@@ -94,6 +94,7 @@ from anonymizer.engine.model import (
     ExportResult,
     Finding,
     HistoryEntry,
+    PageInfo,
 )
 from anonymizer.paths import resource
 
@@ -593,6 +594,7 @@ class FindingPatch(BaseModel):
     action: str
     reason: str | None = Field(default=None, max_length=300)
     note: str | None = Field(default=None, max_length=2000)
+    polygon: list[list[float]] | None = None  # "resize": the new zone, view space
 
 
 class ExportBody(BaseModel):
@@ -985,6 +987,32 @@ def create_app(
         if file.status in ("confirmed", "exported"):
             file.status, file.step = "ready", "Listo para revisar"
 
+    def clipped(info: PageInfo, polygon: list[list[float]]) -> list[list[float]] | None:
+        """The points clipped to the page and rounded; None when one is not an (x, y) pair of numbers."""
+        points = []
+        for point in polygon:
+            if len(point) != 2 or not all(math.isfinite(v) for v in point):
+                return None
+            x = min(max(point[0], 0.0), info.width)
+            y = min(max(point[1], 0.0), info.height)
+            points.append([round(x, 2), round(y, 2)])
+        return points
+
+    def resized(finding: Finding, info: PageInfo, polygon: list[list[float]] | None, what: str) -> list[list[float]]:
+        """The rectangle a zone is resized to: the bounding box of ``polygon``, clipped to its page."""
+        if not finding.active:
+            if finding.status == "removed":
+                raise ApiError(409, "removed", "Esta censura está quitada. Usa «Restaurar» antes de cambiar su tamaño.")
+            raise ApiError(409, "not_applied", f"{what.capitalize()} no está censurado. Usa «Censurar» primero.")
+        points = clipped(info, polygon or [])
+        if points is None or len(points) < 2:
+            raise ApiError(422, "invalid", "La zona nueva no es válida.")
+        x0, x1 = min(p[0] for p in points), max(p[0] for p in points)
+        y0, y1 = min(p[1] for p in points), max(p[1] for p in points)
+        if x1 - x0 < 1 or y1 - y0 < 1:
+            raise ApiError(422, "invalid", "La zona quedaría demasiado pequeña. Agrándala un poco.")
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
     @app.post("/api/files/{file_id}/findings")
     def add_finding(file_id: str, body: FindingBody):
         file = session.get(file_id)
@@ -992,14 +1020,9 @@ def create_app(
             editable(file)
             if not 0 <= body.page < len(file.pages):
                 raise ApiError(422, "invalid", "Esa página no existe.")
-            info = file.pages[body.page]
-            points = []
-            for point in body.polygon:
-                if len(point) != 2 or not all(math.isfinite(v) for v in point):
-                    raise ApiError(422, "invalid", "La zona dibujada no es válida.")
-                x = min(max(point[0], 0.0), info.width)
-                y = min(max(point[1], 0.0), info.height)
-                points.append([round(x, 2), round(y, 2)])
+            points = clipped(file.pages[body.page], body.polygon)
+            if points is None:
+                raise ApiError(422, "invalid", "La zona dibujada no es válida.")
             xs, ys = [p[0] for p in points], [p[1] for p in points]
             if len(points) < 3 or max(xs) - min(xs) < 1 or max(ys) - min(ys) < 1:
                 raise ApiError(422, "invalid", "La zona es demasiado pequeña. Dibújala de nuevo.")
@@ -1057,6 +1080,10 @@ def create_app(
                     raise ApiError(409, "not_applied", f"{what.capitalize()} ya estaba sin censurar.")
                 finding.status = "suggested"
                 finding.history.append(HistoryEntry(at=now_iso(), action="skipped", reason=reason, note=note))
+            elif body.action == "resize":
+                # Any zone the export applies, detected or drawn: it keeps its type and its status.
+                finding.polygon = resized(finding, file.pages[finding.page], body.polygon, what)
+                finding.history.append(HistoryEntry(at=now_iso(), action="resized", reason=reason, note=note))
             else:
                 raise ApiError(422, "invalid", "Esa acción no existe.")
             reopen(file)

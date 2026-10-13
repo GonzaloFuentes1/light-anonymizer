@@ -127,6 +127,7 @@
             <button type="button" class="tool" id="b-rot">Girar vista <kbd>R</kbd></button>
             <span class="sep" aria-hidden="true"></span>
             <button type="button" class="tool draw" id="b-draw" aria-pressed="false"><span aria-hidden="true">✎</span> <span class="lbl">Dibujar zona</span> <kbd>D</kbd></button>
+            <button type="button" class="tool erase" id="b-erase" aria-pressed="false"><span aria-hidden="true">⌫</span> <span class="lbl">Goma</span> <kbd>G</kbd></button>
             <button type="button" class="tool" id="b-view" aria-pressed="true">Mostrar el después <kbd>V</kbd></button>
           </div>
           <div class="viewport" id="viewport" tabindex="0" role="region" aria-label="Páginas del documento">
@@ -136,7 +137,7 @@
           </div>
           <div class="hpan" id="hpan" hidden><div id="hpan-inner"></div></div>
           <div class="keys-verify">
-            <div class="keys" aria-label="Atajos de teclado"><span><kbd>J</kbd> <kbd>K</kbd> siguiente y anterior</span><span><kbd>Supr</kbd> quitar censura</span><span><kbd>D</kbd> dibujar zona</span><span><kbd>+</kbd> <kbd>−</kbd> zoom</span><span><kbd>R</kbd> girar vista</span><span><kbd>V</kbd> mostrar u ocultar el después</span></div>
+            <div class="keys" aria-label="Atajos de teclado"><span><kbd>J</kbd> <kbd>K</kbd> siguiente y anterior</span><span><kbd>Supr</kbd> quitar censura</span><span><kbd>D</kbd> dibujar zona</span><span><kbd>G</kbd> goma: quitar las censuras de un área</span><span><kbd>+</kbd> <kbd>−</kbd> zoom</span><span><kbd>R</kbd> girar vista</span><span><kbd>V</kbd> mostrar u ocultar el después</span></div>
             <div class="verify">
               <div class="msg"><span class="dot" id="vdot" aria-hidden="true"></span><div><strong id="vtitle">Revisión lista para confirmar</strong><div class="fmeta" id="vsum"></div></div></div>
               <div class="row" id="vactions"><button type="button" class="btn primary" id="b-confirm">Confirmar este archivo</button></div>

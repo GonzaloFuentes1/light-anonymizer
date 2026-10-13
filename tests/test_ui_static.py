@@ -83,6 +83,7 @@ def test_js_syntax(name):
                 "Antes",
                 "Después",
                 "Dibujar zona",
+                "Goma",
             ],
         ),
         (
@@ -114,6 +115,10 @@ def test_js_syntax(name):
                 "Cargando el archivo…",
                 "Esta página se exportará como imagen",
                 "Nivel ${lv.level}, ${lv.label}",
+                "Goma · Esc para salir",
+                "La goma no tocó ninguna censura.",
+                "Puedes volver a ",
+                "Zona ajustada.",
             ],
         ),
         (
@@ -129,6 +134,8 @@ def test_js_syntax(name):
                 ".prow",
                 ".vp-head",
                 ".levelbar",
+                ".zone .hdl",
+                ".zone.eraser",
             ],
         ),
     ],
