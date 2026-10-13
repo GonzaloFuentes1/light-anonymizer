@@ -257,3 +257,41 @@ test("zones per page: only the findings that will be censored", () => {
   const list = [f("a", 0), f("b", 0, "removed"), f("c", 1, "suggested"), f("d", 1, "added"), f("e", 5)];
   assert.deepEqual(C.zoneCounts(list, 3), [1, 1, 0]);
 });
+
+test("resize: a handle moves its own edges only, inside the page and never past the opposite edge", () => {
+  const r = { x: 10, y: 20, w: 30, h: 40 }, page = { w: 100, h: 100 };
+  assert.deepEqual(C.resizeRect(r, "e", { dx: 5, dy: 99 }, page), { x: 10, y: 20, w: 35, h: 40 });
+  assert.deepEqual(C.resizeRect(r, "nw", { dx: -4, dy: -6 }, page), { x: 6, y: 14, w: 34, h: 46 });
+  assert.deepEqual(C.resizeRect(r, "se", { dx: 2, dy: 3 }, page), { x: 10, y: 20, w: 32, h: 43 });
+  assert.deepEqual(C.resizeRect(r, "s", { dx: 0, dy: 500 }, page), { x: 10, y: 20, w: 30, h: 80 }); // the page bottom
+  assert.deepEqual(C.resizeRect(r, "w", { dx: -50, dy: 0 }, page), { x: 0, y: 20, w: 40, h: 40 }); // the page left
+  assert.deepEqual(C.resizeRect(r, "e", { dx: -100, dy: 0 }, page, 6), { x: 10, y: 20, w: 6, h: 40 });
+  assert.deepEqual(C.resizeRect(r, "n", { dx: 0, dy: 100 }, page, 6), { x: 10, y: 54, w: 30, h: 6 });
+});
+
+test("a rectangle of the cell goes back to a polygon in page units, whatever the rotation", () => {
+  const page = { width: 200, height: 100 };
+  for (const rot of [0, 90, 180, 270]) {
+    const r = C.zoneRect({ x: 10, y: 20, w: 30, h: 5 }, 2, rot, page);
+    assert.deepEqual(C.rectToPolygon(r, 2, rot, page), box(10, 20, 30, 5));
+  }
+});
+
+test("eraser: removes the censored zones it touches, leaves applied suggestions visible, ignores the rest", () => {
+  const optional = (id, status, polygon) => ({ ...f(id, 0, status, polygon), optional: true });
+  const list = [
+    f("a", 0, "proposed", box(10, 10, 20, 10)),
+    f("b", 0, "added", box(50, 50, 10, 10)), // touches the corner
+    f("c", 0, "removed", box(12, 12, 5, 5)),
+    optional("d", "suggested", box(12, 12, 5, 5)),
+    optional("e", "proposed", box(15, 15, 5, 5)),
+    f("g", 1, "proposed", box(10, 10, 20, 10)), // another page
+    f("h", 0, "proposed", box(80, 80, 5, 5)), // outside
+    { ...f("i", 0, "proposed", box(14, 14, 2, 2)), type: "face" }, // hidden by the chips
+  ];
+  assert.deepEqual(C.eraseActions(list, 0, { x: 0, y: 0, w: 50, h: 50 }, new Set(["face"])), [
+    { id: "a", action: "remove" }, { id: "b", action: "remove" }, { id: "e", action: "skip" },
+  ]);
+  assert.deepEqual(C.eraseActions(list, 0, { x: 25, y: 12, w: 0, h: 0 }), [{ id: "a", action: "remove" }]); // a click
+  assert.deepEqual(C.eraseActions(list, 0, { x: 90, y: 0, w: 5, h: 5 }), []);
+});
