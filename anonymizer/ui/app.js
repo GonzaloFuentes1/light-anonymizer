@@ -42,6 +42,7 @@
     signatures: "firmas",
     qr: "código QR",
     reviewer: "agregada por ti",
+    verify: "encontrada al exportar",
   };
   // Stages of an analysis (summary "timings"), shown when a file is done.
   const STAGE_LABELS = { text: "texto", ocr: "texto en imágenes", faces: "rostros", signatures: "firmas", qr: "QR" };
@@ -245,6 +246,8 @@
     exceptionsCount: 0, // entries of the exceptions list (D10)
     engine: "",
     groups: [], // detection groups from GET /api/options (texts in Spanish, current state)
+    levels: [], // detection levels 1-5: how sure faces and signatures must be (GET /api/options)
+    level: null, // the current level
     estimate: null, // GET /api/estimate for the files that would be processed now
     estimateKey: null, // the ids that estimate is for
     loaded: false,
@@ -262,6 +265,7 @@
       zoom: 1, // factor over "fit to the column width"
       rot: 0,
       draw: false,
+      erase: false, // G: the eraser; never on together with draw
       after: true, // the after column is shown (V); kept across files
       seen: new Map(), // file id -> Set of finding ids the reviewer opened
       loadingId: null,
@@ -327,7 +331,7 @@
     if (S.screen === 3 && n !== 3) rememberView(); // a hidden viewport loses its scroll position
     S.screen = n;
     $$(".screen").forEach((s) => s.classList.toggle("on", s.dataset.screen === String(n)));
-    if (n !== 3) { setDraw(false); }
+    if (n !== 3) { setDraw(false); setErase(false); }
     renderSteps();
     if (n === 3) {
       renderReview(); // loads nothing when a file is open: the rows and the anchor stay
@@ -345,11 +349,14 @@
     const files = S.files;
     const any = files.length > 0;
     const reviewable = files.filter((f) => REVIEWABLE.has(f.status));
+    // A file added (or processed again) after the others reopens every step after the first: the
+    // steps are done for the whole list, not for the files that happened to be there before.
+    const settled = any && !files.some(isActive) && !files.some(isPending) && reviewable.length > 0;
     const done = {
       1: any,
-      2: any && !files.some(isActive) && !files.some(isPending) && reviewable.length > 0,
-      3: reviewable.length > 0 && reviewable.every((f) => f.status !== "ready"),
-      4: files.some((f) => f.status === "exported"),
+      2: settled,
+      3: settled && reviewable.every((f) => f.status !== "ready"),
+      4: settled && reviewable.every((f) => f.status === "exported"),
     };
     $$(".step").forEach((b) => {
       const k = Number(b.dataset.go);
@@ -570,10 +577,17 @@
   const groupsOff = (options) =>
     options ? S.groups.filter((g) => g.detection && !g.locked && options[g.key] === false) : [];
 
+  /** Keeps the groups and the levels of a GET or PUT /api/options response. */
+  function applyOptions(res) {
+    if (!res) return;
+    S.groups = res.groups || S.groups;
+    S.levels = res.levels || S.levels;
+    S.level = res.level == null ? null : res.level;
+  }
+
   async function loadGroups() {
     try {
-      const res = await api("/api/options");
-      S.groups = (res && res.groups) || [];
+      applyOptions(await api("/api/options"));
     } catch (err) {
       showError(err);
     }
@@ -590,10 +604,49 @@
     return fmtEstimate(seconds);
   }
 
+  /** The five detection levels over the switches: how sure faces and signatures must be. */
+  function renderLevels() {
+    const box = $("#levels");
+    box.hidden = !S.levels.length;
+    if (!S.levels.length) return;
+    const bar = $("#levelbar");
+    keepFocus(bar, () => {
+      bar.replaceChildren(...S.levels.map((lv) => {
+        const id = `lvl-${lv.level}`;
+        const on = S.level === lv.level;
+        const input = h("input", {
+          type: "radio", name: "level", id, value: String(lv.level), dataset: { fk: `lvl:${lv.level}` },
+          "aria-describedby": "level-desc",
+          onchange: () => setLevel(lv),
+        });
+        input.checked = on;
+        return h("label", { class: `lvl${on ? " on" : ""}`, for: id },
+          input, h("span", { class: "n", text: String(lv.level) }), h("span", { class: "t", text: lv.label }));
+      }));
+    });
+    const cur = S.levels.find((lv) => lv.level === S.level);
+    $("#level-desc").textContent = cur ? cur.description : "";
+  }
+
+  async function setLevel(lv) {
+    try {
+      applyOptions(await api("/api/options", { method: "PUT", json: { level: lv.level } }));
+      let msg = `Nivel ${lv.level}, ${lv.label}. ${lv.description}`;
+      if (S.files.some((f) => REVIEWABLE.has(f.status))) msg += " Se aplica a los archivos que proceses desde ahora.";
+      toast(msg);
+    } catch (err) {
+      showError(err);
+    }
+    renderDetects();
+    renderEstimate();
+    refreshEstimate(true);
+  }
+
   function renderDetects() {
     const panel = $("#detect-panel");
     panel.hidden = !S.groups.length;
     if (!S.groups.length) return;
+    renderLevels();
     const hasFiles = !!(S.estimate && (S.estimate.files || []).length);
     $("#detect-hint").textContent = hasFiles ? "Tiempo estimado para los archivos sin procesar" : "";
     const list = $("#detects");
@@ -668,7 +721,7 @@
   async function setGroup(g, value) {
     try {
       const res = await api("/api/options", { method: "PUT", json: { groups: { [g.key]: value } } });
-      S.groups = (res && res.groups) || S.groups;
+      applyOptions(res);
       let msg;
       if (g.key === "urls_other") {
         msg = value
@@ -1182,6 +1235,7 @@
   /** Empty the viewport. The new generation makes every image response still on its way stale. */
   function teardownRows() {
     cancelDrag();
+    cancelResize();
     smoothTo = null;
     S.rv.gen += 1;
     stopObserver();
@@ -1209,7 +1263,7 @@
     S.rv.statusText = text || "";
   }
 
-  /** Opens a file for review: fit zoom, no rotation, every type shown, draw mode off; V is kept.
+  /** Opens a file for review: fit zoom, no rotation, every type shown, draw and eraser modes off; V is kept.
    *  ``keepView`` reloads the open file in place. ``focus``: the viewport takes the focus once the
    *  file is loaded (an open from the select). ``auto``: the automatic choice, which keeps the
    *  status line and a choice still pending in the select. */
@@ -1223,6 +1277,7 @@
         Object.assign(S.rv, { id, file: null, sel: null, zoom: 1, rot: 0, pan: 0, versions: [] });
         S.rv.hidden.clear();
         setDraw(false);
+        setErase(false);
         $("#review-loading").hidden = false;
         if (!auto) {
           clearTimeout(fileSwitchTimer);
@@ -2020,7 +2075,8 @@
   /** The zones of one page over its before image, in display pixels of its cell (clipped to the
    *  page), filtered by the type chips. Only while the row's before is shown or on its way: a
    *  released row has none. Labels are placed over this page's zones only and never leave the page.
-   *  A zone being drawn on this row stays on top. */
+   *  A zone being drawn on this row stays on top. A zone being resized shows its new rectangle, and
+   *  the selected zone, while it is censored, its handles (see initResizing). */
   function renderRowZones(row) {
     const rv = S.rv;
     if (rv.rows[row.i] !== row) return;
@@ -2029,7 +2085,8 @@
     const items = rvFindings()
       .filter((f) => f.page === row.i && !rv.hidden.has(f.type))
       .map((f) => {
-        const r = ReviewCore.zoneRect(bbox(f.polygon), row.scale, rv.rot, row.page);
+        const live = resizing && resizing.id === f.id && resizing.row === row ? resizing.r : null;
+        const r = live || ReviewCore.zoneRect(bbox(f.polygon), row.scale, rv.rot, row.page);
         return { f, id: f.id, text: zoneLabelText(f), r: { ...r, w: Math.max(4, r.w), h: Math.max(4, r.h) } };
       });
     const labels = ReviewCore.placeLabels(items, { sel: rv.sel, pageHeight: row.h, labelH: LABEL_H });
@@ -2047,7 +2104,7 @@
         dataset: { id: f.id, label: typeLabel(f.type) }, // a click selects it (see init)
         title: `${typeLabel(f.type)}: ${findingValue(f)}${f.status === "suggested" ? " (sin censurar)" : ""}`,
         style: { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` },
-      });
+      }, f.id === rv.sel && isApplied(f) ? handlesFor(r).map((k) => h("span", { class: "hdl", dataset: { h: k } })) : null);
     });
     row.before.zones.replaceChildren(...zones, ...(ghost ? [ghost] : []));
     if (ghost) placeGhost(); // the scale or the rotation may have changed under it
@@ -2572,6 +2629,7 @@
   function setDraw(on) {
     const rv = S.rv;
     if (rv.draw === on) return;
+    if (on) setErase(false);
     rv.draw = on;
     const btn = $("#b-draw");
     btn.setAttribute("aria-pressed", String(on));
@@ -2579,6 +2637,21 @@
     $("#viewport").classList.toggle("drawing", on);
     if (!on) cancelDrag();
     if (on) toast("Arrastra sobre una página del antes para agregar una zona. Esc para salir.");
+  }
+  /** G: eraser mode, the opposite of D: a rectangle dragged over a before page takes away every
+   *  censorship it touches (see erase). Pressed like D, with a red outline (CSS .erasing); turning
+   *  one mode on turns the other off. */
+  function setErase(on) {
+    const rv = S.rv;
+    if (rv.erase === on) return;
+    if (on) setDraw(false);
+    rv.erase = on;
+    const btn = $("#b-erase");
+    btn.setAttribute("aria-pressed", String(on));
+    $(".lbl", btn).textContent = on ? "Goma · Esc para salir" : "Goma";
+    $("#viewport").classList.toggle("erasing", on);
+    if (!on) cancelDrag();
+    if (on) toast("Arrastra sobre una página del antes para quitar las censuras que toque. Esc para salir.");
   }
   /** V: shows or hides the after column. Kept across files; D and Esc never change it. */
   function setAfter(on) {
@@ -2592,7 +2665,8 @@
   // with that row's live rectangle (the scroll and the pan move it), its scale, page and the rotation,
   // then clamped to that page. The ghost lives in that row's zone layer; ``row.busy`` keeps the row's
   // images while the drag lasts. ``start``/``end`` are page units, ``last`` the last client point.
-  let drag = null; // { row, box, pointerId, ghost, start, end, last }
+  // The eraser (``erase``) drags its rectangle the same way.
+  let drag = null; // { row, box, pointerId, ghost, start, end, last, erase }
   function drawPoint(clientX, clientY) {
     const { row, box } = drag;
     const r = box.getBoundingClientRect();
@@ -2624,12 +2698,15 @@
     const rows = $("#rows");
     const ours = (e) => drag && e.pointerId === drag.pointerId;
     rows.addEventListener("pointerdown", (e) => {
-      const box = S.rv.draw && !drag && e.button === 0 && e.target.closest(".cell.before .pbox");
+      const erase = S.rv.erase;
+      const box = (S.rv.draw || erase) && !drag && !resizing && e.button === 0 && e.target.closest(".cell.before .pbox");
       const row = box && S.rv.rows[Number(box.closest(".prow").dataset.row)];
       if (!row || row.before.box !== box) return;
       e.preventDefault();
-      const ghost = h("div", { class: "zone t-manual ghost", dataset: { label: TYPE_LABELS.manual } });
-      drag = { row, box, pointerId: e.pointerId, ghost, start: null, end: null, last: null };
+      const ghost = erase
+        ? h("div", { class: "zone eraser ghost", dataset: { label: "Goma" } })
+        : h("div", { class: "zone t-manual ghost", dataset: { label: TYPE_LABELS.manual } });
+      drag = { row, box, pointerId: e.pointerId, ghost, start: null, end: null, last: null, erase };
       drag.start = drawPoint(e.clientX, e.clientY);
       row.before.zones.append(ghost);
       row.busy = true; // releaseFar and a zoom refresh leave its images alone
@@ -2644,11 +2721,138 @@
     rows.addEventListener("pointerup", (e) => {
       if (!ours(e)) return;
       const z = moveDrag(e.clientX, e.clientY);
-      const { row, start, end } = drag;
+      const { row, start, end, erase: erasing } = drag;
       cancelDrag();
+      if (erasing) { erase(row.i, start, end); return; } // a click erases what is under the pointer
       if (z.w < 6 || z.h < 6) { toast("La zona es muy pequeña. Arrastra para dibujar un rectángulo."); return; }
       addZone(row.i, ReviewCore.rectPolygon(start, end));
     });
+  }
+  /** The eraser let go between ``a`` and ``b`` (page units) on ``page``: every zone of that page it
+   *  touches is taken away (ReviewCore.eraseActions), one request after the other. The eraser stays
+   *  on; whatever was taken away before a failure stays taken away. */
+  async function erase(page, a, b) {
+    const rv = S.rv;
+    const rect = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+    const actions = ReviewCore.eraseActions(rvFindings(), page, rect, rv.hidden);
+    if (!actions.length) { toast("La goma no tocó ninguna censura."); return; }
+    const fileId = rv.id, opened = rv.file; // see stillOpen
+    const done = [];
+    let failure = null;
+    for (const { id, action } of actions) {
+      try {
+        done.push(await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: { action } }));
+      } catch (err) {
+        failure = err;
+        break;
+      }
+    }
+    if (done.length && stillOpen(fileId, opened)) {
+      const list = opened.findings;
+      for (const u of done) {
+        const i = list.findIndex((f) => f.id === u.id);
+        if (i >= 0) list[i] = u;
+      }
+      refreshVersions(); // the after of the page loads again
+      renderZonesAll();
+      renderFindings();
+      renderVerify();
+    }
+    if (failure) showError(failure);
+    else {
+      const n = done.length;
+      // A removed zone comes back with «Restaurar», a suggestion left visible with «Censurar».
+      const back = done.every((f) => f.status === "removed") ? "«Restaurar»"
+        : done.every((f) => f.status === "suggested") ? "«Censurar»" : "«Restaurar» o «Censurar»";
+      toast(`Se ${n === 1 ? "quitó" : "quitaron"} ${plural(n, "censura", "censuras")}. Puedes volver a ${n === 1 ? "ponerla" : "ponerlas"} con ${back}.`);
+    }
+    if (done.length) refreshState();
+  }
+
+  // --- resizing the selected zone by its handles ---
+  // Like a drawn zone, the drag is measured on its row's page box, which captures the pointer (the zone
+  // layer is redrawn under it, handles included). ``r0`` is the zone's rectangle at pointerdown and
+  // ``r`` the one shown now (display pixels of the cell); ``from`` is where the pointer went down and
+  // ``last`` the last client point. Let go, the new rectangle stays shown (``pointerId`` null) until
+  // the server answers. Handles are only shown on a censored zone, out of the draw and eraser modes.
+  const HANDLES = ["n", "e", "s", "w", "nw", "ne", "se", "sw"]; // corners last: on a tiny zone they win
+  /** The handles of a zone shown as ``r`` (display pixels): on a short or narrow one (a line of text)
+   *  the middle handles of its long sides would cover it, and the corners do their work. */
+  const handlesFor = (r) => HANDLES.filter((k) => k.length === 2 || (k === "n" || k === "s" ? r.w : r.h) >= 30);
+  let resizing = null; // { row, box, pointerId, id, handle, r0, r, from, last }
+  function resizeTo(clientX, clientY) {
+    const { row, box, r0, handle, from } = resizing;
+    const b = box.getBoundingClientRect();
+    resizing.last = { x: clientX, y: clientY };
+    const d = { dx: clientX - b.left - from.x, dy: clientY - b.top - from.y };
+    const min = Math.max(6, row.scale * 1.1); // and at least 1 × 1 page units, as the API asks
+    resizing.r = ReviewCore.resizeRect(r0, handle, d, ReviewCore.displaySize(row.page, row.scale, S.rv.rot), min);
+    renderRowZones(row);
+  }
+  /** The pointer goes; the rectangle shown stays until ``cancelResize``. */
+  function letGoResize() {
+    const { row, box, pointerId } = resizing;
+    resizing.pointerId = null;
+    row.busy = false;
+    if (box.hasPointerCapture(pointerId)) box.releasePointerCapture(pointerId);
+  }
+  /** Ends a resize: the zone shows its saved rectangle again (Esc, a lost pointer, another file, the
+   *  server's answer). */
+  function cancelResize() {
+    if (!resizing) return;
+    const { row } = resizing;
+    if (resizing.pointerId != null) letGoResize();
+    resizing = null;
+    renderRowZones(row);
+  }
+  function initResizing() {
+    const rows = $("#rows");
+    const ours = (e) => resizing && e.pointerId === resizing.pointerId;
+    rows.addEventListener("pointerdown", (e) => {
+      const rv = S.rv;
+      const hdl = !rv.draw && !rv.erase && !drag && !resizing && e.button === 0 && e.target.closest(".cell.before .zone .hdl");
+      const zone = hdl && hdl.closest(".zone[data-id]");
+      const box = zone && zone.closest(".pbox");
+      const row = box && rv.rows[Number(box.closest(".prow").dataset.row)];
+      const f = zone && findingById(zone.dataset.id);
+      if (!row || row.before.box !== box || !f || !isApplied(f)) return;
+      e.preventDefault();
+      const b = box.getBoundingClientRect();
+      const r0 = ReviewCore.zoneRect(bbox(f.polygon), row.scale, rv.rot, row.page);
+      resizing = {
+        row, box, pointerId: e.pointerId, id: f.id, handle: hdl.dataset.h, r0, r: r0,
+        from: { x: e.clientX - b.left, y: e.clientY - b.top }, last: { x: e.clientX, y: e.clientY },
+      };
+      row.busy = true; // releaseFar and a zoom refresh leave its images alone
+      box.setPointerCapture(e.pointerId);
+    });
+    rows.addEventListener("pointermove", (e) => { if (ours(e)) resizeTo(e.clientX, e.clientY); });
+    rows.addEventListener("pointercancel", (e) => { if (ours(e)) cancelResize(); });
+    rows.addEventListener("lostpointercapture", (e) => { if (ours(e)) cancelResize(); });
+    $("#viewport").addEventListener("scroll", () => {
+      if (resizing && resizing.pointerId != null) resizeTo(resizing.last.x, resizing.last.y);
+    }, { passive: true });
+    rows.addEventListener("pointerup", (e) => {
+      if (!ours(e)) return;
+      resizeTo(e.clientX, e.clientY);
+      const { row, id, r, r0 } = resizing;
+      letGoResize();
+      if (["x", "y", "w", "h"].every((k) => Math.abs(r[k] - r0[k]) < 0.5)) { cancelResize(); return; } // not moved
+      saveResize(id, ReviewCore.rectToPolygon(r, row.scale, S.rv.rot, row.page));
+    });
+  }
+  async function saveResize(id, polygon) {
+    const fileId = S.rv.id, opened = S.rv.file; // see stillOpen
+    try {
+      const updated = await api(`/api/files/${enc(fileId)}/findings/${enc(id)}`, { method: "PATCH", json: { action: "resize", polygon } });
+      if (resizing && resizing.id === id) resizing = null; // replaceFinding draws the saved rectangle
+      toast("Zona ajustada.");
+      if (stillOpen(fileId, opened)) replaceFinding(updated); // and the after of its page loads again
+      refreshState();
+    } catch (err) {
+      if (resizing && resizing.id === id) cancelResize();
+      showError(err);
+    }
   }
   async function addZone(page, polygon) {
     const fileId = S.rv.id, opened = S.rv.file; // see stillOpen
@@ -2682,13 +2886,16 @@
         askRemove((item && item.dataset.id) || S.rv.sel);
       }
       else if (k === "d") setDraw(!S.rv.draw);
+      else if (k === "g") setErase(!S.rv.erase);
       else if (k === "v") setAfter(!S.rv.after);
       else if (k === "r") rotate();
       else if (k === "+" || k === "=" || k === "Add") zoomBy(1.2);
       else if (k === "-" || k === "Subtract" || k === "−") zoomBy(1 / 1.2);
       else if (k === "Escape") {
-        if (drag) cancelDrag(); // draw mode stays on
+        if (drag) cancelDrag(); // draw or eraser mode stays on
+        else if (resizing && resizing.pointerId != null) cancelResize();
         else if (S.rv.draw) { setDraw(false); focusViewport(); }
+        else if (S.rv.erase) { setErase(false); focusViewport(); }
         else handled = false; // Esc never hides the after column
       } else handled = false; // PageUp/PageDown, Home/End, Space and the arrows scroll the focused viewport
       if (handled) e.preventDefault();
@@ -2935,6 +3142,7 @@
     initAskDialog();
     initDragDrop();
     initDrawing();
+    initResizing();
     initKeyboard();
     if (!TOKEN) setFatal(MSG.noToken);
 
@@ -2995,12 +3203,13 @@
     $("#b-zfit").addEventListener("click", zoomFit);
     $("#b-rot").addEventListener("click", rotate);
     $("#b-draw").addEventListener("click", () => setDraw(!S.rv.draw));
+    $("#b-erase").addEventListener("click", () => setErase(!S.rv.erase));
     $("#b-view").addEventListener("click", () => setAfter(!S.rv.after));
     const vp = $("#viewport");
-    // A click on a zone selects its finding (not while drawing: zones then let the pointer through).
+    // A click on a zone selects its finding (not while drawing or erasing: zones then let the pointer through).
     $("#rows").addEventListener("click", (e) => {
       const zone = e.target.closest(".zone[data-id]");
-      if (zone && !S.rv.draw) select(zone.dataset.id);
+      if (zone && !S.rv.draw && !S.rv.erase) select(zone.dataset.id);
     });
     let viewTick = false; // the page field and the zoom button follow the scroll, once per frame
     vp.addEventListener("scroll", () => {

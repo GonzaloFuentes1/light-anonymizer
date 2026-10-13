@@ -289,11 +289,45 @@
     return out;
   }
 
+  /** A zone's rectangle (display pixels of its cell) with the edges of ``handle`` ("n", "e", "s", "w"
+   *  or a corner such as "ne") moved by the drag ``d`` ({ dx, dy }); the other edges stay put. It
+   *  stays inside ``bounds`` ({ w, h }: the page in its cell), and a moved edge never comes closer
+   *  than ``min`` to the opposite one. */
+  function resizeRect(r, handle, d, bounds, min = 1) {
+    let x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+    if (handle.includes("w")) x0 = clamp(x0 + d.dx, 0, Math.max(0, x1 - min));
+    if (handle.includes("e")) x1 = clamp(x1 + d.dx, Math.min(bounds.w, x0 + min), bounds.w);
+    if (handle.includes("n")) y0 = clamp(y0 + d.dy, 0, Math.max(0, y1 - min));
+    if (handle.includes("s")) y1 = clamp(y1 + d.dy, Math.min(bounds.h, y0 + min), bounds.h);
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+
+  /** A rectangle of a cell (display pixels) as the polygon sent to the API (page units). */
+  function rectToPolygon(r, scale, rot, page) {
+    return rectPolygon(pointToPage(r.x, r.y, scale, rot, page), pointToPage(r.x + r.w, r.y + r.h, scale, rot, page));
+  }
+
+  /** What the eraser does to the zones of ``page`` that its rectangle ``b`` (page units) touches,
+   *  edges included: an applied suggestion (another URL, a value of the exceptions list, a doubtful
+   *  RUT) is left visible again ("skip"), any other censored zone is removed ("remove"). Zones
+   *  already removed, suggestions left unapplied and the types hidden by the chips are left alone. */
+  function eraseActions(findings, page, b, hidden = new Set()) {
+    const out = [];
+    for (const f of findings || []) {
+      if (f.page !== page || !isActive(f) || hidden.has(f.type) || !(f.polygon || []).length) continue;
+      const xs = f.polygon.map((p) => p[0]), ys = f.polygon.map((p) => p[1]);
+      const touches = Math.min(...xs) <= b.x + b.w && b.x <= Math.max(...xs)
+        && Math.min(...ys) <= b.y + b.h && b.y <= Math.max(...ys);
+      if (touches) out.push({ id: f.id, action: f.optional ? "skip" : "remove" });
+    }
+    return out;
+  }
+
   const ReviewCore = {
     isActive, pageVersions, afterChange, columns, fitScales, effectiveScale, nextZoom, displaySize, innerTransform,
     overflow, panShift, panCenter, panFor, zoneRect, pointToPage, requestZoom, imageKey, acceptResponse,
     planQueue, releasePlan, rowsWithin, admits, currentRow, anchorOf, scrollTopFor, scrollTarget, isLongScroll,
-    panTarget, placeLabels, rectPolygon, zoneCounts,
+    panTarget, placeLabels, rectPolygon, zoneCounts, resizeRect, rectToPolygon, eraseActions,
   };
   if (typeof module === "object" && module.exports) module.exports = ReviewCore;
   else root.ReviewCore = ReviewCore;

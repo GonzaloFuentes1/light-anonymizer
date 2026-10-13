@@ -11,6 +11,7 @@
   color-scheme: light;
   --paper: #F2F4F7;
   --draw: #FFD23F; --draw-ink: #1F1A00; --draw-edge: #8A6100;
+  --erase: #B3261E; /* the eraser: white text on it is at least 4.5:1 */
   --surface: #FFFFFF;
   --surface-2: #E9EDF3;
   --ink: #17212D;
@@ -137,6 +138,16 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .namelist { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; }
 /* What to search for: one row per detection group, with its estimated time */
 .detects { list-style: none; margin: 0; padding: 0; }
+.levels { margin: 0; padding: 11px 14px 12px; border: 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.levels legend { float: left; width: 100%; padding: 0; font-weight: 700; }
+.levelbar { clear: both; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 8px 0 6px; }
+.lvl { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 7px 4px; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--surface); cursor: pointer; text-align: center; }
+.lvl input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.lvl .n { font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; }
+.lvl .t { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.lvl.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.lvl.on .t { color: var(--ink); font-weight: 700; }
+.lvl:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .detect { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 2px 12px; align-items: start; padding: 11px 14px; border-top: 1px solid var(--line); }
 .detect:first-child { border-top: 0; }
 .detect.sub { padding-left: 46px; }
@@ -199,6 +210,7 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .tool.draw kbd { background: rgba(255, 255, 255, .6); color: var(--draw-ink); border-color: rgba(0, 0, 0, .3); }
 .tool.draw[aria-pressed="true"] { background: var(--draw-ink); color: var(--draw); border-color: var(--draw-edge); }
 .tool.draw[aria-pressed="true"] kbd { background: transparent; color: inherit; border-color: currentColor; }
+.tool.erase[aria-pressed="true"] { background: var(--erase); color: #FFFFFF; border-color: var(--erase); }
 
 /* One vertical scroll for every page. --cw: the width of a column; --gap between columns. */
 .viewport { --cw: 600px; --gap: 24px; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; position: relative; min-height: 0; padding: 0; overscroll-behavior: contain; }
@@ -241,6 +253,10 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
    outside a page that fills its column would be cut. */
 .viewport.drawing .cell.before .zones { outline: 3px dashed var(--draw-edge); outline-offset: -3px; }
 .viewport.drawing .zone { pointer-events: none; }
+/* Eraser mode: a red dashed outline instead of the yellow one; zones let the pointer through as well. */
+.viewport.erasing .cell.before .pbox { cursor: crosshair; touch-action: none; }
+.viewport.erasing .cell.before .zones { outline: 3px dashed var(--erase); outline-offset: -3px; }
+.viewport.erasing .zone { pointer-events: none; }
 .viewport.no-after .cell.after, .viewport.no-after .vp-head .h-after { display: none; }
 .viewport.no-after .prow, .viewport.no-after .vp-head { grid-template-columns: var(--cw); }
 .viewport.stacked .vp-head { display: none; }
@@ -263,6 +279,18 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .zone.nolabel::after { display: none; }
 .zone.nolabel:hover::after, .zone.nolabel.sel::after { display: block; z-index: 4; }
 .zone.ghost { pointer-events: none; }
+.zone.eraser { --zc: var(--erase); border-style: dashed; background: color-mix(in srgb, var(--erase) 10%, transparent); }
+/* Handles of the selected zone: dragged, they move its edges and corners. Centered on its 2 px border. */
+.zone .hdl { position: absolute; width: 8px; height: 8px; background: #FFFFFF; border: 2px solid var(--zc); border-radius: 2px; touch-action: none; }
+.zone .hdl[data-h="n"], .zone .hdl[data-h="s"] { left: calc(50% - 4px); cursor: ns-resize; }
+.zone .hdl[data-h="e"], .zone .hdl[data-h="w"] { top: calc(50% - 4px); cursor: ew-resize; }
+.zone .hdl[data-h*="n"] { top: -5px; }
+.zone .hdl[data-h*="s"] { bottom: -5px; }
+.zone .hdl[data-h*="w"] { left: -5px; }
+.zone .hdl[data-h*="e"] { right: -5px; }
+.zone .hdl[data-h="nw"], .zone .hdl[data-h="se"] { cursor: nwse-resize; }
+.zone .hdl[data-h="ne"], .zone .hdl[data-h="sw"] { cursor: nesw-resize; }
+.viewport.drawing .zone .hdl, .viewport.erasing .zone .hdl { display: none; }
 .t-rut { --zc: var(--z-rut); } .t-email { --zc: var(--z-email); } .t-phone { --zc: var(--z-phone); }
 .t-url { --zc: var(--z-url); } .t-name { --zc: var(--z-name); } .t-address { --zc: var(--z-address); }
 .t-face { --zc: var(--z-face); } .t-signature { --zc: var(--z-signature); } .t-qr { --zc: var(--z-qr); }

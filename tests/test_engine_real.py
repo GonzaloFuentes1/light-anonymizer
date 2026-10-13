@@ -207,12 +207,29 @@ def test_leak_blocks_export_and_never_overwrites(tmp_path):
     assert not any((tmp_path / "blocked").iterdir())
 
 
-def test_unmarked_pattern_in_the_output_is_a_leak(tmp_path):
-    file = analyzed(make_pdf(tmp_path / "a.pdf"))
+@pytest.mark.parametrize("rotation", [0, 90])
+def test_unmarked_pattern_in_the_output_is_censored_at_export(tmp_path, rotation):
+    file = analyzed(make_pdf(tmp_path / "a.pdf", rotation=rotation))
     file.findings = [f for f in file.findings if f.type != "phone"]  # as if the phone was never proposed
+    result = RealEngine().export(file, str(tmp_path / "out"))
+    # Not sent back to the review: the export censors it where it is and says so.
+    assert result.exported, [leak.message for leak in result.leaks]
+    assert PHONE not in output_text(result.output_path) and VALID_RUT not in output_text(result.output_path)
+    assert "verificación final encontró 1 dato sin marcar (teléfono)" in result.message
+    added = [f for f in file.findings if f.detector == "verify"]
+    assert len(added) == 1 and added[0].type == "phone" and added[0].active and added[0].page == 0
+    assert added[0].history[0].note == "Encontrado por la verificación final"
+
+
+def test_unmarked_pattern_with_another_leak_still_blocks(tmp_path):
+    file = analyzed(make_pdf(tmp_path / "a.pdf"))
+    file.findings = [f for f in file.findings if f.type != "phone"]
+    rut = next(f for f in file.findings if f.text == VALID_RUT)
+    rut.polygon = [[0, 0], [5, 0], [5, 5], [0, 5]]  # its zone no longer covers the text
     result = RealEngine().export(file, str(tmp_path / "out"))
     assert not result.exported
     assert any(leak.type == "phone" and "no estaba marcado" in leak.message for leak in result.leaks)
+    assert not any(f.detector == "verify" for f in file.findings)  # nothing added when it is blocked anyway
 
 
 NEUTRAL_SCAN = "Acta ficticia escaneada con capa de texto invisible, solo para pruebas."

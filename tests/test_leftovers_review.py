@@ -360,7 +360,7 @@ def _manual(x0, y0, x1, y1) -> Finding:
                    polygon=common.rect_polygon(x0, y0, x1, y1))  # fmt: skip
 
 
-def test_data_nobody_marked_blocks_a_page_exported_as_an_image(tmp_path):
+def test_data_nobody_marked_is_censored_on_a_page_exported_as_an_image(tmp_path):
     with pymupdf.open() as doc:
         page = doc.new_page(width=595, height=842)
         page.insert_text((72, 100), "Solicitud de prueba con datos inventados.", fontsize=11)
@@ -372,9 +372,12 @@ def test_data_nobody_marked_blocks_a_page_exported_as_an_image(tmp_path):
         file = AnalyzedFile(id=label, name="net.pdf", path=str(tmp_path / "net.pdf"), kind="pdf",
                             findings=[_manual(*zone)], status="confirmed")  # fmt: skip
         result = RealEngine().export(file, str(tmp_path / label))
-        assert not result.exported, label  # the detectors missed the e-mail and the RUT
-        messages = " ".join(leak.message for leak in result.leaks)
-        assert "un RUT legible" in messages and "un correo legible" in messages, (label, messages)
+        # The detectors missed the e-mail and the RUT: the leak check finds them in the text the page
+        # had, and the export censors them there instead of sending the reviewer back.
+        assert result.exported, (label, [leak.message for leak in result.leaks])
+        added = sorted(f.type for f in file.findings if f.detector == "verify")
+        assert added == ["email", "rut"], label
+        assert "verificación final encontró 2 datos sin marcar" in result.message, label
 
 
 def test_a_page_exported_as_an_image_with_nothing_unmarked_exports(tmp_path):

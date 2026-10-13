@@ -35,7 +35,7 @@ from anonymizer.engine.common import bbox_of
 from anonymizer.engine.locks import PDF_LOCK
 from anonymizer.engine.model import TYPE_LABELS, Finding, Leak
 from anonymizer.engine.patterns import normalize_1to1
-from anonymizer.engine.text import detect_spans, needle, strong_needle
+from anonymizer.engine.text import dedup_spans, detect_spans, needle, strong_needle
 
 CRITICAL_TYPES = ("rut", "email", "phone")
 # A zone counts as covered when almost all of its inside (the antialiased border left out) is black.
@@ -79,7 +79,11 @@ def pdf_leaks(
     with PDF_LOCK:
         with pymupdf.open(path) as doc:
             layers = [
-                (*(text_layers[n] if n in text_layers else pdf.chars(page)[:2]), pymupdf.Matrix(page.derotation_matrix))
+                (
+                    *(text_layers[n] if n in text_layers else pdf.chars(page)[:2]),
+                    pymupdf.Matrix(page.derotation_matrix),
+                    pymupdf.Matrix(page.rotation_matrix),
+                )
                 for n, page in enumerate(doc)
             ]
             metadata = {k: v for k, v in (doc.metadata or {}).items() if v and k not in ("format", "encryption")}
@@ -90,7 +94,7 @@ def pdf_leaks(
         leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene metadatos."))
     if attachments:
         leaks.append(Leak(page=None, type="metadata", message="El archivo todavía tiene archivos adjuntos."))
-    for n, (text, boxes, to_page) in enumerate(layers):
+    for n, (text, boxes, to_page, to_view) in enumerate(layers):
         chars = list(text)
         normalized = normalize_1to1(text)
         # What the reviewer kept is not looked at, but only where it was kept: the same text in
@@ -120,20 +124,38 @@ def pdf_leaks(
                 for m in hits:
                     _blank(chars, m.start(), m.end())
         remaining = "".join(chars)
-        reported: set[tuple[str, str]] = set()
-        for type_, a, b, _ in detect_spans(remaining, (), all_urls=False):
+        reported: dict[tuple[str, str], Leak] = {}
+        # Like the analysis: a span inside another (a run of a phone's digits read as a RUT) is not
+        # another datum.
+        for type_, a, b, _ in dedup_spans(detect_spans(remaining, (), all_urls=False)):
             value = "".join(remaining[a:b].split())
-            if type_ not in CRITICAL_TYPES or (type_, value) in reported:
+            if type_ not in CRITICAL_TYPES:
                 continue
-            reported.add((type_, value))
-            leaks.append(
-                Leak(
+            leak = reported.get((type_, value))
+            if leak is None:
+                leak = reported[(type_, value)] = Leak(
                     page=n,
                     type=type_,
                     message=f"Hay {_UNMARKED[type_]} legible en la página {n + 1} que no estaba marcado para censurar.",
                 )
-            )
+                leaks.append(leak)
+            place = _place(boxes, a, b, to_view)
+            if place:
+                leak.polygons.append(place)
     return leaks
+
+
+def _place(boxes: list[pymupdf.Rect | None], a: int, b: int, to_view: pymupdf.Matrix) -> list[list[float]] | None:
+    """The rectangle of the characters ``a:b`` (unrotated page space) in view space, a little
+    larger than the letters; None when they have no box."""
+    rect = pymupdf.Rect()
+    for box in boxes[a:b]:
+        if box is not None and not box.is_empty:
+            rect |= box
+    if rect.is_empty:
+        return None
+    r = ((rect + (-1, -1, 1, 1)) * to_view).normalize()
+    return [[round(x, 2), round(y, 2)] for x, y in ((r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1))]
 
 
 _LITERAL = re.compile(rb"\((?:\\.|[^\\()]|\((?:\\.|[^\\()])*\))*\)", re.S)

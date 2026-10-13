@@ -15,7 +15,8 @@ import numpy as np
 
 from anonymizer.engine import context, faces, names, ocr, qr, signatures
 from anonymizer.engine.common import Zone, stage
-from anonymizer.engine.model import DetectionOptions
+from anonymizer.engine.model import LEVELS_BY_NUMBER, DetectionOptions
+from anonymizer.engine.model import face_threshold as level_face_threshold
 from anonymizer.engine.patterns import RUT, RUT_OCR, TYPE_PRIORITY, normalize_1to1, ocr_variant, rut_is_valid
 from anonymizer.engine.text import (
     DOUBT_CONTEXT_NAME,
@@ -79,12 +80,14 @@ def detect_in_image(
     keywords); ``signature_whole``: the image itself may be a signature; ``signature_lone=False``: a
     stroke needs a keyword or a line; ``signature_page_size``: the size of the page this image is a
     region of; ``signature_signers``: text-layer lines with a person's name near this image, in its
-    pixels (``signatures.detect_raster``).
+    pixels (``signatures.detect_raster``). ``face_threshold`` is the score a face needs at the
+    normal level: ``options.level`` moves it, and how curly a lone stroke must be to be a signature.
 
     A line whose only data are URLs that are not personal is an optional zone (D12), except in
     ``all_text`` mode, where every line is redacted.
     """
     options = options or DetectionOptions()
+    face_threshold = level_face_threshold(face_threshold, options.level)
     ocr_enabled = ocr_enabled and options.ocr
     qr_enabled = qr_enabled and options.qr
     h, w = rgb.shape[:2]
@@ -131,6 +134,7 @@ def detect_in_image(
                 lone=signature_lone,
                 page_size=signature_page_size,
                 signers=[*signers, *(signature_signers or [])],
+                lone_curly=LEVELS_BY_NUMBER[options.level].lone_curly,
             )
     if qr_enabled:
         if step is not None:
