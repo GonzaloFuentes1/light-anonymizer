@@ -325,6 +325,84 @@ def test_exported_file_can_be_corrected_and_exported_again(client, tmp_path):
     assert (tmp_path / "ficticio.pdf").is_file()  # the first export is never overwritten
 
 
+def rect(x0: float, y0: float, x1: float, y1: float) -> list[list[float]]:
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+
+def test_resize_a_zone(client, tmp_path):
+    file_id = upload(client, "ficticio.pdf", make_pdf())
+    client.post("/api/process", json={"file_ids": [file_id]})
+    wait_status(client, file_id)
+    rut = next(f for f in client.get(f"/api/files/{file_id}").json()["findings"] if f["text"] == VALID_RUT)
+    base = f"/api/files/{file_id}/findings/{rut['id']}"
+    assert client.post(f"/api/files/{file_id}/confirm").json()["status"] == "confirmed"
+
+    # A detected zone keeps its type and its status; the change is in its history.
+    r = client.patch(base, json={"action": "resize", "polygon": rect(60, 120, 300.5, 150), "note": "Más margen"})
+    assert r.status_code == 200, r.text
+    resized = r.json()
+    assert resized["type"] == "rut" and resized["status"] == "proposed" and resized["text"] == VALID_RUT
+    assert resized["polygon"] == rect(60, 120, 300.5, 150)
+    assert resized["history"][-1]["action"] == "resized" and resized["history"][-1]["note"] == "Más margen"
+    assert wait_status(client, file_id, statuses=("ready",))["status"] == "ready"  # a confirmed file reopens
+
+    # Any polygon becomes its bounding rectangle, clipped to the page.
+    r = client.patch(base, json={"action": "resize", "polygon": [[-20, 130], [610, 100], [300, 900]]})
+    assert r.status_code == 200 and r.json()["polygon"] == rect(0, 100, 595, 842)
+
+    # A drawn zone stays a drawn zone.
+    drawn = client.post(f"/api/files/{file_id}/findings", json={"page": 0, "polygon": rect(70, 85, 300, 105)}).json()
+    r = client.patch(
+        f"/api/files/{file_id}/findings/{drawn['id']}", json={"action": "resize", "polygon": rect(70, 80, 320, 110)}
+    )
+    assert r.json()["type"] == "manual" and r.json()["status"] == "added"
+    assert [h["action"] for h in r.json()["history"]] == ["added", "resized"]
+
+    client.post(f"/api/files/{file_id}/confirm")
+    out = client.post("/api/export", json={"dest_dir": str(tmp_path), "audit_pdf": False, "audit_json": True}).json()
+    record = json.loads(Path(out["audit"]["json_path"]).read_text(encoding="utf-8"))["files"][0]
+    changes = [(c["finding_id"], c["action"]) for c in record["reviewer_changes"]]
+    assert changes.count((rut["id"], "resized")) == 2 and (drawn["id"], "resized") in changes
+
+
+def test_resize_refuses_empty_or_tiny_zones(client):
+    file_id = upload(client, "ficticio.pdf", make_pdf())
+    client.post("/api/process", json={"file_ids": [file_id]})
+    wait_status(client, file_id)
+    rut = next(f for f in client.get(f"/api/files/{file_id}").json()["findings"] if f["text"] == VALID_RUT)
+    base = f"/api/files/{file_id}/findings/{rut['id']}"
+    for polygon in (None, [], [[10, 10]], [[10, 10, 3], [50, 50]], rect(10, 10, 10.5, 50), rect(700, 10, 800, 50)):
+        r = client.patch(base, json={"action": "resize", "polygon": polygon})
+        assert r.status_code == 422, (polygon, r.text)
+        assert r.json()["error"] == "invalid" and "zona" in r.json()["message"]
+    after = next(f for f in client.get(f"/api/files/{file_id}").json()["findings"] if f["id"] == rut["id"])
+    assert after["polygon"] == rut["polygon"] and after["history"][-1]["action"] == "proposed"
+
+
+def test_resize_only_censored_zones(client):
+    file_id = processed(client, make_url_pdf())
+    findings = client.get(f"/api/files/{file_id}").json()["findings"]
+    other = next(f for f in findings if f["text"] == OTHER_URL)
+    personal = next(f for f in findings if f["text"] == PERSONAL_URL)
+    # A suggestion left unapplied: not censored, so it has no size to change.
+    r = client.patch(
+        f"/api/files/{file_id}/findings/{other['id']}", json={"action": "resize", "polygon": rect(1, 1, 50, 50)}
+    )
+    assert r.status_code == 409 and r.json()["error"] == "not_applied" and r.json()["message"]
+    # An applied suggestion can be resized.
+    client.patch(f"/api/files/{file_id}/findings/{other['id']}", json={"action": "apply"})
+    r = client.patch(
+        f"/api/files/{file_id}/findings/{other['id']}", json={"action": "resize", "polygon": rect(1, 1, 50, 50)}
+    )
+    assert r.status_code == 200 and r.json()["status"] == "proposed"
+    # A removed zone must be restored first.
+    client.patch(f"/api/files/{file_id}/findings/{personal['id']}", json={"action": "remove"})
+    r = client.patch(
+        f"/api/files/{file_id}/findings/{personal['id']}", json={"action": "resize", "polygon": rect(1, 1, 50, 50)}
+    )
+    assert r.status_code == 409 and r.json()["error"] == "removed" and "Restaurar" in r.json()["message"]
+
+
 def test_cancel_and_delete(tmp_path):
     app = create_app(FakeEngine(delay=0.3), TOKEN)
     with LiveClient(app) as c:

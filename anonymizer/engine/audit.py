@@ -158,7 +158,7 @@ def _file_record(file: AnalyzedFile, result: ExportResult | None) -> dict:
             record["visible_text"] = f.text
         findings.append(record)
         for h in f.history:
-            if h.action in ("removed", "restored", "added", "applied", "skipped"):
+            if h.action in ("removed", "restored", "added", "applied", "skipped", "resized"):
                 changes.append(
                     {
                         "finding_id": f.id,

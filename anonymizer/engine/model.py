@@ -40,7 +40,7 @@ TYPE_LABELS: dict[str, str] = {
 @dataclass
 class HistoryEntry:
     at: str  # ISO 8601 timestamp
-    action: Literal["proposed", "suggested", "removed", "restored", "added", "applied", "skipped"]
+    action: Literal["proposed", "suggested", "removed", "restored", "added", "applied", "skipped", "resized"]
     reason: str | None = None  # Spanish, chosen by the reviewer
     note: str | None = None  # free text from the reviewer
 
