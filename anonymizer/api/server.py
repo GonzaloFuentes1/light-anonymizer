@@ -84,7 +84,9 @@ from anonymizer import about
 from anonymizer.engine import audit, estimate, exceptions
 from anonymizer.engine.common import HEAD_BYTES, HEIC_SUFFIXES, is_heic
 from anonymizer.engine.model import (
+    DEFAULT_LEVEL,
     DETECTION_GROUPS,
+    DETECTION_LEVELS,
     ERROR_MESSAGES,
     GROUPS_BY_KEY,
     AnalyzedFile,
@@ -92,6 +94,7 @@ from anonymizer.engine.model import (
     ExportResult,
     Finding,
     HistoryEntry,
+    level_of,
 )
 from anonymizer.paths import resource
 
@@ -608,8 +611,15 @@ def _rounded(values: dict[str, float]) -> dict[str, float]:
 
 
 def detection_groups(options: DetectionOptions) -> dict:
-    """The detection groups as the UI shows them (Spanish texts), with their current state."""
+    """The detection groups as the UI shows them (Spanish texts), with their current state, and the
+    levels that set them at once (``level``: the one that matches, null when set by hand)."""
     return {
+        "levels": [
+            {"level": lv.level, "label": lv.label, "description": lv.description, "groups": lv.options().to_dict()}
+            for lv in DETECTION_LEVELS
+        ],
+        "level": level_of(options),
+        "default_level": DEFAULT_LEVEL,
         "groups": [
             {
                 "key": g.key,
@@ -624,7 +634,7 @@ def detection_groups(options: DetectionOptions) -> dict:
                 "enabled": getattr(options, g.key),
             }
             for g in DETECTION_GROUPS
-        ]
+        ],
     }
 
 

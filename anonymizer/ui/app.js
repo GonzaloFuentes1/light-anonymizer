@@ -245,6 +245,8 @@
     exceptionsCount: 0, // entries of the exceptions list (D10)
     engine: "",
     groups: [], // detection groups from GET /api/options (texts in Spanish, current state)
+    levels: [], // levels 1-5 that set the groups at once (GET /api/options)
+    level: null, // the level that matches the groups, null when they were set by hand
     estimate: null, // GET /api/estimate for the files that would be processed now
     estimateKey: null, // the ids that estimate is for
     loaded: false,
@@ -570,10 +572,17 @@
   const groupsOff = (options) =>
     options ? S.groups.filter((g) => g.detection && !g.locked && options[g.key] === false) : [];
 
+  /** Keeps the groups and the levels of a GET or PUT /api/options response. */
+  function applyOptions(res) {
+    if (!res) return;
+    S.groups = res.groups || S.groups;
+    S.levels = res.levels || S.levels;
+    S.level = res.level == null ? null : res.level;
+  }
+
   async function loadGroups() {
     try {
-      const res = await api("/api/options");
-      S.groups = (res && res.groups) || [];
+      applyOptions(await api("/api/options"));
     } catch (err) {
       showError(err);
     }
@@ -590,10 +599,51 @@
     return fmtEstimate(seconds);
   }
 
+  /** The five levels over the switches: choosing one sets every switch at once. */
+  function renderLevels() {
+    const box = $("#levels");
+    box.hidden = !S.levels.length;
+    if (!S.levels.length) return;
+    const bar = $("#levelbar");
+    keepFocus(bar, () => {
+      bar.replaceChildren(...S.levels.map((lv) => {
+        const id = `lvl-${lv.level}`;
+        const on = S.level === lv.level;
+        const input = h("input", {
+          type: "radio", name: "level", id, value: String(lv.level), dataset: { fk: `lvl:${lv.level}` },
+          "aria-describedby": "level-desc",
+          onchange: () => setLevel(lv),
+        });
+        input.checked = on;
+        return h("label", { class: `lvl${on ? " on" : ""}`, for: id },
+          input, h("span", { class: "n", text: String(lv.level) }), h("span", { class: "t", text: lv.label }));
+      }));
+    });
+    const cur = S.levels.find((lv) => lv.level === S.level);
+    $("#level-desc").textContent = cur
+      ? cur.description
+      : "Personalizado: elegiste a mano qué buscar, en la lista de abajo.";
+  }
+
+  async function setLevel(lv) {
+    try {
+      applyOptions(await api("/api/options", { method: "PUT", json: { groups: lv.groups } }));
+      let msg = `Nivel ${lv.level}, ${lv.label}. ${lv.description}`;
+      if (S.files.some((f) => REVIEWABLE.has(f.status))) msg += " Se aplica a los archivos que proceses desde ahora.";
+      toast(msg);
+    } catch (err) {
+      showError(err);
+    }
+    renderDetects();
+    renderEstimate();
+    refreshEstimate(true);
+  }
+
   function renderDetects() {
     const panel = $("#detect-panel");
     panel.hidden = !S.groups.length;
     if (!S.groups.length) return;
+    renderLevels();
     const hasFiles = !!(S.estimate && (S.estimate.files || []).length);
     $("#detect-hint").textContent = hasFiles ? "Tiempo estimado para los archivos sin procesar" : "";
     const list = $("#detects");
@@ -668,7 +718,7 @@
   async function setGroup(g, value) {
     try {
       const res = await api("/api/options", { method: "PUT", json: { groups: { [g.key]: value } } });
-      S.groups = (res && res.groups) || S.groups;
+      applyOptions(res);
       let msg;
       if (g.key === "urls_other") {
         msg = value

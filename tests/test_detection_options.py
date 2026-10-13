@@ -17,7 +17,14 @@ from PIL import Image
 
 from anonymizer.engine import common, context, estimate, faces, ocr, qr, raster
 from anonymizer.engine.common import Zone
-from anonymizer.engine.model import DETECTION_GROUPS, AnalyzedFile, DetectionOptions
+from anonymizer.engine.model import (
+    DEFAULT_LEVEL,
+    DETECTION_GROUPS,
+    DETECTION_LEVELS,
+    AnalyzedFile,
+    DetectionOptions,
+    level_of,
+)
 from anonymizer.engine.patterns import rut_check_digit
 from anonymizer.engine.real import RealEngine
 
@@ -108,6 +115,22 @@ def test_groups_and_defaults():
         assert g.label and g.description and g.short
         assert g.warning or g.locked or not g.detection  # every switch that can hide data warns
     assert [g.key for g in DETECTION_GROUPS if g.locked] == ["patterns"]
+
+
+def test_levels_go_from_least_to_most_redacted():
+    assert [lv.level for lv in DETECTION_LEVELS] == [1, 2, 3, 4, 5]
+    keys = {g.key for g in DETECTION_GROUPS}
+    for lower, higher in zip(DETECTION_LEVELS, DETECTION_LEVELS[1:], strict=False):
+        assert lower.groups < higher.groups  # each level keeps every group of the levels below
+    for lv in DETECTION_LEVELS:
+        assert lv.label and lv.description and lv.groups <= keys
+        assert lv.options().patterns  # the base of the leak check is on at every level
+        assert level_of(lv.options()) == lv.level
+    # The app starts at the recommended level: the defaults of every switch.
+    assert DETECTION_LEVELS[DEFAULT_LEVEL - 1].options() == DetectionOptions()
+    assert level_of(DetectionOptions()) == DEFAULT_LEVEL
+    assert level_of(DetectionOptions.everything()) == 5
+    assert level_of(DetectionOptions(faces=False)) is None  # set by hand
 
 
 def test_patterns_cannot_be_turned_off(tmp_path):

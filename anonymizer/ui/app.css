@@ -137,6 +137,16 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .namelist { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; }
 /* What to search for: one row per detection group, with its estimated time */
 .detects { list-style: none; margin: 0; padding: 0; }
+.levels { margin: 0; padding: 11px 14px 12px; border: 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.levels legend { float: left; width: 100%; padding: 0; font-weight: 700; }
+.levelbar { clear: both; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 8px 0 6px; }
+.lvl { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 7px 4px; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--surface); cursor: pointer; text-align: center; }
+.lvl input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.lvl .n { font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; }
+.lvl .t { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.lvl.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.lvl.on .t { color: var(--ink); font-weight: 700; }
+.lvl:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .detect { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 2px 12px; align-items: start; padding: 11px 14px; border-top: 1px solid var(--line); }
 .detect:first-child { border-top: 0; }
 .detect.sub { padding-left: 46px; }

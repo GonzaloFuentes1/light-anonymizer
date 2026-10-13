@@ -288,6 +288,44 @@ class DetectionOptions:
         return self.ocr or self.faces or self.signatures or self.qr
 
 
+@dataclass(frozen=True)
+class DetectionLevel:
+    """A preset of the detection groups, from 1 (least redacted) to 5 (most): the switches of
+    "Qué buscar" set at once. Each level keeps every group of the levels below it."""
+
+    level: int
+    label: str  # Spanish
+    description: str  # Spanish, one line
+    groups: frozenset[str]  # the groups that are on; the others are off
+
+    def options(self) -> DetectionOptions:
+        return DetectionOptions.from_dict({g.key: g.key in self.groups for g in DETECTION_GROUPS})
+
+
+_L1 = frozenset({"patterns", "urls_personal"})
+_L2 = _L1 | {"names_list", "ocr"}
+_L3 = _L2 | {"names_context", "qr"}
+_L4 = _L3 | {"faces", "signatures"}
+DETECTION_LEVELS: tuple[DetectionLevel, ...] = (
+    DetectionLevel(1, "Mínimo", "Solo RUT, correos, teléfonos y enlaces personales escritos en el texto. No lee "
+                   "escaneos ni fotos.", _L1),
+    DetectionLevel(2, "Bajo", "RUT, correos, teléfonos, enlaces personales, los nombres de tu lista y el texto de "
+                   "escaneos y fotos.", _L2),
+    DetectionLevel(3, "Medio", "Lo del nivel 2, más nombres por contexto y códigos QR. No busca rostros ni firmas.",
+                   _L3),
+    DetectionLevel(4, "Recomendado", "Busca todo, también rostros y firmas. Los otros enlaces quedan sin censurar "
+                   "para que tú decidas. Es el nivel con que parte la aplicación.", _L4),
+    DetectionLevel(5, "Máximo", "Busca todo y además censura desde el inicio los otros enlaces (sitios "
+                   "institucionales).", _L4 | {"urls_other"}),
+)  # fmt: skip
+DEFAULT_LEVEL = 4
+
+
+def level_of(options: DetectionOptions) -> int | None:
+    """The level whose switches match ``options``, or None when they were set by hand."""
+    return next((lv.level for lv in DETECTION_LEVELS if lv.options() == options), None)
+
+
 # Plain-language error messages (Spanish) by error code.
 ERROR_MESSAGES: dict[str, str] = {
     "password": "Este archivo está protegido con contraseña. Ingresa la contraseña o pide una versión sin contraseña.",

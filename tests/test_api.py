@@ -469,6 +469,21 @@ def processed(client, data: bytes, name: str = "enlaces.pdf") -> str:
     return file_id
 
 
+def test_detection_levels(client):
+    res = client.get("/api/options").json()
+    assert [lv["level"] for lv in res["levels"]] == [1, 2, 3, 4, 5]
+    assert res["level"] == res["default_level"] == 4
+    assert res["levels"][3]["label"] == "Recomendado"
+    minimum = res["levels"][0]["groups"]
+    r = client.put("/api/options", json={"groups": minimum})
+    assert r.status_code == 200 and r.json()["level"] == 1
+    assert {g["key"]: g["enabled"] for g in r.json()["groups"]} == minimum
+    r = client.put("/api/options", json={"groups": {"faces": True}})
+    assert r.json()["level"] is None  # a switch changed by hand: no level matches
+    r = client.put("/api/options", json={"groups": res["levels"][4]["groups"]})
+    assert r.json()["level"] == 5 and {g["key"]: g["enabled"] for g in r.json()["groups"]}["urls_other"] is True
+
+
 def test_options_get_and_put(client):
     groups = client.get("/api/options").json()["groups"]
     by_key = {g["key"]: g for g in groups}
