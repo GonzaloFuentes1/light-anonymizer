@@ -188,7 +188,7 @@ exe = EXE(
     upx=False,  # UPX-packed DLLs trigger antivirus false positives and some fail to load
     console=False,
     disable_windowed_traceback=True,  # packaging/launcher.py shows a Spanish message instead of a traceback
-    icon="NONE",  # no icon yet: the generic Windows one rather than PyInstaller's
+    icon=str(ROOT / "packaging" / "icon.ico"),  # rendered from packaging/icon.svg; also the window's and the taskbar's
     version=version_info,
     contents_directory="_internal",
 )
