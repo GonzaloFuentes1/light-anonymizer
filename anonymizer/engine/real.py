@@ -51,6 +51,7 @@ from anonymizer.engine.model import (
     Leak,
     PageInfo,
 )
+from anonymizer.engine.names import is_address
 from anonymizer.engine.patterns import norm, normalize_1to1
 from anonymizer.engine.text import needle
 
@@ -210,8 +211,15 @@ class RealEngine:
         options = DetectionOptions.from_dict(file.options)
         file.options = options.to_dict()
         file.timings = {}
-        # With the list off its entries are not searched at all (context names may still be found).
-        names = tuple(dict.fromkeys(n.strip() for n in name_list if n and n.strip())) if options.names_list else ()
+        # The people of the list are searched with "names_list" on, its addresses (entries with a
+        # digit) with "addresses" on; an entry that is off is not searched at all.
+        names = tuple(
+            dict.fromkeys(
+                n.strip()
+                for n in name_list
+                if n and n.strip() and (options.addresses if is_address(n) else options.names_list)
+            )
+        )
         file.status = "processing"
         file.error = file.error_message = None
         clock = StageClock()

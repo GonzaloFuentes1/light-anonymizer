@@ -196,18 +196,32 @@ DETECTION_GROUPS: tuple[DetectionGroup, ...] = (
     ),
     DetectionGroup(
         "names_list",
-        "Nombres y direcciones de la lista",
-        "Las personas y direcciones de tu lista, aunque estén sin tildes, en mayúsculas o en otro orden.",
-        "No se buscarán los nombres ni las direcciones de tu lista.",
-        "nombres y direcciones de la lista",
+        "Nombres de tu lista",
+        "Busca exactamente a las personas que escribiste en la «Lista de nombres y direcciones», aunque "
+        "aparezcan sin tildes, en mayúsculas o con los apellidos primero. Es el método más seguro: solo "
+        "encuentra a quienes tú indicas, y siempre los encuentra.",
+        "No se buscarán las personas de tu lista.",
+        "nombres de tu lista",
         default=True,
     ),
     DetectionGroup(
         "names_context",
-        "Nombres por contexto",
-        "Nombres en firmas, tablas y campos como «Nombre:». Se marcan como dudosos para que los revises primero.",
-        "Los nombres que no están en tu lista (en firmas, tablas o «Nombre:») quedarán visibles.",
-        "nombres por contexto",
+        "Nombres que la aplicación reconoce sola",
+        "Busca nombres de personas que NO están en tu lista, de dos formas: por el lugar donde aparecen "
+        "(firmas, columnas de tablas, campos como «Nombre:») y porque empiezan con un nombre de pila "
+        "registrado en Chile (por ejemplo «Alexandra Rojas»). Encuentra más, pero se puede equivocar o "
+        "pasar nombres por alto: se marcan como dudosos para que los revises primero.",
+        "Los nombres que no están en tu lista quedarán visibles.",
+        "nombres que la aplicación reconoce sola",
+        default=True,
+    ),
+    DetectionGroup(
+        "addresses",
+        "Direcciones",
+        "Las direcciones de tu lista (las entradas con número) y las que aparecen en campos como "
+        "«Dirección:» o «Domicilio:».",
+        "Las direcciones quedarán visibles.",
+        "direcciones",
         default=True,
     ),
     DetectionGroup(
@@ -263,6 +277,7 @@ class DetectionOptions:
     urls_other: bool = False
     names_list: bool = True
     names_context: bool = True
+    addresses: bool = True
     ocr: bool = True
     faces: bool = True
     signatures: bool = True
@@ -273,6 +288,12 @@ class DetectionOptions:
     def everything(cls) -> DetectionOptions:
         """Every group on and the other URLs applied (the test bench: comparable with earlier runs)."""
         return cls(**{g.key: True for g in DETECTION_GROUPS})
+
+    @classmethod
+    def unchecked(cls) -> DetectionOptions:
+        """Every group off but the locked ones: how the app starts, so that the reviewer reads
+        each switch and chooses what to search for."""
+        return cls.from_dict({g.key: False for g in DETECTION_GROUPS})
 
     @classmethod
     def from_dict(cls, values: dict[str, bool | int] | None) -> DetectionOptions:

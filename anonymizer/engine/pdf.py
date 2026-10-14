@@ -235,7 +235,11 @@ def read_text_page(page: pymupdf.Page, name_list: tuple[str, ...], options: Dete
     tp = TextPage(page.number, text, boxes, text_lines(text, boxes, horizontal))
     spans = detect_spans(text, name_list, personal_urls=options.urls_personal, given_names=options.names_context)
     ctx, tp.rects = context.context_rules(
-        [ln for _, _, ln in tp.lines], page.rect.width, page.rect.height, names=options.names_context
+        [ln for _, _, ln in tp.lines],
+        page.rect.width,
+        page.rect.height,
+        names=options.names_context,
+        addresses=options.addresses,
     )
     for type_, i, a, b in ctx:
         start = tp.lines[i][0]

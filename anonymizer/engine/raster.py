@@ -202,7 +202,7 @@ def _text_zones(
     upright = [line for line in lines if line.turn == 0]
     if upright:
         objects = [context.Line(ln.text, *ln.polygon.min(axis=0), *ln.polygon.max(axis=0)) for ln in upright]
-        spans, rects = context.context_rules(objects, w, h, names=options.names_context)
+        spans, rects = context.context_rules(objects, w, h, names=options.names_context, addresses=options.addresses)
         for type_, i, a, b in spans:
             ln = upright[i]
             # A "rut" value must hold a RUT-shaped number (an empty "RUT:" field is no finding).

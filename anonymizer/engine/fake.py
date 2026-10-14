@@ -50,6 +50,7 @@ from anonymizer.engine.model import (
     Leak,
     PageInfo,
 )
+from anonymizer.engine.names import is_address
 from anonymizer.engine.patterns import PERSONAL_URL, URL
 
 RUT = re.compile(r"(?<![\d.])\d{1,2}\.?\d{3}\.?\d{3}\s*-\s*[\dkK](?![\w])")
@@ -166,7 +167,7 @@ class FakeEngine:
         options = DetectionOptions.from_dict(file.options)
         file.options = options.to_dict()
         file.timings = {}
-        names = list(name_list) if options.names_list else []
+        names = [n for n in name_list if (options.addresses if is_address(n) else options.names_list)]
         file.status = "processing"
         file.error = file.error_message = None
         clock = StageClock()

@@ -685,11 +685,12 @@
     line.textContent = show ? `Tiempo estimado: ${fmtEstimate(est.total)} · depende del computador` : "";
     line.title = show && !est.calibrated ? "Se ajusta con el tiempo real de cada archivo que proceses." : "";
     line.hidden = !show;
-    // Groups the user turned off (on by default); "censurar también los otros enlaces" is not a detection.
+    // Groups left unchecked (the app starts with all of them unchecked); "censurar también los otros
+    // enlaces" is not a detection.
     const off = S.groups.filter((g) => g.detection && !g.locked && g.default && !g.enabled);
     const warn = $("#process-off");
     warn.textContent = off.length
-      ? `Apagaste ${plural(off.length, "detección", "detecciones")}: ${joinEs(off.map((g) => g.short))}.`
+      ? `Sin marcar, no se buscarán: ${joinEs(off.map((g) => g.short))}.`
       : "";
     warn.hidden = !off.length;
   }

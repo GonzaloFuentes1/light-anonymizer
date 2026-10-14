@@ -62,14 +62,14 @@ def type_by_label(label: str) -> str:
 
 
 def context_rules(
-    lines: list[Line], page_width: float, page_height: float, names: bool = True
+    lines: list[Line], page_width: float, page_height: float, names: bool = True, addresses: bool = True
 ) -> tuple[list[tuple[str, int, int, int]], list[tuple[str, float, float, float, float]]]:
     """Returns (spans, rectangles).
 
     spans: (type, line index, start, end) inside the text of that line.
     rectangles: (type, x0, y0, x1, y1) for zones without legible text (signature column).
-    ``names=False`` leaves out names and signatures (``NAME_TYPES``): RUT, e-mail, phone and
-    address columns and labels are still found.
+    ``names=False`` leaves out names and signatures (``NAME_TYPES``), ``addresses=False`` the
+    addresses ("Dirección:", a "Domicilio" column): RUT, e-mail and phone are always found.
     """
     spans: list[tuple[str, int, int, int]] = []
     rects: list[tuple[str, float, float, float, float]] = []
@@ -119,6 +119,9 @@ def context_rules(
     if not names:
         spans = [s for s in spans if s[0] not in NAME_TYPES]
         rects = [r for r in rects if r[0] not in NAME_TYPES]
+    if not addresses:
+        spans = [s for s in spans if s[0] != "address"]
+        rects = [r for r in rects if r[0] != "address"]
     return spans, rects
 
 

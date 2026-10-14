@@ -91,7 +91,7 @@ def test_js_syntax(name):
             [
                 "Tiempo estimado: ",
                 "depende del computador",
-                "Apagaste ",
+                "Sin marcar, no se buscarán",
                 "menos de 1 s",
                 "Listo en ",
                 "En este archivo no se buscaron: ",
