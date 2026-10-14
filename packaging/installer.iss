@@ -96,6 +96,8 @@ MinVersion=10.0
 InfoBeforeFile=..\LICENSE
 ShowLanguageDialog=no
 WizardStyle=modern
+SetupIconFile=icon.ico
+WizardSmallImageFile=wizard-small.bmp,wizard-small-2x.bmp
 #ifdef TestBuild
 DisableWelcomePage=no
 #endif
@@ -124,7 +126,7 @@ WelcomeLabel2=Este programa instalará [name/ver] en su sistema.%n%nATENCIÓN: e
 #endif
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [InstallDelete]
 ; Upgrades: the previous version's libraries and license texts go before the new ones are copied.

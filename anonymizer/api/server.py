@@ -332,7 +332,13 @@ class Session:
     only in memory).
     """
 
-    def __init__(self, engine, max_workers: int = 2, estimates_path: Path | None = None):
+    def __init__(
+        self,
+        engine,
+        max_workers: int = 2,
+        estimates_path: Path | None = None,
+        options: DetectionOptions | None = None,
+    ):
         self.engine = engine
         self.dir = Path(tempfile.mkdtemp(prefix=SESSION_PREFIX))
         (self.dir / "pid").write_text(str(os.getpid()))
@@ -341,7 +347,8 @@ class Session:
         self.sources: dict[str, str] = {}
         self.names: list[str] = []
         self.exceptions: list[str] = []  # D10: values not censored by default (engine.exceptions)
-        self.options = DetectionOptions()  # session only: every start of the app uses the defaults
+        # Session only: every start of the app begins with the same switches (``create_app``).
+        self.options = options or DetectionOptions()
         self.profiles: dict[str, dict] = {}  # file id -> cheap facts for the estimate
         self.costs = estimate.CostModel.load(estimates_path)
         self.lock = threading.RLock()
@@ -667,8 +674,12 @@ def create_app(
     ui_dir: Path | None = None,
     allowed_hosts: frozenset[str] = ALLOWED_HOSTS,
     estimates_path: Path | None = None,
+    start_unchecked: bool = False,
 ) -> FastAPI:
     """Build the API. ``engine`` defaults to :func:`anonymizer.engine.get_engine`.
+
+    ``start_unchecked``: the detection groups start off (but the locked ones), so the reviewer
+    chooses each one (the desktop app); otherwise they start at their defaults.
 
     With ``launch_key``, ``GET /`` only reveals the token to a client that first opened
     ``/?k=<launch_key>`` (the desktop window or the URL printed by ``--browser``).
@@ -680,7 +691,9 @@ def create_app(
         engine = get_engine()
     token = token or secrets.token_urlsafe(32)
     ui = Path(ui_dir) if ui_dir else UI_DIR
-    session = Session(engine, estimates_path=estimates_path)
+    session = Session(
+        engine, estimates_path=estimates_path, options=DetectionOptions.unchecked() if start_unchecked else None
+    )
     cookie_secret = secrets.token_urlsafe(32)
 
     @asynccontextmanager

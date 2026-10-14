@@ -229,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     launch_key = secrets.token_urlsafe(24)
     # Only the rates of the time estimate are saved there, one file per engine (never file names).
     estimates = server.app_data_dir() / f"estimates_{getattr(engine, 'name', 'engine')}.json"
-    app = server.create_app(engine, token, launch_key=launch_key, estimates_path=estimates)
+    app = server.create_app(engine, token, launch_key=launch_key, estimates_path=estimates, start_unchecked=True)
     session = app.state.session
     local = Server(app, bind_socket())
     url = f"http://127.0.0.1:{local.port}/"

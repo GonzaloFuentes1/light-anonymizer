@@ -547,6 +547,12 @@ def processed(client, data: bytes, name: str = "enlaces.pdf") -> str:
     return file_id
 
 
+def test_the_desktop_app_starts_with_the_switches_unchecked():
+    with LiveClient(create_app(FakeEngine(), TOKEN, start_unchecked=True)) as c:
+        groups = c.get("/api/options", headers={"X-Session-Token": TOKEN}).json()["groups"]
+    assert {g["key"] for g in groups if g["enabled"]} == {"patterns"}  # only the locked one
+
+
 def test_detection_levels(client):
     res = client.get("/api/options").json()
     assert [lv["level"] for lv in res["levels"]] == [1, 2, 3, 4, 5]
@@ -570,6 +576,7 @@ def test_options_get_and_put(client):
         "urls_other",
         "names_list",
         "names_context",
+        "addresses",
         "ocr",
         "faces",
         "signatures",
@@ -628,8 +635,8 @@ def test_estimate(client):
     body = client.get("/api/estimate").json()
     assert set(body) == {"files", "groups", "render", "total", "calibrated"}
     assert {f["id"] for f in body["files"]} == {pdf_id, img_id}
-    assert set(body["groups"]) == {"patterns", "urls_personal", "urls_other", "names_list", "names_context", "ocr",
-                                   "faces", "signatures", "qr"}  # fmt: skip
+    assert set(body["groups"]) == {"patterns", "urls_personal", "urls_other", "names_list", "names_context",
+                                   "addresses", "ocr", "faces", "signatures", "qr"}  # fmt: skip
     assert body["groups"]["ocr"] > 1 and body["total"] > body["groups"]["ocr"] and body["calibrated"] is False
     one = client.get(f"/api/estimate?ids={pdf_id},desconocido").json()
     assert [f["id"] for f in one["files"]] == [pdf_id]

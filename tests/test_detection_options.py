@@ -106,7 +106,8 @@ def recorders(monkeypatch):
 def test_groups_and_defaults():
     keys = [g.key for g in DETECTION_GROUPS]
     assert keys == [
-        "patterns", "urls_personal", "urls_other", "names_list", "names_context", "ocr", "faces", "signatures", "qr"
+        "patterns", "urls_personal", "urls_other", "names_list", "names_context", "addresses", "ocr", "faces",
+        "signatures", "qr",
     ]  # fmt: skip
     defaults = DetectionOptions().to_dict()
     assert defaults == {**{g.key: g.default for g in DETECTION_GROUPS}, "level": 3}
@@ -206,6 +207,25 @@ def test_context_names_off_keeps_the_other_context_rules(tmp_path):
     assert any(f.type == "email" and f.text == EMAIL for f in off.findings)
 
 
+def test_addresses_off(tmp_path):
+    listed_address = "Avenida Inventada 4321"
+    path = text_pdf(tmp_path / "a.pdf", [f"Vive en {listed_address}, comuna ficticia.", "Domicilio: Pasaje Ficticio 123",
+                                         SIGNER])  # fmt: skip
+    on = analyze(path, names=[listed_address])
+    assert {f.detector for f in on.findings if f.type == "address"} >= {"name_list", "context"}
+    off = analyze(path, DetectionOptions(addresses=False), names=[listed_address])
+    assert not any(f.type == "address" for f in off.findings)
+    assert any(f.text == SIGNER for f in off.findings)  # names stay
+    people_off = analyze(path, DetectionOptions(names_list=False), names=[listed_address])
+    assert any(f.type == "address" and f.detector == "name_list" for f in people_off.findings)  # the list's addresses
+
+
+def test_the_app_starts_with_every_switch_unchecked():
+    unchecked = DetectionOptions.unchecked()
+    assert unchecked.patterns and unchecked.level == 3
+    assert not any(getattr(unchecked, g.key) for g in DETECTION_GROUPS if not g.locked)
+
+
 def test_context_rules_without_names():
     L = context.Line
     lines = [L("Nombre:", 0, 0, 60, 10), L("Pedro Inventado", 70, 0, 200, 10), L("Firma", 0, 40, 40, 50),
@@ -215,6 +235,10 @@ def test_context_rules_without_names():
     spans, rects = context.context_rules(lines, 600, 800, names=False)
     assert not {s[0] for s in spans} & set(context.NAME_TYPES) and not [r for r in rects if r[0] == "signature"]
     assert "email" in {s[0] for s in spans}
+    with_address = [*lines, L("Dirección:", 0, 80, 70, 90), L("Pasaje Ficticio 123", 80, 80, 220, 90)]
+    assert "address" in {s[0] for s in context.context_rules(with_address, 600, 800)[0]}
+    spans, _ = context.context_rules(with_address, 600, 800, addresses=False)
+    assert "address" not in {s[0] for s in spans} and "email" in {s[0] for s in spans}
 
 
 def test_personal_urls_off(tmp_path):

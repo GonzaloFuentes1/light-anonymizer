@@ -76,6 +76,7 @@ button:disabled, button[aria-disabled="true"] { cursor: not-allowed; opacity: .5
 .app { height: 100vh; display: flex; flex-direction: column; background: var(--surface); }
 .titlebar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 16px; padding-top: calc(env(safe-area-inset-top, 0px) + 8px); background: var(--chrome); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .titlebar strong { color: var(--ink); font-size: 14px; }
+.titlebar .logo { display: block; width: 22px; height: 22px; margin-right: -4px; }
 .theme { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: var(--surface); margin-left: auto; }
 .theme button { border: 0; background: transparent; padding: 4px 12px; color: var(--muted); font-size: 13px; }
 .theme button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
@@ -138,6 +139,7 @@ main.main { flex: 1 1 auto; min-height: 0; position: relative; }
 .namelist { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; }
 /* What to search for: one row per detection group, with its estimated time */
 .detects { list-style: none; margin: 0; padding: 0; }
+.detect-intro { margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 14px; }
 .levels { margin: 0; padding: 11px 14px 12px; border: 0; border-bottom: 1px solid var(--line); min-width: 0; }
 .levels legend { float: left; width: 100%; padding: 0; font-weight: 700; }
 .levelbar { clear: both; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 8px 0 6px; }

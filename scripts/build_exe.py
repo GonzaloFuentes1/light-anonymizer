@@ -60,7 +60,7 @@ FORBIDDEN_NAMES = ("opencv_videoio_ffmpeg", "test_data", "results", "test_bench"
 FORBIDDEN_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".heic", ".bmp", ".gif"}
 FORBIDDEN_SUFFIXES |= {".doc", ".docx", ".xls", ".xlsx", ".odt", ".csv", ".log"}
 # What the app's own data folders may contain (the interface and the given-name dictionary).
-UI_SUFFIXES = {".html", ".js", ".css", ".ttf", ".txt"}
+UI_SUFFIXES = {".html", ".js", ".css", ".ttf", ".txt", ".svg"}  # .svg: the app icon (favicon, title bar)
 DOTTED_RUT = re.compile(r"\b\d{1,2}\.\d{3}\.\d{3}-[\dkK]\b")
 
 

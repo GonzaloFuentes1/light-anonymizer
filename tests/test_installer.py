@@ -156,7 +156,7 @@ def test_shortcuts():
     desktop = icons[r"{autodesktop}\{#StartMenuName}"]
     assert desktop["Tasks"] == "desktopicon"
     task = next(entry for entry in entries("Tasks") if entry["Name"] == "desktopicon")
-    assert "unchecked" in task["Flags"].split()
+    assert "unchecked" not in task.get("Flags", "").split()  # the desktop shortcut is offered checked
 
 
 def test_test_builds_are_marked_not_for_distribution():

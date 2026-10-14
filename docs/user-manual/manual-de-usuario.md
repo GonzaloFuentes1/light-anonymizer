@@ -41,8 +41,6 @@ El Anonimizador busca datos personales en documentos PDF y en imágenes, y te ay
 - No censura montos ni fechas.
 - No cambia tus archivos originales. Siempre guarda una copia nueva.
 
-> **Prueba de ensayo.** Mientras dure la marcha blanca, la pantalla de inicio muestra este aviso: "usa solo documentos ficticios. No cargues informes reales hasta que la unidad de transparencia lo autorice". Respeta ese aviso.
-
 ## 2. Instalar, actualizar y desinstalar
 
 La aplicación funciona en Windows 10 y Windows 11 de 64 bits. No funciona en Mac.
@@ -129,8 +127,9 @@ Más abajo, en la misma pantalla, está el panel **Qué buscar**. Ahí eliges qu
 | RUT, correos y teléfonos | Siempre activo: es la base de la verificación final. No se puede apagar. |
 | Enlaces personales | Redes sociales, reuniones, archivos compartidos y enlaces que llevan un RUT, un correo o un nombre de tu lista. |
 | Censurar también los otros enlaces | Los otros enlaces (sitios institucionales, documentos públicos) siempre aparecen en la revisión. Con esta casilla apagada, quedan sin censurar y tú eliges cuáles censurar. Con ella marcada, empiezan censurados. |
-| Nombres y direcciones de la lista | Las personas y direcciones de tu lista de nombres. |
-| Nombres por contexto | Nombres en firmas, tablas y campos como "Nombre:". Se marcan como dudosos. |
+| Nombres de tu lista | Exactamente las personas que escribiste en tu lista de nombres, aunque estén sin tildes, en mayúsculas o con los apellidos primero. |
+| Nombres que la aplicación reconoce sola | Personas que no están en tu lista: por el lugar donde aparecen (firmas, tablas, campos como "Nombre:") y porque empiezan con un nombre de pila registrado en Chile. Se marcan como dudosos. |
+| Direcciones | Las direcciones de tu lista (las entradas con número) y las de campos como "Dirección:" o "Domicilio:". |
 | Texto en imágenes y escaneos (OCR) | Lee el texto de páginas escaneadas, fotos e imágenes dentro de los PDF. Es lo que más tarda. |
 | Rostros | Caras de personas en fotos, escaneos e imágenes. |
 | Firmas | Firmas a mano y firmas dibujadas en los PDF. Siempre se marcan como dudosas. |
@@ -143,9 +142,13 @@ Más abajo, en la misma pantalla, está el panel **Qué buscar**. Ahí eliges qu
 
 RUT, correos, teléfonos, enlaces y nombres se buscan igual en todos los niveles. El nivel vale para los archivos que proceses desde ese momento, y el informe de auditoría dice con qué nivel se procesó cada uno.
 
-**Recomendación: deja todo marcado.** Un grupo apagado no se busca en absoluto. Por ejemplo, si apagas el OCR, no se lee ningún dato dentro de las imágenes y los escaneos. Cuando algo quedó apagado, la revisión, la exportación y el informe de auditoría te lo recuerdan con el aviso "En este archivo no se buscaron: …". En ese caso, revisa esas partes a mano.
+**Los dos métodos para nombres.** "Nombres de tu lista" es el más seguro: busca a las personas que tú escribiste y no se equivoca de persona, pero solo encuentra a esas. "Nombres que la aplicación reconoce sola" encuentra nombres que no conocías de antemano, por ejemplo quien firma un acta o una persona en una tabla, pero puede marcar algo que no es un nombre o pasar uno por alto; por eso esos hallazgos aparecen como dudosos y se revisan primero. Lo ideal es usar los dos: tu lista para las personas que sabes que aparecen, y el reconocimiento para las demás.
 
-Lo que elijas vale solo mientras la aplicación esté abierta. Cada vez que la abres, todo vuelve a estar marcado.
+**La aplicación parte con todo sin marcar.** Lee cada opción y marca lo que quieres buscar: lo que no marques no se busca. Solo "RUT, correos y teléfonos" está siempre activo. Abajo, junto al botón Procesar, un aviso dice qué quedó sin marcar.
+
+**Recomendación: marca todo.** Un grupo sin marcar no se busca en absoluto. Por ejemplo, si no marcas el OCR, no se lee ningún dato dentro de las imágenes y los escaneos. Cuando algo quedó sin marcar, la revisión, la exportación y el informe de auditoría te lo recuerdan con el aviso "En este archivo no se buscaron: …". En ese caso, revisa esas partes a mano.
+
+Lo que elijas vale solo mientras la aplicación esté abierta. Cada vez que la abres, todo vuelve a estar sin marcar.
 
 **Cuánto se demora.** El tiempo estimado depende del computador y se ajusta solo con el tiempo real de los archivos que procesas. Como referencia:
 
@@ -161,7 +164,7 @@ En la pantalla de inicio hay dos listas. Para cambiarlas, haz clic en **Editar l
 
 Escribe los nombres y direcciones que siempre deben censurarse: por ejemplo, las personas de un concurso o los prestadores de un informe de honorarios. Se censuran donde aparezcan, aunque estén sin tildes, en mayúsculas o en otro orden.
 
-La lista es importante porque, **dentro de un párrafo, la aplicación solo reconoce los nombres que están en tu lista.** Fuera de los párrafos (en firmas, tablas, encabezados de correo o campos como "Nombre:") también encuentra nombres que no están en la lista, pero los marca como dudosos.
+La lista es la forma más segura de censurar a una persona: **un nombre de tu lista se encuentra siempre**, también dentro de un párrafo. Sin la lista, la aplicación reconoce sola los nombres que empiezan con un nombre de pila conocido o que están en firmas, tablas, encabezados de correo o campos como "Nombre:", pero los marca como dudosos y se le puede escapar alguno. Las personas de la lista se buscan con la casilla "Nombres de tu lista"; las direcciones (las entradas con número), con la casilla "Direcciones".
 
 ### Lista de excepciones
 
@@ -415,7 +418,7 @@ El informe deja constancia de tu revisión. La herramienta no certifica que un d
 
 Conocer estos límites te ayuda a revisar mejor.
 
-- **Nombres dentro de párrafos:** solo se encuentran si están en tu lista de nombres. En firmas, tablas, encabezados de correo y campos como "Nombre:" también se encuentran por contexto, marcados como dudosos.
+- **Nombres dentro de párrafos:** se encuentran si están en tu lista de nombres o si empiezan con un nombre de pila conocido. Un nombre poco común, o escrito con los apellidos primero sin estar en tu lista, se puede escapar. En firmas, tablas, encabezados de correo y campos como "Nombre:" también se encuentran por su lugar, marcados como dudosos.
 - **Montos y fechas:** no se censuran.
 - **Letra manuscrita, texto muy pequeño o imágenes de baja calidad:** el OCR puede no leerlos. Revisa con cuidado las notas a mano y los escaneos borrosos.
 - **Texto en espejo** (una foto tomada con la cámara frontal): solo se lee cuando nada más en esa imagen se puede leer.
