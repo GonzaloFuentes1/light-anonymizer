@@ -10,11 +10,11 @@ La revisión humana de cada documento antes de publicarlo es obligatoria: la apl
 
 ![Pantalla de revisión: original con zonas marcadas a la izquierda, resultado censurado a la derecha](docs/user-manual/img/05-review.png)
 
-*Revisión: el original con sus zonas marcadas y el resultado tal como se exportará. El documento es un documento de práctica ficticio.*
+*Revisión: el original con sus zonas marcadas y el resultado tal como se exportará. El documento es ficticio, generado por los scripts de datos de prueba del repositorio.*
 
 ![Pantalla de exportación: resultado por archivo e informe de auditoría](docs/user-manual/img/09-export.png)
 
-*Exportación: resultado por archivo, verificación de fugas e informe de auditoría (PDF y JSON). Solo documentos de práctica ficticios.*
+*Exportación: resultado por archivo, verificación de fugas e informe de auditoría (PDF y JSON). Solo documentos ficticios.*
 
 ## Cómo funciona
 
