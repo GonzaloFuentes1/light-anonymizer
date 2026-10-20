@@ -8,6 +8,14 @@ Human review of every document before publishing is mandatory: the app proposes,
 
 **Platform:** Windows 10 and 11 (64-bit).
 
+![Review screen: original with marked zones on the left, redacted result on the right](docs/user-manual/img/05-review.png)
+
+*Review: the original with its marked zones, and the result as it will be exported. The interface is in Spanish; the document is a fictitious practice document.*
+
+![Export screen: per-file results and the audit report](docs/user-manual/img/09-export.png)
+
+*Export: per-file result, leak check and audit report (PDF and JSON). Fictitious practice documents only.*
+
 ## How it works
 
 1. **Choose files** — PDFs (with text or scanned), JPG, PNG, WEBP and TIFF, or whole folders.
