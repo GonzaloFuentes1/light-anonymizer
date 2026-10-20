@@ -8,6 +8,14 @@ La revisión humana de cada documento antes de publicarlo es obligatoria: la apl
 
 **Plataforma:** Windows 10 y 11 (64 bits).
 
+![Pantalla de revisión: original con zonas marcadas a la izquierda, resultado censurado a la derecha](docs/user-manual/img/05-review.png)
+
+*Revisión: el original con sus zonas marcadas y el resultado tal como se exportará. El documento es un documento de práctica ficticio.*
+
+![Pantalla de exportación: resultado por archivo e informe de auditoría](docs/user-manual/img/09-export.png)
+
+*Exportación: resultado por archivo, verificación de fugas e informe de auditoría (PDF y JSON). Solo documentos de práctica ficticios.*
+
 ## Cómo funciona
 
 1. **Elegir archivos**: PDF (con texto o escaneados), JPG, PNG, WEBP y TIFF, o carpetas completas.
